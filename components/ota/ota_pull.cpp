@@ -24,6 +24,38 @@ void report_failure(const char* reason) {
   publish_progress(data);
 }
 
+// Opens the URL, following redirects, and leaves the client positioned to read
+// the body. Returns the final status code, or a negative value if the request
+// could not be made at all.
+//
+// esp_http_client only follows redirects inside esp_http_client_perform(); the
+// open/fetch_headers/read path this file needs in order to stream into flash
+// never reaches that code, so a 302 arrives as the response. Every GitHub
+// release download is a 302 to release-assets.githubusercontent.com, so
+// without this the one case the feature exists for is the one that fails -
+// reported, confusingly, as "the host returned an error".
+//
+// esp_http_client_set_redirection is IDF's own function for this, the same one
+// perform() calls, so the URL rewriting is not reimplemented here.
+int open_following_redirects(esp_http_client_handle_t client) {
+  constexpr int kMaxRedirects = 5;
+  for (int attempt = 0; attempt <= kMaxRedirects; ++attempt) {
+    if (esp_http_client_open(client, 0) != ESP_OK) return -1;
+    esp_http_client_fetch_headers(client);
+    const int status = esp_http_client_get_status_code(client);
+    const bool redirect = status == 301 || status == 302 || status == 303 ||
+                          status == 307 || status == 308;
+    if (!redirect) return status;
+    if (esp_http_client_set_redirection(client) != ESP_OK) return status;
+    // The body of the redirect response has to be drained before the socket
+    // can carry the next request.
+    esp_http_client_close(client);
+    ESP_LOGI(kTag, "following HTTP %d redirect", status);
+  }
+  ESP_LOGE(kTag, "too many redirects");
+  return -1;
+}
+
 }  // namespace
 
 PullResult pull_from_url(const std::string& url) {
@@ -59,21 +91,17 @@ PullResult pull_from_url(const std::string& url) {
     }
   } closer{client};
 
-  esp_err_t err = esp_http_client_open(client, 0);
-  if (err != ESP_OK) {
-    ESP_LOGE(kTag, "firmware download could not connect: %s",
-             esp_err_to_name(err));
+  const int status = open_following_redirects(client);
+  if (status < 0) {
     report_failure("Could not reach the firmware host");
     return PullResult::TransportFailed;
   }
-
-  const int64_t content_length = esp_http_client_fetch_headers(client);
-  const int status = esp_http_client_get_status_code(client);
   if (status != 200) {
     ESP_LOGE(kTag, "firmware host answered HTTP %d", status);
     report_failure("Firmware host returned an error");
     return PullResult::TransportFailed;
   }
+  const int64_t content_length = esp_http_client_get_content_length(client);
 
   // A chunked response reports -1. That is workable - Session simply shows
   // WORKING instead of a percentage - so it is not treated as a failure.
