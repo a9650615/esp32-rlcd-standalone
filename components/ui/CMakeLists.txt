@@ -9,6 +9,8 @@ idf_component_register(
         "render_indoor.cpp"
         "render_setup.cpp"
         "render_ota.cpp"
+        "ui_strings.cpp"
+        "settings_menu.cpp"
     INCLUDE_DIRS
         "include"
     REQUIRES

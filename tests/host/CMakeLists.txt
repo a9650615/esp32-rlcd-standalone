@@ -23,6 +23,7 @@ add_executable(host_tests
     test_market.cpp
     test_net_log.cpp
     test_ota.cpp
+    test_settings_menu.cpp
     ../../components/app_core/app_snapshot.cpp
     ../../components/app_core/page_registry.cpp
     ../../components/app_core/carousel_controller.cpp
@@ -34,6 +35,8 @@ add_executable(host_tests
     ../../components/ota/ota_image.cpp
     ../../components/ota/ota_prefix.cpp
     ../../components/ota/ota_version.cpp
+    ../../components/ui/ui_strings.cpp
+    ../../components/ui/settings_menu.cpp
     ../../.tools/esp-idf/components/json/cJSON/cJSON.c
 )
 target_include_directories(host_tests PRIVATE
