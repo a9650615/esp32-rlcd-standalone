@@ -10,6 +10,7 @@ add_executable(host_tests
     test_page_registry.cpp
     test_carousel.cpp
     test_button_filter.cpp
+    test_ui_theme.cpp
     ../../components/app_core/app_snapshot.cpp
     ../../components/app_core/page_registry.cpp
     ../../components/app_core/carousel_controller.cpp
@@ -17,6 +18,7 @@ add_executable(host_tests
 target_include_directories(host_tests PRIVATE
     ../../components/app_core/include
     ../../components/board_rlcd/include
+    ../../components/ui/include
 )
 
 enable_testing()

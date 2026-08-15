@@ -1,0 +1,11 @@
+idf_component_register(
+    SRCS
+        "ui_theme.cpp"
+        "render_shared.cpp"
+        "render_home.cpp"
+    INCLUDE_DIRS
+        "include"
+    REQUIRES
+        app_core
+        lvgl__lvgl
+)
