@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "ota.cpp"
+        "ota_image.cpp"
     INCLUDE_DIRS
         "include"
     PRIV_REQUIRES

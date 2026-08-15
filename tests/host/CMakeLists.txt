@@ -31,6 +31,7 @@ add_executable(host_tests
     ../../components/weather/weather_parse.cpp
     ../../components/market/market_parse.cpp
     ../../components/net_log/net_log_ring.cpp
+    ../../components/ota/ota_image.cpp
     ../../.tools/esp-idf/components/json/cJSON/cJSON.c
 )
 target_include_directories(host_tests PRIVATE
