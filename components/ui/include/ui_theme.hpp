@@ -5,6 +5,9 @@
 
 #ifndef UI_THEME_GEOMETRY_ONLY
 #include <lvgl.h>
+#else
+struct _lv_obj_t;
+using lv_obj_t = _lv_obj_t;
 #endif
 
 namespace ui {

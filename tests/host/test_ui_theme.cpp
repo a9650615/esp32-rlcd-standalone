@@ -1,5 +1,6 @@
 #define UI_THEME_GEOMETRY_ONLY
 #include "ui_theme.hpp"
+#include "ui_app.hpp"
 
 #include "test_support.hpp"
 
@@ -24,4 +25,7 @@ HOST_TEST(ui_geometry_contract) {
   EXPECT_TRUE(ui::tile_content_is_centered(cells[0]));
   EXPECT_TRUE(ui::tile_content_is_centered(cells[2]));
   EXPECT_TRUE(ui::tile_content_has_no_reserved_footer(cells[2]));
+
+  ui::UiContext context;
+  EXPECT_TRUE(!ui::context_ready(context));
 }

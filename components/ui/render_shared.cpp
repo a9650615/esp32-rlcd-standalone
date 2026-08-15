@@ -1,7 +1,6 @@
 #include "ui_app.hpp"
 
 #include <cstdio>
-#include <new>
 
 namespace ui {
 namespace {
@@ -9,38 +8,12 @@ namespace {
 const lv_font_t* small_font() { return &lv_font_montserrat_14; }
 const lv_font_t* medium_font() { return &lv_font_montserrat_20; }
 
-constexpr uint32_t kOwnerMagic = 0x5549524Fu;
-
-struct RenderOwner {
-  uint32_t magic = kOwnerMagic;
-  lv_obj_t* root = nullptr;
-};
-
-void owner_host_deleted(lv_event_t* event) {
-  auto* owner = static_cast<RenderOwner*>(lv_event_get_user_data(event));
-  if (owner != nullptr && owner->magic == kOwnerMagic) {
-    owner->root = nullptr;
-    owner->magic = 0;
-    lv_obj_set_user_data(static_cast<lv_obj_t*>(lv_event_get_current_target(event)),
-                         nullptr);
-    delete owner;
-  }
-}
-
-RenderOwner* render_owner(lv_obj_t* host) {
-  // The stable host reserves its LVGL user-data slot for this owner. Refuse
-  // to guess if a caller already owns that slot rather than dereferencing an
-  // unknown pointer or silently overwriting another subsystem's state.
-  if (lv_obj_get_user_data(host) != nullptr) {
-    auto* existing =
-        static_cast<RenderOwner*>(lv_obj_get_user_data(host));
-    return existing->magic == kOwnerMagic ? existing : nullptr;
-  }
-  auto* owner = new (std::nothrow) RenderOwner;
-  if (owner == nullptr) return nullptr;
-  lv_obj_set_user_data(host, owner);
-  lv_obj_add_event_cb(host, owner_host_deleted, LV_EVENT_DELETE, owner);
-  return owner;
+void context_host_deleted(lv_event_t* event) {
+  auto* context = static_cast<UiContext*>(lv_event_get_user_data(event));
+  if (context == nullptr) return;
+  context->host = nullptr;
+  context->root = nullptr;
+  context->initialized = false;
 }
 
 #ifndef NDEBUG
@@ -89,6 +62,29 @@ void tile(lv_obj_t* parent, const char* title, const char* value,
 
 }  // namespace
 
+bool init_context(UiContext& context, lv_obj_t* host) {
+  if (host == nullptr) return false;
+  if (context.initialized) return context.host == host;
+  context.host = host;
+  context.root = nullptr;
+  context.initialized = true;
+  lv_obj_add_event_cb(host, context_host_deleted, LV_EVENT_DELETE, &context);
+  return true;
+}
+
+void reset_context(UiContext& context) {
+  if (context.host != nullptr) {
+    lv_obj_remove_event_cb_with_user_data(context.host, context_host_deleted,
+                                           &context);
+  }
+  if (context.root != nullptr) {
+    lv_obj_delete(context.root);
+  }
+  context.host = nullptr;
+  context.root = nullptr;
+  context.initialized = false;
+}
+
 void render_right_tiles(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
                         Rect bounds) {
   const auto cells = right_tile_cells(bounds);
@@ -129,13 +125,11 @@ void render_mast(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
         small_font(), LV_TEXT_ALIGN_RIGHT);
 }
 
-lv_obj_t* render_page(lv_obj_t* host, const app_core::AppSnapshot& snapshot,
+lv_obj_t* render_page(UiContext& context,
+                      const app_core::AppSnapshot& snapshot,
                       app_core::PageId page, Rect bounds,
                       uint8_t active_page) {
-  if (host == nullptr || !within_safe_canvas(bounds)) return nullptr;
-
-  RenderOwner* owner = render_owner(host);
-  if (owner == nullptr) return nullptr;
+  if (!context_ready(context) || !within_safe_canvas(bounds)) return nullptr;
 
   // LVGL screens are parentless and therefore form a genuinely detached
   // staging surface. The page root is moved to the host only after rendering.
@@ -167,17 +161,22 @@ lv_obj_t* render_page(lv_obj_t* host, const app_core::AppSnapshot& snapshot,
       render_home(replacement, snapshot, local_bounds, active_page);
       break;
   }
-  lv_obj_set_parent(replacement, host);
+  lv_obj_set_parent(replacement, context.host);
   lv_obj_delete(staging_screen);
-  if (owner->root != nullptr && owner->root != replacement) {
-    lv_obj_delete(owner->root);
+  if (context.root != nullptr && context.root != replacement) {
+    lv_obj_delete(context.root);
   }
-  owner->root = replacement;
+  context.root = replacement;
   lv_obj_clear_flag(replacement, LV_OBJ_FLAG_HIDDEN);
 #ifndef NDEBUG
   assert_tree_in_safe_canvas(replacement);
 #endif
   return replacement;
+}
+
+lv_obj_t* navigation_overlay(UiContext& context, Rect bounds) {
+  if (!context_ready(context) || context.root == nullptr) return nullptr;
+  return ui::navigation_overlay(context.root, bounds);
 }
 
 }  // namespace ui

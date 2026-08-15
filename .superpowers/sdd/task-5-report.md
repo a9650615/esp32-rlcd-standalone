@@ -76,4 +76,21 @@ GREEN: ctest --test-dir build-host --output-on-failure
 GREEN: serialized forced UI target build; Built target __idf_ui
 GREEN: ./scripts/idf.sh build; Project build complete
 GREEN: git diff --check
+
+## Review fixes 2
+
+- Migrated page ownership from host user-data discovery to an explicit
+  caller-owned `UiContext` passed to `render_page()` and the context overload
+  of `navigation_overlay()`. `init_context()` registers a host delete hook;
+  `reset_context()` removes the hook, deletes the owned root, and clears all
+  fields. Host deletion clears the context without dereferencing or probing
+  arbitrary pointers. No process-global owner map remains.
+- Captured API-migration RED when the host geometry test referenced the missing
+  `UiContext` and `context_ready()` symbols. GREEN host verification then
+  passed after the API was added.
+- The serialized full firmware rebuild compiled the changed UI sources against
+  LVGL 9.3 and reported `Built target __idf_ui`; the final build completed with
+  `0x309d0` bytes and 94% factory-partition headroom. The UI component target
+  was also present in the forced target invocation; no UI source was linked to
+  `app_main` and no hardware was accessed.
 ```
