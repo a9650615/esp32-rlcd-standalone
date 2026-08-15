@@ -5,6 +5,7 @@
 
 #include <esp_log.h>
 #include <esp_random.h>
+#include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 
@@ -16,6 +17,13 @@ namespace {
 
 constexpr char kTag[] = "wifi_provision";
 constexpr char kPortalUrl[] = "http://192.168.4.1/";
+
+// Bounds how long "Connecting" can sit without any Wi-Fi event before it's
+// treated as a failed attempt. Association plus a DHCP lease normally
+// finishes in a couple of seconds; 15s gives a slow/congested AP headroom
+// without letting a silent hang (no event ever arriving - the exact way this
+// bug was originally triggered) stall the 5-retry budget forever.
+constexpr uint64_t kConnectTimeoutUs = 15 * 1000 * 1000ULL;
 
 app_core::AppSnapshot snapshot_;
 std::optional<wifi_config::StateMachine> state_machine_;
@@ -29,6 +37,7 @@ std::string portal_password_;
 DisconnectReason last_disconnect_reason_ = DisconnectReason::None;
 bool portal_active_ = false;
 SemaphoreHandle_t mutex_ = nullptr;
+esp_timer_handle_t connect_timeout_timer_ = nullptr;
 
 void lock() { xSemaphoreTake(mutex_, portMAX_DELAY); }
 void unlock() { xSemaphoreGive(mutex_); }
@@ -71,6 +80,8 @@ std::string status_for_state() {
           return "Wrong password - try again";
         case DisconnectReason::NotFound:
           return "Network not found - out of range";
+        case DisconnectReason::Timeout:
+          return "Connection timed out - try again";
         case DisconnectReason::Other:
           return "Could not connect - try again";
         case DisconnectReason::None:
@@ -86,11 +97,36 @@ bool error_for_state() {
         last_disconnect_reason_ != DisconnectReason::None;
 }
 
+// esp_timer callback (runs on the esp_timer task, not the LVGL thread) for a
+// Connecting attempt that never produced a wifi/ip event. Routes through the
+// same handle_wifi_disconnected() path as a real disconnect so the existing
+// retry bound and SetupAp fallback apply unchanged; DisconnectReason::Timeout
+// keeps it distinguishable from an actual 802.11 disconnect in the log and
+// status text.
+void connect_timeout_cb(void*) {
+  ESP_LOGW(kTag, "connect attempt timed out with no wifi event");
+  handle_wifi_disconnected(DisconnectReason::Timeout);
+}
+
 // Starts/stops the AP + portal to match the current state and republishes
 // the snapshot. Mutex must be held by the caller.
 void apply_state_and_publish() {
   using State = wifi_config::StateMachine::State;
   const State state = state_machine_->state();
+
+  if (state == State::Connecting) {
+    // (Re-)arm the bound on this attempt; stop first since starting an
+    // already-running one-shot timer is an error. Any transition out of
+    // Connecting (below) stops it instead.
+    esp_timer_stop(connect_timeout_timer_);
+    const esp_err_t err =
+        esp_timer_start_once(connect_timeout_timer_, kConnectTimeoutUs);
+    if (err != ESP_OK) {
+      ESP_LOGW(kTag, "esp_timer_start_once failed: %s", esp_err_to_name(err));
+    }
+  } else {
+    esp_timer_stop(connect_timeout_timer_);
+  }
 
   if (state == State::SetupAp) {
     if (!portal_active_) {
@@ -141,7 +177,14 @@ esp_err_t start(const app_core::AppSnapshot& snapshot) {
   mutex_ = xSemaphoreCreateMutex();
   if (mutex_ == nullptr) return ESP_ERR_NO_MEM;
 
-  esp_err_t result = nvs_store_init();
+  esp_timer_create_args_t timer_args{};
+  timer_args.callback = &connect_timeout_cb;
+  timer_args.dispatch_method = ESP_TIMER_TASK;
+  timer_args.name = "wifi_connect_timeout";
+  esp_err_t result = esp_timer_create(&timer_args, &connect_timeout_timer_);
+  if (result != ESP_OK) return result;
+
+  result = nvs_store_init();
   if (result != ESP_OK) return result;
 
   wifi_config::Credentials creds;

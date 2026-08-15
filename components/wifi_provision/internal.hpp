@@ -13,8 +13,12 @@
 
 namespace wifi_provision {
 
-// Why the STA link dropped, so the status text can be specific.
-enum class DisconnectReason { None, AuthFailure, NotFound, Other };
+// Why the STA link dropped, so the status text can be specific. Timeout is
+// locally-synthesised (no real 802.11 reason code exists for it) - see
+// wifi_provision.cpp's connect-timeout timer - so it stays a distinct value
+// rather than folding into Other, keeping the raw-reason log honest about
+// which kind of failure actually happened.
+enum class DisconnectReason { None, AuthFailure, NotFound, Timeout, Other };
 
 // Log-friendly name; shared by wifi_manager.cpp (raw event) and
 // wifi_provision.cpp (state-machine trail) so both sides agree on wording.
@@ -23,6 +27,7 @@ inline const char* to_string(DisconnectReason reason) {
     case DisconnectReason::None: return "None";
     case DisconnectReason::AuthFailure: return "AuthFailure";
     case DisconnectReason::NotFound: return "NotFound";
+    case DisconnectReason::Timeout: return "Timeout";
     case DisconnectReason::Other: return "Other";
   }
   return "Unknown";

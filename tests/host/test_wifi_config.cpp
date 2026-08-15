@@ -277,3 +277,20 @@ HOST_TEST(state_machine_reconnect_after_saving_credentials_then_disconnect) {
   }
   EXPECT_TRUE(machine.state() == StateMachine::State::SetupAp);
 }
+
+// wifi_provision.cpp's connect-timeout esp_timer (armed whenever this state
+// machine is Connecting; see apply_state_and_publish()) fires
+// handle_wifi_disconnected(DisconnectReason::Timeout) on expiry, which calls
+// this exact on_disconnected() - the state machine takes no reason
+// parameter, so a timed-out attempt counts against the retry budget exactly
+// like a real WIFI_EVENT_STA_DISCONNECTED does, and five of them (real or
+// timed-out) land in SetupAp the same way.
+HOST_TEST(state_machine_on_disconnected_is_reason_agnostic_five_reach_setup_ap) {
+  StateMachine machine(true);
+  for (int i = 0; i < StateMachine::kMaxRetries; ++i) {
+    EXPECT_TRUE(machine.state() == StateMachine::State::Connecting);
+    machine.on_disconnected();
+  }
+  EXPECT_TRUE(machine.state() == StateMachine::State::SetupAp);
+  EXPECT_EQ(machine.retries(), StateMachine::kMaxRetries);
+}
