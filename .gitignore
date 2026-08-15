@@ -14,3 +14,11 @@ __pycache__/
 .worktrees/
 
 .DS_Store
+
+# Project-local ESP-IDF toolchain and generated build/dependency state.
+.tools/
+build/
+build-host/
+managed_components/
+dependencies.lock
+sdkconfig
