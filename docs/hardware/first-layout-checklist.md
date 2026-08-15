@@ -51,3 +51,38 @@ Status: Partial pass; manual visual/button/recovery checks remain open
 - [ ] Enter ROM downloader by holding BOOT during power-on, run read-only `chip-id`, then boot normally.
 
 Do not mark the first layout slice fully accepted until every manual item above is checked. The next functional slice may be developed independently, but it must preserve this recovery and display regression checklist.
+
+## Wi-Fi provisioning
+
+Physical acceptance for `docs/superpowers/specs/2026-08-15-rlcd-wifi-provisioning.md`. Do not tick any item until observed on the physical board.
+
+- [ ] `CONFIG_LV_USE_QRCODE=y` firmware builds and the Setup page renders a QR code (not text-only fallback) on hardware.
+- [ ] Setup AP `RLCD-XXXXXX` is open (no password); a phone joins with no password prompt.
+- [ ] A phone camera scans the on-screen QR directly into a join prompt.
+- [ ] Android auto-prompts to open the captive portal after joining the AP.
+- [ ] iOS auto-prompts to open the captive portal after joining the AP.
+- [ ] Submitting a valid SSID/password on the settings page saves credentials and the board reaches `Connected` with an IP.
+- [ ] Submitting an invalid form re-shows the form with a readable inline error, no crash, no redirect loop.
+- [ ] Wrong password: board retries and falls back to the Setup page with a readable error.
+- [ ] AP out of range: board retries and falls back to the Setup page with a readable error.
+- [ ] Reboot with previously-good saved credentials reconnects with no AP/portal ever starting.
+- [ ] Reboot with no saved credentials starts directly in setup mode with no button gesture required.
+- [ ] KEY long press (~2 s) enters setup mode from normal operation.
+- [ ] KEY long press (~2 s) while already in setup mode exits it back toward normal operation.
+- [ ] KEY short press still moves Previous and BOOT short press still moves Next, unaffected by the long-press addition.
+- [ ] GPIO0 ROM-downloader recovery (hold BOOT during power-on) still works end to end after this slice.
+
+## System tray and battery
+
+Physical acceptance for `docs/superpowers/specs/2026-08-15-rlcd-system-tray-and-battery.md`. The Wi-Fi provisioning rows above predate the WPA2-PSK setup AP revision (see that spec's Decision 1) and are left unchanged here; the QR/WPA2 rows below supersede them for physical acceptance going forward. Do not tick any item until observed on the physical board.
+
+- [ ] The Setup page QR at its current on-screen size scans reliably from a phone camera at normal arm's-length distance, under normal room lighting, on the reflective (non-backlit) panel.
+- [ ] Scanning the QR joins the phone to the WPA2-PSK setup AP directly (no separate manual password entry), and the joined network shows WPA2 security in the phone's Wi-Fi settings, not open/none.
+- [ ] Android auto-prompts to open the captive portal after joining the WPA2 setup AP.
+- [ ] iOS auto-prompts to open the captive portal after joining the WPA2 setup AP.
+- [ ] The system tray (time / network status / battery) is legible at normal desk viewing distance on TaiwanMarket, UsMarket, Weather, Indoor, and Setup.
+- [ ] Home shows no system tray and keeps its full-height Clock Hero, with no leftover tray-band artifact from an adjacent page.
+- [ ] Battery percentage shown in the tray is within a reasonable margin of a multimeter reading taken across the installed cell's terminals.
+- [ ] The `CONFIG_BATTERY_CALIBRATION_PERMILLE` calibration step (reported mV vs. multimeter mV, per the spec's Calibration procedure) has been performed at least once on this board and its resulting value recorded.
+- [ ] After installing the cell and connecting Type-C first to start the power path, the board continues running normally once Type-C is unplugged (battery-only operation).
+- [ ] Watching the panel across a battery sample (30 s cadence) shows no visible full-screen repaint/flash attributable to the battery publish alone.

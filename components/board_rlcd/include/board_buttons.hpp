@@ -14,7 +14,7 @@
 
 namespace board {
 
-enum class ButtonEvent : uint8_t { Next, Previous };
+enum class ButtonEvent : uint8_t { Next, Previous, EnterSetup };
 
 // A dependency-free active-low debounce filter. Call sample() once per 10 ms.
 class ButtonFilter {
@@ -25,6 +25,12 @@ class ButtonFilter {
       kStableThresholdMs / kSamplePeriodMs;
   static_assert(kStableSamples == 3, "button debounce must remain 30 ms");
 
+  // KEY-only long press: held this long opens/closes Wi-Fi setup mode.
+  static constexpr uint32_t kLongPressMs = 2000;
+  static constexpr std::size_t kLongPressSamples =
+      kLongPressMs / kSamplePeriodMs;
+  static_assert(kLongPressSamples == 200, "long press threshold must remain 2000 ms");
+
   struct Events {
     std::array<ButtonEvent, 2> events{};
     std::size_t count = 0;
@@ -33,8 +39,20 @@ class ButtonFilter {
   // key_active_low and boot_active_low are true while their pins read low.
   Events sample(bool key_active_low, bool boot_active_low) {
     Events events;
-    update(key_, key_active_low, ButtonEvent::Previous, events);
+    update(key_, key_active_low, ButtonEvent::Previous, events, &key_long_press_fired_);
     update(boot_, boot_active_low, ButtonEvent::Next, events);
+
+    if (key_.stable_pressed) {
+      if (key_held_samples_ < kLongPressSamples) {
+        ++key_held_samples_;
+        if (key_held_samples_ == kLongPressSamples && events.count < events.events.size()) {
+          events.events[events.count++] = ButtonEvent::EnterSetup;
+          key_long_press_fired_ = true;
+        }
+      }
+    } else {
+      key_held_samples_ = 0;
+    }
     return events;
   }
 
@@ -45,8 +63,10 @@ class ButtonFilter {
     std::size_t candidate_samples = 0;
   };
 
+  // suppress_release, when non-null, skips the release event exactly once
+  // (used so a fired long press doesn't also emit the short-press event).
   static void update(State& state, bool pressed, ButtonEvent event,
-                     Events& events) {
+                     Events& events, bool* suppress_release = nullptr) {
     if (pressed == state.stable_pressed) {
       state.candidate_samples = 0;
       return;
@@ -67,12 +87,19 @@ class ButtonFilter {
     state.stable_pressed = state.candidate_pressed;
     state.candidate_samples = 0;
     if (was_pressed && !state.stable_pressed && events.count < events.events.size()) {
-      events.events[events.count++] = event;
+      if (suppress_release == nullptr || !*suppress_release) {
+        events.events[events.count++] = event;
+      }
+      if (suppress_release != nullptr) {
+        *suppress_release = false;
+      }
     }
   }
 
   State key_;
   State boot_;
+  std::size_t key_held_samples_ = 0;
+  bool key_long_press_fired_ = false;
 };
 
 #ifdef ESP_PLATFORM

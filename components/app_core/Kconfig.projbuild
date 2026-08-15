@@ -3,3 +3,12 @@ config DEMO_MISSING_PAGE
     default n
     help
         Remove the weather page from the deterministic demo registry.
+
+config BATTERY_CALIBRATION_PERMILLE
+    int "Battery divider calibration (permille of the nominal 3x divider)"
+    default 1000
+    help
+        Real dividers run a few percent off nominal. To calibrate: read the
+        reported battery millivolts, measure the actual cell voltage with a
+        multimeter across the battery terminals, then set this to
+        1000 * multimeter_mV / reported_mV. 1000 applies no trim.

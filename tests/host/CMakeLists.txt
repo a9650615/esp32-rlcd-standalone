@@ -14,14 +14,19 @@ add_executable(host_tests
     test_button_filter.cpp
     test_ui_theme.cpp
     test_ui_data.cpp
+    test_setup_page.cpp
+    test_wifi_config.cpp
+    test_battery.cpp
     ../../components/app_core/app_snapshot.cpp
     ../../components/app_core/page_registry.cpp
     ../../components/app_core/carousel_controller.cpp
+    ../../components/wifi_config/wifi_config.cpp
 )
 target_include_directories(host_tests PRIVATE
     ../../components/app_core/include
     ../../components/board_rlcd/include
     ../../components/ui/include
+    ../../components/wifi_config/include
 )
 if(HOST_DEMO_MISSING_PAGE)
     target_compile_definitions(host_tests PRIVATE APP_CORE_DEMO_MISSING_PAGE=1)

@@ -3,6 +3,7 @@ idf_component_register(
         "display_port.cpp"
         "lvgl_port.cpp"
         "board_buttons.cpp"
+        "battery.cpp"
     INCLUDE_DIRS
         "include"
     PRIV_REQUIRES
@@ -12,6 +13,8 @@ idf_component_register(
         esp_hw_support
         heap
         spi_flash
+        esp_adc
+        app_core
     REQUIRES
         lvgl__lvgl
 )

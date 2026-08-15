@@ -1,0 +1,19 @@
+idf_component_register(
+    SRCS
+        "wifi_provision.cpp"
+        "nvs_store.cpp"
+        "wifi_manager.cpp"
+        "portal.cpp"
+        "dns_server.c"
+    INCLUDE_DIRS
+        "include"
+    PRIV_REQUIRES
+        app_core
+        wifi_config
+        ui
+        nvs_flash
+        esp_wifi
+        esp_netif
+        esp_event
+        esp_http_server
+)

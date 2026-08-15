@@ -1,6 +1,7 @@
 #include "ui_app.hpp"
 
 #include <cstdio>
+#include <cstring>
 #include <string>
 
 namespace ui {
@@ -15,8 +16,25 @@ void context_host_deleted(lv_event_t* event) {
   context->host = nullptr;
   context->root = nullptr;
   context->clock_label = nullptr;
+  context->network_label = nullptr;
+  context->battery_label = nullptr;
+  context->setup_status_label = nullptr;
   context->staging_clock_label = nullptr;
+  context->staging_network_label = nullptr;
+  context->staging_battery_label = nullptr;
+  context->staging_setup_status_label = nullptr;
   context->initialized = false;
+}
+
+// Compares against the label's current text and skips lv_label_set_text
+// entirely when unchanged - lv_label_set_text always reallocates and
+// invalidates even when passed a byte-identical string, so this comparison
+// is what actually makes an unchanged value cost no redraw at all.
+void set_label_text_if_changed(lv_obj_t* label_obj, const char* text) {
+  if (label_obj == nullptr || text == nullptr) return;
+  const char* current = lv_label_get_text(label_obj);
+  if (current != nullptr && std::strcmp(current, text) == 0) return;
+  lv_label_set_text(label_obj, text);
 }
 
 #ifndef NDEBUG
@@ -66,7 +84,13 @@ bool init_context(UiContext& context, lv_obj_t* host) {
   context.host = host;
   context.root = nullptr;
   context.clock_label = nullptr;
+  context.network_label = nullptr;
+  context.battery_label = nullptr;
+  context.setup_status_label = nullptr;
   context.staging_clock_label = nullptr;
+  context.staging_network_label = nullptr;
+  context.staging_battery_label = nullptr;
+  context.staging_setup_status_label = nullptr;
   context.initialized = true;
   lv_obj_add_event_cb(host, context_host_deleted, LV_EVENT_DELETE, &context);
   return true;
@@ -79,12 +103,21 @@ void reset_context(UiContext& context) {
   }
   if (context.root != nullptr) {
     context.clock_label = nullptr;
+    context.network_label = nullptr;
+    context.battery_label = nullptr;
+    context.setup_status_label = nullptr;
     lv_obj_delete(context.root);
   }
   context.host = nullptr;
   context.root = nullptr;
   context.clock_label = nullptr;
+  context.network_label = nullptr;
+  context.battery_label = nullptr;
+  context.setup_status_label = nullptr;
   context.staging_clock_label = nullptr;
+  context.staging_network_label = nullptr;
+  context.staging_battery_label = nullptr;
+  context.staging_setup_status_label = nullptr;
   context.initialized = false;
 }
 
@@ -157,25 +190,32 @@ void render_market_sidebar(lv_obj_t* parent,
   divider(parent, {bounds.x, weather.bottom(), bounds.width, kSeparatorWidth});
 }
 
-void render_mast(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
+void render_tray(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
                  Rect bounds, UiContext* context) {
+  const SystemTrayLayout cells = system_tray_layout(bounds);
   const std::string clock = format_minute_clock(snapshot.clock.hero);
-  const std::string source = compact_clock_source(snapshot.clock.source);
-  char indoor_summary[32];
-  std::snprintf(indoor_summary, sizeof(indoor_summary), "%.1f  %u%%",
-                snapshot.indoor.temperature_c,
-                snapshot.indoor.humidity_percent);
   lv_obj_t* clock_label =
-      label(parent, clock.c_str(), {bounds.x, bounds.y, 60, 25}, medium_font(),
+      label(parent, clock.c_str(), cells.time, medium_font(),
             LV_TEXT_ALIGN_LEFT);
   if (context != nullptr) context->staging_clock_label = clock_label;
-  label(parent, source.c_str(), {bounds.x + 64, bounds.y + 3, 155, 18},
-        small_font());
-  label(parent, "Wi-Fi OFF", {bounds.x + 221, bounds.y + 3, 70, 18},
-        small_font());
-  label(parent, indoor_summary,
-        {bounds.x + 294, bounds.y + 3, bounds.width - 294, 18}, small_font(),
-        LV_TEXT_ALIGN_RIGHT);
+
+  const std::string network_text = tray_network_text(snapshot.setup);
+  lv_obj_t* network_label = label(parent, network_text.c_str(), cells.network,
+                                  small_font(), LV_TEXT_ALIGN_CENTER);
+  if (context != nullptr) context->staging_network_label = network_label;
+
+  // Unread battery (valid == false) renders a blank cell rather than a
+  // misleading "0%" - the board may simply not have sampled it yet. The
+  // label is always created (even when blank) so its lv_obj_t* pointer stays
+  // valid for the label-only repaint path: a later battery sample just
+  // changes this label's text, no page rebuild.
+  const std::string battery_text = tray_battery_text(snapshot.battery);
+  lv_obj_t* battery_label = label(parent, battery_text.c_str(), cells.battery,
+                                  small_font(), LV_TEXT_ALIGN_RIGHT);
+  if (context != nullptr) context->staging_battery_label = battery_label;
+
+  divider(parent, {bounds.x, bounds.y + kSystemTrayHeight, bounds.width,
+                   kSeparatorWidth});
 }
 
 lv_obj_t* render_page(UiContext& context,
@@ -206,27 +246,43 @@ lv_obj_t* render_page(UiContext& context,
 
   const Rect local_bounds{0, 0, bounds.width, bounds.height};
   context.staging_clock_label = nullptr;
+  context.staging_network_label = nullptr;
+  context.staging_battery_label = nullptr;
+  context.staging_setup_status_label = nullptr;
+
+  // Single site that decides whether a page carries the tray and, if so,
+  // reserves its height - every renderer below just gets `content` and
+  // never hand-tunes its own top offset.
+  if (page_shows_tray(page)) {
+    render_tray(replacement, snapshot,
+               {0, 0, local_bounds.width, kSystemTrayHeight}, &context);
+  }
+  const Rect content = content_bounds(local_bounds, page);
 
   switch (page) {
     case app_core::PageId::TaiwanMarket:
-      render_market(replacement, snapshot, snapshot.taiwan_market, local_bounds,
+      render_market(replacement, snapshot, snapshot.taiwan_market, content,
                     page_index, page_count, false, &context);
       break;
     case app_core::PageId::UsMarket:
-      render_market(replacement, snapshot, snapshot.us_market, local_bounds,
+      render_market(replacement, snapshot, snapshot.us_market, content,
                     page_index, page_count, true, &context);
       break;
     case app_core::PageId::Weather:
-      render_weather(replacement, snapshot, local_bounds, page_index, page_count,
+      render_weather(replacement, snapshot, content, page_index, page_count,
                      &context);
       break;
     case app_core::PageId::Indoor:
-      render_indoor(replacement, snapshot, local_bounds, page_index, page_count,
+      render_indoor(replacement, snapshot, content, page_index, page_count,
                     &context);
+      break;
+    case app_core::PageId::Setup:
+      render_setup(replacement, snapshot, content, page_index, page_count,
+                   &context);
       break;
     case app_core::PageId::Home:
     default:
-      render_home(replacement, snapshot, local_bounds, page_index, page_count,
+      render_home(replacement, snapshot, content, page_index, page_count,
                   &context);
       break;
   }
@@ -234,11 +290,20 @@ lv_obj_t* render_page(UiContext& context,
   lv_obj_delete(staging_screen);
   if (context.root != nullptr && context.root != replacement) {
     context.clock_label = nullptr;
+    context.network_label = nullptr;
+    context.battery_label = nullptr;
+    context.setup_status_label = nullptr;
     lv_obj_delete(context.root);
   }
   context.root = replacement;
   context.clock_label = context.staging_clock_label;
+  context.network_label = context.staging_network_label;
+  context.battery_label = context.staging_battery_label;
+  context.setup_status_label = context.staging_setup_status_label;
   context.staging_clock_label = nullptr;
+  context.staging_network_label = nullptr;
+  context.staging_battery_label = nullptr;
+  context.staging_setup_status_label = nullptr;
   lv_obj_clear_flag(replacement, LV_OBJ_FLAG_HIDDEN);
 #ifndef NDEBUG
   assert_tree_in_safe_canvas(replacement);
@@ -249,7 +314,21 @@ lv_obj_t* render_page(UiContext& context,
 bool update_visible_clock(UiContext& context,
                           const app_core::AppSnapshot& snapshot) {
   if (!context_ready(context) || context.clock_label == nullptr) return false;
-  lv_label_set_text(context.clock_label, snapshot.clock.hero.c_str());
+  set_label_text_if_changed(context.clock_label,
+                            format_minute_clock(snapshot.clock.hero).c_str());
+  return true;
+}
+
+bool update_visible_fields(UiContext& context,
+                           const app_core::AppSnapshot& snapshot) {
+  if (!context_ready(context)) return false;
+  update_visible_clock(context, snapshot);
+  set_label_text_if_changed(context.network_label,
+                            tray_network_text(snapshot.setup).c_str());
+  set_label_text_if_changed(context.battery_label,
+                            tray_battery_text(snapshot.battery).c_str());
+  set_label_text_if_changed(context.setup_status_label,
+                            setup_status_text(snapshot.setup.status).c_str());
   return true;
 }
 

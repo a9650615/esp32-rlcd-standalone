@@ -52,6 +52,20 @@ constexpr bool within_safe_canvas(const Rect rect) {
          rect.width >= 0 && rect.height >= 0;
 }
 
+// General-purpose rect predicates used by static_assert layout proofs
+// (ui_data.hpp) as well as host tests.
+constexpr bool rect_within(const Rect outer, const Rect inner) {
+  return inner.x >= outer.x && inner.y >= outer.y &&
+         inner.right() <= outer.right() && inner.bottom() <= outer.bottom();
+}
+
+// Named rects_intersect (not rects_overlap) to avoid an ADL clash with the
+// unrelated local helper of that name in tests/host/test_setup_page.cpp.
+constexpr bool rects_intersect(const Rect a, const Rect b) {
+  return a.x < b.right() && b.x < a.right() && a.y < b.bottom() &&
+        b.y < a.bottom();
+}
+
 constexpr std::array<Rect, 3> right_tile_cells(const Rect bounds) {
   const int cell_height =
       (bounds.height - 2 * kSeparatorWidth) / 3;

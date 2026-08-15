@@ -7,6 +7,7 @@ idf_component_register(
         "render_market.cpp"
         "render_weather.cpp"
         "render_indoor.cpp"
+        "render_setup.cpp"
     INCLUDE_DIRS
         "include"
     REQUIRES

@@ -13,6 +13,7 @@
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
+#include <freertos/semphr.h>
 #include <lvgl.h>
 
 #include "board_buttons.hpp"
@@ -38,9 +39,50 @@ struct Runtime {
   lv_timer_t* timer = nullptr;
   uint32_t cycle = 0;
   bool initialized = false;
+  // Tracks whether the Setup page (rather than a carousel page) is the last
+  // thing rendered, so entering/leaving setup mode triggers exactly one
+  // atomic page replacement instead of one every 100 ms tick.
+  bool showing_setup = false;
 };
 
 Runtime g_runtime;
+
+// Mutex-guarded handoff from any FreeRTOS task (publish_snapshot) to the
+// LVGL-thread timer (consume_published). No lv_* call ever happens while
+// holding this mutex. Created in start(), matching lvgl_port's
+// lazy-in-init-function mutex pattern rather than a global-constructor-time
+// heap allocation.
+SemaphoreHandle_t g_publish_mutex = nullptr;
+app_core::AppSnapshot g_published_snapshot;
+bool g_published_dirty = false;
+
+void (*g_setup_gesture_handler)() = nullptr;
+
+// The subset of AppSnapshot that non-UI FreeRTOS tasks (wifi_provision,
+// the battery monitor) actually publish. Deliberately excludes
+// clock/weather/market/indoor, which are computed on the LVGL thread itself
+// (see update_clock) - overwriting them from a stale published copy would
+// clobber live UI-owned state with whatever wifi_provision's own local
+// AppSnapshot mirror happened to hold at publish time.
+struct PublishedFields {
+  app_core::SetupData setup;
+  app_core::BatteryData battery;
+};
+
+// Non-blocking: if the mutex is momentarily held by a concurrent publish,
+// this simply tries again on the next 100 ms tick.
+bool consume_published(PublishedFields& out) {
+  if (g_publish_mutex == nullptr) return false;
+  if (xSemaphoreTake(g_publish_mutex, 0) != pdTRUE) return false;
+  const bool dirty = g_published_dirty;
+  if (dirty) {
+    out.setup = g_published_snapshot.setup;
+    out.battery = g_published_snapshot.battery;
+    g_published_dirty = false;
+  }
+  xSemaphoreGive(g_publish_mutex);
+  return dirty;
+}
 
 const char* page_name(app_core::PageId page) {
   switch (page) {
@@ -54,6 +96,8 @@ const char* page_name(app_core::PageId page) {
       return "Weather";
     case app_core::PageId::Indoor:
       return "Indoor";
+    case app_core::PageId::Setup:
+      return "Setup";
   }
   return "Unknown";
 }
@@ -216,10 +260,32 @@ void timer_callback(lv_timer_t* timer) {
 
   if (!runtime->initialized) return;
 
+  PublishedFields published;
+  const bool published_updated = consume_published(published);
+  if (published_updated) {
+    runtime->snapshot.setup = published.setup;
+    runtime->snapshot.battery = published.battery;
+  }
+
+  // Set whenever a genuine page-identity change forces a full atomic
+  // render_page/render_current rebuild this tick (entering/leaving Setup, or
+  // a normal carousel transition). When that happens the fresh page root
+  // already reflects the latest snapshot, so the label-only path below is
+  // skipped entirely - a battery sample or status update on an otherwise
+  // unchanged page must never cost a full repaint on this reflective panel.
+  bool page_rebuilt = false;
+
   QueueHandle_t queue = board::button_event_queue();
   if (queue != nullptr) {
     board::ButtonEvent event;
     while (xQueueReceive(queue, &event, 0) == pdTRUE) {
+      if (event == board::ButtonEvent::EnterSetup) {
+        if (g_setup_gesture_handler != nullptr) g_setup_gesture_handler();
+        continue;
+      }
+      // The Setup page owns the screen while active; carousel navigation is
+      // suspended until snapshot.setup.active goes false again.
+      if (runtime->snapshot.setup.active) continue;
       const bool next = event == board::ButtonEvent::Next;
       const char* reason = next ? "manual-boot" : "manual-key";
       ESP_LOGI(kTag, "button event=%s", next ? "BOOT" : "KEY");
@@ -233,35 +299,71 @@ void timer_callback(lv_timer_t* timer) {
       runtime->carousel = transition.state;
       if (transition.page_changed) {
         (void)render_current(*runtime, reason, true);
+        page_rebuilt = true;
       }
     }
   }
 
-  const app_core::PageId current_page =
-      runtime->active_pages[runtime->carousel.index];
-  const auto transition = app_core::carousel::tick(
-      runtime->carousel, now_ms, dwell_for(*runtime, current_page),
-      runtime->active_pages.size());
-  const bool manual_timeout = runtime->carousel.manual_mode &&
-                              transition.page_changed &&
-                              !transition.state.manual_mode;
-  const bool wrapped =
-      transition.page_changed && !runtime->carousel.manual_mode &&
-      runtime->carousel.index + 1 >= runtime->active_pages.size() &&
-      transition.state.index == 0;
-  runtime->carousel = transition.state;
-  if (transition.page_changed) {
-    if (wrapped) begin_cycle(*runtime, now_ms);
-    (void)render_current(*runtime,
-                         wrapped ? "cycle" :
-                                    (manual_timeout ? "manual-timeout" : "auto"),
-                         false);
+  if (!runtime->snapshot.setup.active) {
+    const app_core::PageId current_page =
+        runtime->active_pages[runtime->carousel.index];
+    const auto transition = app_core::carousel::tick(
+        runtime->carousel, now_ms, dwell_for(*runtime, current_page),
+        runtime->active_pages.size());
+    const bool manual_timeout = runtime->carousel.manual_mode &&
+                                transition.page_changed &&
+                                !transition.state.manual_mode;
+    const bool wrapped =
+        transition.page_changed && !runtime->carousel.manual_mode &&
+        runtime->carousel.index + 1 >= runtime->active_pages.size() &&
+        transition.state.index == 0;
+    runtime->carousel = transition.state;
+    if (transition.page_changed) {
+      if (wrapped) begin_cycle(*runtime, now_ms);
+      (void)render_current(*runtime,
+                           wrapped ? "cycle" :
+                                      (manual_timeout ? "manual-timeout" : "auto"),
+                           false);
+      page_rebuilt = true;
+    }
   }
+
+  // Entering/leaving Setup is the one Setup-related event that still gets a
+  // full atomic page-replacement (render_page via render_current/render_page
+  // directly): the page identity itself changed. Any other Setup-active
+  // publish (a status update, a battery sample) falls through to the
+  // label-only path below instead of rebuilding.
+  if (runtime->snapshot.setup.active) {
+    if (!runtime->showing_setup) {
+      const lv_obj_t* rendered = render_page(
+          runtime->context, runtime->snapshot, app_core::PageId::Setup,
+          safe_canvas(), 0, 0);
+      if (rendered == nullptr) {
+        ESP_LOGE(kTag, "renderer failure page=Setup");
+      }
+      page_rebuilt = true;
+    }
+  } else if (runtime->showing_setup) {
+    // Resume exactly where a normal page transition would land: same
+    // carousel index, dwell timer restarted fresh from this instant.
+    runtime->carousel.page_started_ms = now_ms;
+    (void)render_current(*runtime, "setup-exit", false);
+    page_rebuilt = true;
+  }
+  runtime->showing_setup = runtime->snapshot.setup.active;
 
   const uint64_t before_minute = runtime->last_clock_minute;
   update_clock(*runtime, now_ms);
-  if (runtime->last_clock_minute != before_minute && runtime->initialized) {
-    (void)update_visible_clock(runtime->context, runtime->snapshot);
+  const bool clock_minute_changed = runtime->last_clock_minute != before_minute;
+
+  // Label-only repaint path: a page-identity change already redrew
+  // everything this tick (page_rebuilt), so only reach here otherwise. Any
+  // other publish (Setup status, battery, network) or a minute rollover
+  // updates just the label(s) whose text differs - see
+  // update_visible_fields/set_label_text_if_changed - never a page rebuild.
+  if (!page_rebuilt && runtime->initialized &&
+      (published_updated || clock_minute_changed)) {
+    (void)update_visible_fields(runtime->context, runtime->snapshot);
   }
 }
 
@@ -278,6 +380,8 @@ bool start(const app_core::AppSnapshot& snapshot,
   g_runtime.initialized = false;
   g_runtime.active_pages.clear();
   g_runtime.cycle = 0;
+  g_runtime.showing_setup = false;
+  if (g_publish_mutex == nullptr) g_publish_mutex = xSemaphoreCreateMutex();
   if (!board::lvgl_lock(1000)) {
     ESP_LOGE(kTag, "fatal: unable to acquire LVGL lock for UI timer");
     return false;
@@ -301,6 +405,18 @@ bool start(const app_core::AppSnapshot& snapshot,
   }
   ESP_LOGI(kTag, "UI timer started period_ms=%u", kTimerPeriodMs);
   return true;
+}
+
+void publish_snapshot(const app_core::AppSnapshot& snapshot) {
+  if (g_publish_mutex == nullptr) return;
+  if (xSemaphoreTake(g_publish_mutex, portMAX_DELAY) != pdTRUE) return;
+  g_published_snapshot = snapshot;
+  g_published_dirty = true;
+  xSemaphoreGive(g_publish_mutex);
+}
+
+void set_setup_gesture_handler(void (*handler)()) {
+  g_setup_gesture_handler = handler;
 }
 
 }  // namespace ui

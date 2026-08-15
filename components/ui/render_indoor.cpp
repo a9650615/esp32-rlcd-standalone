@@ -49,12 +49,9 @@ void mini_history(lv_obj_t* parent, const Rect bounds,
 void render_indoor(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
                    Rect bounds, std::size_t page_index,
                    std::size_t page_count, UiContext* context) {
+  (void)context;
   apply_surface(parent);
-  render_mast(parent, snapshot, {bounds.x, bounds.y, bounds.width, 28}, context);
-
-  const Rect body{bounds.x, bounds.y + 28, bounds.width,
-                  std::max(1, bounds.height - 28 - 8)};
-  const MarketLayout layout = market_layout(body);
+  const MarketLayout layout = market_layout(bounds);
   const Rect primary = layout.primary;
   label(parent, "INDOOR", {primary.x + 8, primary.y + 5, 100, 18}, small_font());
   char temperature[24];

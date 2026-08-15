@@ -1,9 +1,11 @@
 #include "app_snapshot.hpp"
+#include "battery.hpp"
 #include "board_buttons.hpp"
 #include "board_pins.hpp"
 #include "display_port.hpp"
 #include "lvgl_port.hpp"
 #include "ui_app.hpp"
+#include "wifi_provision.hpp"
 
 #include <cstdio>
 #include <cstring>
@@ -101,6 +103,22 @@ bool read_rtc(app_core::RtcDateTime& clock) {
   for (;;) vTaskDelay(pdMS_TO_TICKS(1000));
 }
 
+constexpr uint32_t kBatterySamplePeriodMs = 30'000;
+
+// Samples the battery divider roughly every 30 s and publishes it through
+// wifi_provision's existing snapshot owner; never touches lv_* directly.
+[[noreturn]] void battery_monitor_task(void*) {
+  for (;;) {
+    app_core::BatteryData battery;
+    if (board::battery_read(battery)) {
+      wifi_provision::set_battery(battery);
+    } else {
+      ESP_LOGW(kTag, "battery ADC read failed");
+    }
+    vTaskDelay(pdMS_TO_TICKS(kBatterySamplePeriodMs));
+  }
+}
+
 }  // namespace
 
 extern "C" void app_main() {
@@ -137,4 +155,18 @@ extern "C" void app_main() {
     fatal_loop("UI lifecycle initialization failed", ESP_FAIL);
   }
   ESP_LOGI(kTag, "startup diagnostics registry=ready cycle=1");
+
+  ui::set_setup_gesture_handler(&wifi_provision::toggle_setup);
+  result = wifi_provision::start(snapshot);
+  if (result != ESP_OK) {
+    // Non-fatal: the carousel already runs standalone without Wi-Fi.
+    ESP_LOGE(kTag, "Wi-Fi provisioning startup failed: %s",
+             esp_err_to_name(result));
+  }
+
+  if (xTaskCreate(&battery_monitor_task, "battery_monitor", 3072, nullptr,
+                  tskIDLE_PRIORITY + 1, nullptr) != pdPASS) {
+    // Non-fatal: the carousel and Wi-Fi already run without battery data.
+    ESP_LOGE(kTag, "battery monitor task creation failed");
+  }
 }

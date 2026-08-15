@@ -19,26 +19,26 @@ bool rainy(const std::string& condition) {
 void render_weather(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
                     Rect bounds, std::size_t page_index,
                     std::size_t page_count, UiContext* context) {
+  (void)context;
   apply_surface(parent);
-  render_mast(parent, snapshot, {bounds.x, bounds.y, bounds.width, 28}, context);
-
-  const Rect body{bounds.x, bounds.y + 28, bounds.width,
-                  std::max(1, bounds.height - 28 - 8)};
   const auto& current = snapshot.weather.current;
-  weather_icon(parent, {body.x + 8, body.y + 8, 34, 31}, rainy(current.condition));
+  weather_icon(parent, {bounds.x + 8, bounds.y + 8, 34, 31},
+              rainy(current.condition));
   label(parent, current.condition.c_str(),
-        {body.x + 52, body.y + 4, 170, 35}, hero_font());
+        {bounds.x + 52, bounds.y + 4, 170, 35}, hero_font());
   label(parent, current.location.c_str(),
-        {body.x + 54, body.y + 41, 145, 20}, medium_font());
+        {bounds.x + 54, bounds.y + 41, 145, 20}, medium_font());
   char current_line[48];
   std::snprintf(current_line, sizeof(current_line), "%.1f C   RAIN %u%%",
                 current.temperature_c, current.rain_probability_percent);
-  label(parent, current_line, {body.x + 205, body.y + 42, body.width - 213, 20},
-        small_font(), LV_TEXT_ALIGN_RIGHT);
-  divider(parent, {body.x + 8, body.y + 70, body.width - 16, kSeparatorWidth});
+  label(parent, current_line,
+        {bounds.x + 205, bounds.y + 42, bounds.width - 213, 20}, small_font(),
+        LV_TEXT_ALIGN_RIGHT);
+  divider(parent, {bounds.x + 8, bounds.y + 70, bounds.width - 16,
+                   kSeparatorWidth});
 
-  const Rect forecast{body.x + 8, body.y + 82, body.width - 16,
-                      std::max(1, body.bottom() - body.y - 82)};
+  const Rect forecast{bounds.x + 8, bounds.y + 82, bounds.width - 16,
+                      std::max(1, bounds.bottom() - bounds.y - 82)};
   const auto columns = forecast_columns(forecast);
   for (std::size_t index = 0; index < columns.size(); ++index) {
     const Rect column = columns[index];

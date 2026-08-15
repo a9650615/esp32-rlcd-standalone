@@ -15,3 +15,8 @@ CONFIG_LV_FONT_MONTSERRAT_14=y
 CONFIG_LV_FONT_MONTSERRAT_20=y
 CONFIG_LV_FONT_MONTSERRAT_28=y
 CONFIG_LV_FONT_MONTSERRAT_48=y
+CONFIG_LV_USE_QRCODE=y
+# Wi-Fi setup portal: open captive AP + a 2-field HTTP form, no long POST
+# bodies expected, but LWIP's default socket count is tight once the DNS
+# responder's UDP socket and the setup AP's client join the HTTP listener.
+CONFIG_LWIP_MAX_SOCKETS=16

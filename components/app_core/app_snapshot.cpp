@@ -1,7 +1,33 @@
 #include "app_snapshot.hpp"
 
+#ifdef ESP_PLATFORM
+#include "sdkconfig.h"
+#endif
+
+// Real dividers run several percent off nominal. To calibrate: read the
+// reported millivolts (setup tray / log), measure the actual cell voltage
+// with a multimeter across the battery terminals, then set
+// CONFIG_BATTERY_CALIBRATION_PERMILLE = 1000 * multimeter_mV / reported_mV
+// via `idf.py menuconfig` (Battery sensing). Defaults to 1000 (no trim); the
+// host build always uses the untrimmed default so this stays pure/testable.
+#ifndef CONFIG_BATTERY_CALIBRATION_PERMILLE
+#define CONFIG_BATTERY_CALIBRATION_PERMILLE 1000
+#endif
+
 namespace app_core {
 namespace {
+
+struct BatteryBreakpoint {
+  int millivolts;
+  uint8_t percent;
+};
+
+// Single-cell Li-ion discharge curve, highest voltage first.
+constexpr BatteryBreakpoint kBatteryCurve[] = {
+    {4200, 100}, {4060, 90}, {3980, 80}, {3920, 70}, {3870, 60},
+    {3820, 50},  {3790, 40}, {3700, 30}, {3620, 20}, {3500, 10},
+    {3300, 5},   {3000, 0},
+};
 
 bool decode_bcd(uint8_t value, uint8_t mask, uint8_t maximum,
                 uint8_t& decoded) {
@@ -133,6 +159,38 @@ bool decode_pcf85063(const uint8_t* registers, std::size_t length,
   decoded = {full_year, month, day,
              hour, minute, second};
   return true;
+}
+
+int battery_millivolts_scaled(int adc_millivolts, int calibration_permille) {
+  return adc_millivolts * 3 * calibration_permille / 1000;
+}
+
+int battery_millivolts(int adc_millivolts) {
+  return battery_millivolts_scaled(adc_millivolts,
+                                   CONFIG_BATTERY_CALIBRATION_PERMILLE);
+}
+
+bool battery_reading_valid(int millivolts) {
+  return millivolts >= kBatteryValidThresholdMillivolts;
+}
+
+uint8_t battery_percent(int millivolts) {
+  constexpr std::size_t last =
+      sizeof(kBatteryCurve) / sizeof(kBatteryCurve[0]) - 1;
+  if (millivolts >= kBatteryCurve[0].millivolts) return kBatteryCurve[0].percent;
+  if (millivolts <= kBatteryCurve[last].millivolts) {
+    return kBatteryCurve[last].percent;
+  }
+  for (std::size_t index = 0; index < last; ++index) {
+    const BatteryBreakpoint& hi = kBatteryCurve[index];
+    const BatteryBreakpoint& lo = kBatteryCurve[index + 1];
+    if (millivolts > hi.millivolts || millivolts < lo.millivolts) continue;
+    const double span = hi.millivolts - lo.millivolts;
+    const double frac = (millivolts - lo.millivolts) / span;
+    return static_cast<uint8_t>(
+        lo.percent + frac * (hi.percent - lo.percent) + 0.5);
+  }
+  return 0;  // unreachable: breakpoints cover [3000, 4200] contiguously.
 }
 
 AppSnapshot make_mock_snapshot(DemoScenario scenario) {

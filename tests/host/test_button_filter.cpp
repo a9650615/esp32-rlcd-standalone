@@ -81,3 +81,80 @@ HOST_TEST(button_simultaneous_release_reports_both_once_in_pin_order) {
                 {ButtonEvent::Previous, ButtonEvent::Next});
   expect_events(filter.sample(false, false), {});
 }
+
+HOST_TEST(button_key_short_release_still_emits_previous) {
+  ButtonFilter filter;
+
+  for (int sample = 0; sample < 3; ++sample) {
+    expect_events(filter.sample(true, false), {});
+  }
+  for (int sample = 0; sample < 10; ++sample) {
+    expect_events(filter.sample(true, false), {});
+  }
+  for (int sample = 0; sample < 2; ++sample) {
+    expect_events(filter.sample(false, false), {});
+  }
+  expect_events(filter.sample(false, false), {ButtonEvent::Previous});
+  expect_events(filter.sample(false, false), {});
+}
+
+HOST_TEST(button_key_long_press_fires_once_then_suppresses_release_previous) {
+  ButtonFilter filter;
+
+  // Stabilize KEY pressed; the held-sample count starts on this sample.
+  for (int sample = 0; sample < 3; ++sample) {
+    expect_events(filter.sample(true, false), {});
+  }
+  // kLongPressSamples - 2 further held samples still fall short of firing.
+  for (int sample = 0; sample < static_cast<int>(ButtonFilter::kLongPressSamples) - 2; ++sample) {
+    expect_events(filter.sample(true, false), {});
+  }
+  // This sample is the kLongPressSamples-th held sample: fires exactly once.
+  expect_events(filter.sample(true, false), {ButtonEvent::EnterSetup});
+
+  // Continuing to hold emits nothing further.
+  for (int sample = 0; sample < 50; ++sample) {
+    expect_events(filter.sample(true, false), {});
+  }
+
+  // Releasing after a long press does not emit Previous.
+  for (int sample = 0; sample < 2; ++sample) {
+    expect_events(filter.sample(false, false), {});
+  }
+  expect_events(filter.sample(false, false), {});
+  expect_events(filter.sample(false, false), {});
+}
+
+HOST_TEST(button_key_release_one_sample_before_long_press_threshold_still_emits_previous) {
+  ButtonFilter filter;
+
+  for (int sample = 0; sample < 3; ++sample) {
+    expect_events(filter.sample(true, false), {});
+  }
+  // Leaves the held-sample count one short of the threshold once the
+  // release debounce below consumes its two pending-release samples.
+  for (int sample = 0; sample < static_cast<int>(ButtonFilter::kLongPressSamples) - 4; ++sample) {
+    expect_events(filter.sample(true, false), {});
+  }
+  for (int sample = 0; sample < 2; ++sample) {
+    expect_events(filter.sample(false, false), {});
+  }
+  expect_events(filter.sample(false, false), {ButtonEvent::Previous});
+  expect_events(filter.sample(false, false), {});
+}
+
+HOST_TEST(button_boot_long_hold_never_emits_enter_setup) {
+  ButtonFilter filter;
+
+  for (int sample = 0; sample < 3; ++sample) {
+    expect_events(filter.sample(false, true), {});
+  }
+  for (int sample = 0; sample < static_cast<int>(ButtonFilter::kLongPressSamples) + 50; ++sample) {
+    expect_events(filter.sample(false, true), {});
+  }
+  for (int sample = 0; sample < 2; ++sample) {
+    expect_events(filter.sample(false, false), {});
+  }
+  expect_events(filter.sample(false, false), {ButtonEvent::Next});
+  expect_events(filter.sample(false, false), {});
+}

@@ -7,7 +7,9 @@
 
 namespace app_core {
 
-enum class PageId { Home, TaiwanMarket, UsMarket, Weather, Indoor };
+// Setup is not scheduled by PageRegistry/the carousel; it is shown only via
+// the ui::publish_snapshot() seam while snapshot.setup.active is true.
+enum class PageId { Home, TaiwanMarket, UsMarket, Weather, Indoor, Setup };
 enum class DemoScenario { MorningAlert, TaiwanSession, NightSession };
 
 struct ClockData {
@@ -79,6 +81,50 @@ struct Availability {
   bool indoor = true;
 };
 
+// Published by the provisioning task and consumed on the LVGL thread. Strings
+// are pre-rendered so the UI never reaches into wifi_config or esp_wifi.
+struct SetupData {
+  bool active = false;
+  bool connected = false;
+  std::string ap_ssid;
+  // Regenerated on every entry into setup mode and never persisted, so the
+  // screen is the only place it exists. Empty means the AP is open.
+  std::string ap_password;
+  std::string portal_url;
+  std::string qr_payload;
+  std::string status;
+};
+
+// Sampled from the GPIO4 / ADC1 channel 3 divider. valid stays false until a
+// plausible reading lands so the tray degrades to a blank cell instead of 0%.
+struct BatteryData {
+  bool valid = false;
+  int millivolts = 0;
+  uint8_t percent = 0;
+};
+
+// Applies the board's 3x sense divider and a calibration_permille trim
+// (raw * 3 * calibration_permille / 1000) to a raw ADC-reported millivolts
+// value, returning the estimated cell millivolts. Exposed with an explicit
+// permille argument so host tests can exercise both scaling directions;
+// battery_millivolts() below is the production entry point that always uses
+// the Kconfig-configured value.
+int battery_millivolts_scaled(int adc_millivolts, int calibration_permille);
+
+// Applies CONFIG_BATTERY_CALIBRATION_PERMILLE (default 1000, i.e. no trim).
+int battery_millivolts(int adc_millivolts);
+
+// Below this, there is no battery installed or the divider path is open;
+// callers should leave BatteryData::valid false rather than report a
+// misleadingly plausible-looking 0%.
+inline constexpr int kBatteryValidThresholdMillivolts = 2500;
+bool battery_reading_valid(int millivolts);
+
+// Maps a single-cell Li-ion millivolts reading to 0..100% using a piecewise
+// discharge-curve table (a naive linear 3000-4200 mV map is badly wrong
+// mid-curve). Clamped to 0..100 at both ends.
+uint8_t battery_percent(int millivolts);
+
 struct AppSnapshot {
   ClockData clock;
   MarketData taiwan_market;
@@ -87,6 +133,8 @@ struct AppSnapshot {
   WeatherData new_york_weather;
   IndoorData indoor;
   Availability availability;
+  SetupData setup;
+  BatteryData battery;
   DemoScenario scenario = DemoScenario::TaiwanSession;
 };
 

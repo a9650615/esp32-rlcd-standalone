@@ -42,6 +42,7 @@ Read [references/official-development.md](references/official-development.md) be
 - Shared I2C: SDA 13, SCL 14. KEY is GPIO18 active-low; BOOT is GPIO0 active-low.
 - GPIO46 enables the speaker amplifier and is also a strapping pin. Set it high only after application startup; never externally force it high during reset/download.
 - microSD uses SDMMC 1-bit on CLK 38, CMD 21, D0 39. Do not silently move it onto the display SPI bus.
+- Battery sense is GPIO4 / ADC1 channel 3 behind the board's onboard 3x divider. The divider reads a few percent off nominal per unit — do not trust the raw `adc_mv * 3` value as the cell voltage. Expose a calibration knob (this project's `CONFIG_BATTERY_CALIBRATION_PERMILLE`, default 1000/no-trim) so it is tuned per board with a multimeter (`1000 * multimeter_mV / reported_mV`) instead of a firmware edit. Also treat any reading below roughly 2500 mV as "no battery installed/connected," not as a real low-charge percentage — a Li-ion cell never legitimately reports that low, and showing a computed 0-ish percent for an absent battery is misleading.
 
 ## Build from official references
 
