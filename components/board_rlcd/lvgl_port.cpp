@@ -1,5 +1,6 @@
 #include "lvgl_port.hpp"
 
+#include <atomic>
 #include <cstdint>
 
 #include <esp_heap_caps.h>
@@ -29,6 +30,11 @@ lv_display_t* display_handle = nullptr;
 uint8_t* buffer_1 = nullptr;
 uint8_t* buffer_2 = nullptr;
 
+// Written only by the LVGL task, read by the OTA rollback guard. Relaxed is
+// enough: the reader compares two samples taken seconds apart and only cares
+// that the value moved, not which pass it landed on.
+std::atomic<uint32_t> lvgl_loops{0};
+
 void increase_lvgl_tick(void*) { lv_tick_inc(kTickPeriodMs); }
 
 void flush_display(lv_display_t* display_handle, const lv_area_t* area,
@@ -50,6 +56,10 @@ void lvgl_task(void*) {
     if (lvgl_lock(-1)) {
       task_delay_ms = lv_timer_handler();
       lvgl_unlock();
+      // Counted after the unlock, so it advances only on a pass that both
+      // took the lock and came back out of LVGL - the two things a hung
+      // render stops doing.
+      lvgl_loops.fetch_add(1, std::memory_order_relaxed);
     }
     if (task_delay_ms > kTaskMaxDelayMs) {
       task_delay_ms = kTaskMaxDelayMs;
@@ -177,6 +187,10 @@ void lvgl_unlock() {
   if (lvgl_mutex != nullptr) {
     (void)xSemaphoreGive(lvgl_mutex);
   }
+}
+
+uint32_t lvgl_loop_count() {
+  return lvgl_loops.load(std::memory_order_relaxed);
 }
 
 }  // namespace board

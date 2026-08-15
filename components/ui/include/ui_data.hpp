@@ -61,6 +61,13 @@ inline WeatherIconKind weather_icon_kind_for_condition(
   return WeatherIconKind::Cloud;
 }
 
+struct OtaLayout {
+  Rect phase;
+  Rect percent;
+  Rect warning;
+  Rect detail;
+};
+
 struct SetupLayout {
   Rect qr;
   Rect title;
@@ -176,6 +183,54 @@ constexpr bool setup_layout_fits(const Rect content) {
         rect_within(content, layout.portal) &&
         rect_within(content, layout.instructions) &&
         rect_within(content, layout.status);
+}
+
+// Same literal-line-height discipline as the Setup rows above: this header is
+// compiled LVGL-free for host tests, so the values come from
+// lv_font_montserrat_{28,48}.c rather than font->line_height.
+inline constexpr int kOtaPhaseFontLineHeight = 30;    // lv_font_montserrat_28
+inline constexpr int kOtaPercentFontLineHeight = 52;  // lv_font_montserrat_48
+inline constexpr int kOtaPhaseHeight =
+    safe_text_box_height(kOtaPhaseFontLineHeight + 4, kOtaPhaseFontLineHeight);
+inline constexpr int kOtaPercentHeight =
+    safe_text_box_height(kOtaPercentFontLineHeight + 4,
+                         kOtaPercentFontLineHeight);
+inline constexpr int kOtaLineHeight =
+    safe_text_box_height(18, kSetupSmallFontLineHeight);
+inline constexpr int kOtaBlockGap = 10;
+
+// The only instruction that matters while flash is being written, and the
+// reason this page takes the screen at all.
+inline constexpr char kOtaWarning[] = "DO NOT POWER OFF";
+// Shown instead of a percentage when the feeder never learned the total size
+// (no Content-Length), rather than inventing a progress figure.
+inline constexpr char kOtaProgressUnknown[] = "WORKING";
+
+// One centred column: phase, then the large percentage, then the power
+// warning, then a detail line. Pure arithmetic on bounds so host tests can
+// drive it in the absolute safe_canvas() frame. Ota has no tray
+// (page_shows_tray), so this gets the full canvas height to centre in.
+constexpr OtaLayout ota_layout(const Rect bounds) {
+  const int block = kOtaPhaseHeight + kOtaBlockGap + kOtaPercentHeight +
+                    kOtaBlockGap + kOtaLineHeight + kOtaBlockGap +
+                    kOtaLineHeight;
+  const int top = bounds.y + (bounds.height - block) / 2;
+  const Rect phase{bounds.x, top, bounds.width, kOtaPhaseHeight};
+  const Rect percent{bounds.x, phase.bottom() + kOtaBlockGap, bounds.width,
+                     kOtaPercentHeight};
+  const Rect warning{bounds.x, percent.bottom() + kOtaBlockGap, bounds.width,
+                     kOtaLineHeight};
+  const Rect detail{bounds.x, warning.bottom() + kOtaBlockGap, bounds.width,
+                    kOtaLineHeight};
+  return {phase, percent, warning, detail};
+}
+
+constexpr bool ota_layout_fits(const Rect content) {
+  const OtaLayout layout = ota_layout(content);
+  return rect_within(content, layout.phase) &&
+         rect_within(content, layout.percent) &&
+         rect_within(content, layout.warning) &&
+         rect_within(content, layout.detail);
 }
 
 // No two rects in the layout overlap, checked pairwise across all of them.
@@ -307,8 +362,12 @@ inline std::string tray_battery_text(const app_core::BatteryData& battery) {
 
 // One place to decide which pages carry the tray. Home is deliberately
 // excluded so the Clock Hero keeps the full canvas.
+// Ota joins Home in going without a tray, for a different reason: the tray
+// carries page dots, and dots on a screen that is deliberately refusing
+// navigation while it writes flash would advertise an action that is being
+// blocked.
 constexpr bool page_shows_tray(app_core::PageId page) {
-  return page != app_core::PageId::Home;
+  return page != app_core::PageId::Home && page != app_core::PageId::Ota;
 }
 
 // Every page derives its content area through this single path: a
@@ -355,6 +414,12 @@ static_assert(page_shows_tray(app_core::PageId::TaiwanMarket) &&
                   page_shows_tray(app_core::PageId::Indoor) &&
                   page_shows_tray(app_core::PageId::Setup),
               "data pages and setup carry the tray");
+static_assert(!page_shows_tray(app_core::PageId::Ota),
+              "the OTA takeover page must not offer page dots");
+
+static_assert(ota_layout_fits(content_bounds(safe_canvas(),
+                                             app_core::PageId::Ota)),
+              "OTA layout does not fit its content bounds");
 
 static_assert(content_bounds(safe_canvas(), app_core::PageId::Home).x ==
                       safe_canvas().x &&

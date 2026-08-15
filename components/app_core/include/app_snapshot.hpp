@@ -9,7 +9,9 @@ namespace app_core {
 
 // Setup is not scheduled by PageRegistry/the carousel; it is shown only via
 // the ui::publish_snapshot() seam while snapshot.setup.active is true.
-enum class PageId { Home, TaiwanMarket, UsMarket, Weather, Indoor, Setup };
+// Setup and Ota are addressable pages that never enter the carousel: each is
+// shown because its own state says so, not because rotation reached it.
+enum class PageId { Home, TaiwanMarket, UsMarket, Weather, Indoor, Setup, Ota };
 enum class DemoScenario { MorningAlert, TaiwanSession, NightSession };
 
 struct ClockData {
@@ -169,7 +171,54 @@ bool battery_overvoltage_warning(int millivolts);
 // True at or above kBatteryOvervoltageDangerMillivolts.
 bool battery_overvoltage_danger(int millivolts);
 
+// What the firmware is doing to itself, put on the panel because every one of
+// these states is one the user must not act on blindly: Receiving and Writing
+// are the windows where cutting power leaves a half-written slot, and
+// RolledBack is the only evidence a boot ever failed once the board is back up
+// and looking normal.
+//
+// The compiled Montserrat font is ASCII-only, so ota_phase_label() below
+// returns English. Rendering these in Chinese needs a font subset built for
+// it, which is a separate change from making the states visible at all.
+enum class OtaPhase : uint8_t {
+  Idle,
+  // Bytes arriving from a feeder (browser upload or URL pull) and going
+  // straight into the inactive slot; percent is meaningful only here.
+  Receiving,
+  // Image received and being finalised - hash checked, boot partition set.
+  Writing,
+  // First boot of a freshly written image. It has not been marked valid yet,
+  // so a reset in this window rolls the board back to the previous slot.
+  Verifying,
+  // The previous image failed its verification window and the bootloader came
+  // back to this one. Sticky for the session: this is the only trace the user
+  // would otherwise ever see of a failed update.
+  RolledBack,
+  Failed,
+};
+
+// Never fabricates progress: percent stays 0 unless a feeder actually knows
+// the total size, and the UI shows the phase alone when it does not.
+struct OtaData {
+  OtaPhase phase = OtaPhase::Idle;
+  uint8_t percent = 0;
+  bool percent_known = false;
+  // Short ASCII reason, only ever set alongside Failed or RolledBack.
+  std::string detail;
+};
+
+// True while the update state must own the screen outright. Deliberately
+// excludes Verifying: that window is a normal boot the user should not be
+// locked out of, and it ends on its own.
+constexpr bool ota_owns_screen(const OtaData& ota) {
+  return ota.phase == OtaPhase::Receiving || ota.phase == OtaPhase::Writing;
+}
+
+// ASCII only - see the OtaPhase comment above.
+const char* ota_phase_label(OtaPhase phase);
+
 struct AppSnapshot {
+  OtaData ota;
   ClockData clock;
   MarketData taiwan_market;
   MarketData us_market;

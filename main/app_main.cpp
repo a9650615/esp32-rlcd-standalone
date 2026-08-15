@@ -8,6 +8,7 @@
 #include "market.hpp"
 #include "net_log.hpp"
 #include "net_time.hpp"
+#include "ota.hpp"
 #include "shtc3.hpp"
 #include "ui_app.hpp"
 #include "weather.hpp"
@@ -91,7 +92,100 @@ bool read_rtc(app_core::RtcDateTime& clock) {
 [[noreturn]] void fatal_loop(const char* reason, esp_err_t error) {
   ESP_LOGE(kTag, "fatal: %s (%s); startup stopped", reason,
            esp_err_to_name(error));
+  // A freshly written image that cannot finish startup is exactly what
+  // rollback exists for, and spinning here would defeat it: this loop never
+  // resets, the task watchdog on this board never panics, so the bad image
+  // would hold the boot slot forever. Roll back instead - the board returns on
+  // the previous firmware, which then reports UPDATE ROLLED BACK on the panel.
+  //
+  // Nothing is drawn here directly: this runs on the app_main task, and most
+  // fatal paths are reached before the display or the snapshot publisher
+  // exist. Serial is the only channel for this boot; the panel gets the story
+  // on the next one.
+  bool readable = false;
+  if (ota::pending_verify(readable) && readable) {
+    ota::rollback_and_reboot();
+  }
+  // Not a pending image, or nothing to roll back to. Halt rather than reboot,
+  // so a genuinely broken board stays diagnosable over serial instead of
+  // becoming a boot loop.
   for (;;) vTaskDelay(pdMS_TO_TICKS(1000));
+}
+
+// How long a freshly written image has to prove the LVGL loop is turning
+// before it is accepted. Long enough to cover display/LVGL bring-up and the
+// first renders, short enough that the board does not sit in a state where an
+// unrelated reset would roll back a perfectly good image.
+constexpr uint32_t kOtaVerifyWindowMs = 30'000;
+constexpr uint32_t kOtaVerifySettleMs = 2'000;
+
+// Runs once at boot and exits. Two jobs, both of which exist because this
+// board cannot rely on the usual mechanism: the task watchdog is configured
+// without panic (CONFIG_ESP_TASK_WDT_PANIC unset), so a hung image logs
+// forever instead of resetting, and an image that never resets is never rolled
+// back by the bootloader either.
+//
+// 1. Surface a previously rejected update on the panel. Otherwise a rollback
+//    is completely invisible: the board comes back up looking normal, running
+//    older firmware than the user believes they installed.
+// 2. Decide the fate of a pending image from positive evidence that the LVGL
+//    render loop advanced, and act on that decision here rather than waiting
+//    for a reset that this board will never produce on its own.
+void ota_guard_task(void*) {
+  app_core::OtaData status;
+  if (ota::update_was_rejected()) {
+    status.phase = app_core::OtaPhase::RolledBack;
+    status.detail = "Running " + ota::running_slot_name();
+    ESP_LOGW(kTag, "a previous update was rejected; running slot=%s",
+             ota::running_slot_name().c_str());
+    wifi_provision::set_ota(status);
+  }
+
+  bool readable = false;
+  const bool pending = ota::pending_verify(readable);
+  ESP_LOGI(kTag, "ota guard: slot=%s readable=%d pending_verify=%d",
+           ota::running_slot_name().c_str(), readable, pending);
+  if (!readable || !pending) {
+    // Steady state, including every factory boot. rollback_decision() would
+    // say None here too; short-circuiting just avoids holding the task alive
+    // for 30 s to reach the same answer.
+    vTaskDelete(nullptr);
+    return;
+  }
+
+  status.phase = app_core::OtaPhase::Verifying;
+  status.detail.clear();
+  wifi_provision::set_ota(status);
+
+  // Settle first: sampling the counter the instant this task starts can catch
+  // the LVGL task before its first pass and read a false stall.
+  vTaskDelay(pdMS_TO_TICKS(kOtaVerifySettleMs));
+  const uint32_t before = board::lvgl_loop_count();
+  vTaskDelay(pdMS_TO_TICKS(kOtaVerifyWindowMs));
+  const uint32_t after = board::lvgl_loop_count();
+  const bool alive = after != before;
+  ESP_LOGI(kTag, "ota guard: lvgl loops %u -> %u alive=%d",
+           static_cast<unsigned>(before), static_cast<unsigned>(after), alive);
+
+  switch (ota::rollback_decision(readable, pending, alive)) {
+    case ota::RollbackDecision::MarkValid:
+      if (ota::mark_valid() == ESP_OK) {
+        status.phase = app_core::OtaPhase::Idle;
+        status.detail.clear();
+        wifi_provision::set_ota(status);
+      }
+      break;
+    case ota::RollbackDecision::Rollback:
+      status.phase = app_core::OtaPhase::Failed;
+      status.detail = "Rolling back";
+      wifi_provision::set_ota(status);
+      // Does not return unless there is nothing to roll back to.
+      ota::rollback_and_reboot();
+      break;
+    case ota::RollbackDecision::None:
+      break;
+  }
+  vTaskDelete(nullptr);
 }
 
 constexpr uint32_t kBatterySamplePeriodMs = 30'000;
@@ -357,6 +451,18 @@ extern "C" void app_main() {
   if (result != ESP_OK) {
     // Non-fatal: the clock keeps showing the RTC/compile-time fallback.
     ESP_LOGE(kTag, "net_time startup failed: %s", esp_err_to_name(result));
+  }
+
+  // Started after wifi_provision (it publishes through it) and before the
+  // provider tasks, so a pending image is judged on the render loop alone
+  // rather than on whether the network happened to come up in time.
+  // 4096 B: partition-table reads, two counter samples and a log line.
+  if (xTaskCreate(&ota_guard_task, "ota_guard", 4096, nullptr,
+                  tskIDLE_PRIORITY + 1, nullptr) != pdPASS) {
+    // Non-fatal, but worth shouting about: without this task a pending image
+    // is never marked valid, so the next reset silently rolls it back.
+    ESP_LOGE(kTag, "ota guard task creation failed; a pending image will not "
+                   "be confirmed");
   }
 
   if (xTaskCreate(&battery_monitor_task, "battery_monitor", 3072, nullptr,

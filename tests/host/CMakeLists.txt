@@ -22,6 +22,7 @@ add_executable(host_tests
     test_weather.cpp
     test_market.cpp
     test_net_log.cpp
+    test_ota.cpp
     ../../components/app_core/app_snapshot.cpp
     ../../components/app_core/page_registry.cpp
     ../../components/app_core/carousel_controller.cpp
@@ -41,6 +42,7 @@ target_include_directories(host_tests PRIVATE
     ../../components/weather/include
     ../../components/market/include
     ../../components/net_log/include
+    ../../components/ota/include
     ../../.tools/esp-idf/components/json/cJSON
 )
 if(HOST_DEMO_MISSING_PAGE)

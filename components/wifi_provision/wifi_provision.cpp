@@ -262,6 +262,13 @@ void set_battery(const app_core::BatteryData& battery) {
   unlock();
 }
 
+void set_ota(const app_core::OtaData& ota) {
+  lock();
+  snapshot_.ota = ota;
+  ui::publish_snapshot(snapshot_);
+  unlock();
+}
+
 void set_indoor(const app_core::IndoorData& indoor) {
   lock();
   snapshot_.indoor = indoor;

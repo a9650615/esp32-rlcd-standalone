@@ -39,6 +39,8 @@ struct Runtime {
   lv_timer_t* timer = nullptr;
   uint32_t cycle = 0;
   bool initialized = false;
+  // Same role as showing_setup below, for the OTA takeover page.
+  bool showing_ota = false;
   // Tracks whether the Setup page (rather than a carousel page) is the last
   // thing rendered, so entering/leaving setup mode triggers exactly one
   // atomic page replacement instead of one every 100 ms tick.
@@ -64,6 +66,7 @@ void (*g_setup_gesture_handler)() = nullptr;
 // its source reads "SNTP" instead of recomputing from the boot-time RTC/
 // fallback clock.
 struct PublishedFields {
+  app_core::OtaData ota;
   app_core::SetupData setup;
   app_core::BatteryData battery;
   app_core::IndoorData indoor;
@@ -81,6 +84,7 @@ bool consume_published(PublishedFields& out) {
   if (xSemaphoreTake(g_publish_mutex, 0) != pdTRUE) return false;
   const bool dirty = g_published_dirty;
   if (dirty) {
+    out.ota = g_published_snapshot.ota;
     out.setup = g_published_snapshot.setup;
     out.battery = g_published_snapshot.battery;
     out.indoor = g_published_snapshot.indoor;
@@ -109,6 +113,8 @@ const char* page_name(app_core::PageId page) {
       return "Indoor";
     case app_core::PageId::Setup:
       return "Setup";
+    case app_core::PageId::Ota:
+      return "Ota";
   }
   return "Unknown";
 }
@@ -281,7 +287,24 @@ void timer_callback(lv_timer_t* timer) {
 
   PublishedFields published;
   const bool published_updated = consume_published(published);
+  // Compared before the merge below overwrites it. Unlike the four provider
+  // fields, OTA state has to reach the screen the moment it changes - a
+  // percentage that only repaints when the carousel next happens to move
+  // would sit frozen for the entire write, which is precisely when someone is
+  // watching the panel to decide whether it is safe to unplug.
+  //
+  // ponytail: full page rebuild per change, throttled by the publisher (see
+  // the ota monitor in app_main.cpp, which republishes on whole-percent steps
+  // only). If those repaints prove visible on the panel, register the percent
+  // label in UiContext and extend the label-only path instead.
+  const bool ota_changed =
+      published_updated &&
+      (published.ota.phase != runtime->snapshot.ota.phase ||
+       published.ota.percent != runtime->snapshot.ota.percent ||
+       published.ota.percent_known != runtime->snapshot.ota.percent_known ||
+       published.ota.detail != runtime->snapshot.ota.detail);
   if (published_updated) {
+    runtime->snapshot.ota = published.ota;
     runtime->snapshot.setup = published.setup;
     runtime->snapshot.battery = published.battery;
     // indoor/weather/market/clock have no per-field widget registered the
@@ -318,6 +341,10 @@ void timer_callback(lv_timer_t* timer) {
   if (queue != nullptr) {
     board::ButtonEvent event;
     while (xQueueReceive(queue, &event, 0) == pdTRUE) {
+      // Checked ahead of the setup gesture, which is handled before the
+      // navigation guard below and would otherwise tear the screen away from
+      // an in-progress write and start an AP while it runs.
+      if (app_core::ota_owns_screen(runtime->snapshot.ota)) continue;
       if (event == board::ButtonEvent::EnterSetup) {
         // Logged because this gesture was previously invisible: a KEY long
         // press that never armed and one whose handler was unregistered
@@ -329,7 +356,10 @@ void timer_callback(lv_timer_t* timer) {
         continue;
       }
       // The Setup page owns the screen while active; carousel navigation is
-      // suspended until snapshot.setup.active goes false again.
+      // suspended until snapshot.setup.active goes false again. OTA outranks
+      // it: while flash is being written there is no page worth navigating to
+      // and the write must not be given a reason to share the LVGL thread.
+      if (app_core::ota_owns_screen(runtime->snapshot.ota)) continue;
       if (runtime->snapshot.setup.active) continue;
       const bool next = event == board::ButtonEvent::Next;
       const char* reason = next ? "manual-boot" : "manual-key";
@@ -349,7 +379,8 @@ void timer_callback(lv_timer_t* timer) {
     }
   }
 
-  if (!runtime->snapshot.setup.active) {
+  if (!runtime->snapshot.setup.active &&
+      !app_core::ota_owns_screen(runtime->snapshot.ota)) {
     const app_core::PageId current_page =
         runtime->active_pages[runtime->carousel.index];
     const auto transition = app_core::carousel::tick(
@@ -388,6 +419,36 @@ void timer_callback(lv_timer_t* timer) {
   // directly): the page identity itself changed. Any other Setup-active
   // publish (a status update, a battery sample) falls through to the
   // label-only path below instead of rebuilding.
+  // Ahead of the Setup block: OTA outranks it, so entering a write while
+  // Setup happens to be up replaces the screen rather than being ignored.
+  // Rebuilt on every OTA change, not just on entry, because the percentage is
+  // the whole point of the page (see ota_changed above).
+  if (app_core::ota_owns_screen(runtime->snapshot.ota)) {
+    if (!runtime->showing_ota || ota_changed) {
+      const lv_obj_t* rendered =
+          render_page(runtime->context, runtime->snapshot,
+                      app_core::PageId::Ota, safe_canvas(), 0, 0);
+      if (rendered == nullptr) ESP_LOGE(kTag, "renderer failure page=Ota");
+    }
+    runtime->showing_ota = true;
+    // Not setup.active: Setup may still be logically active underneath, but it
+    // is not what is on the screen. Leaving this true would make the Setup
+    // block below skip its rebuild once the write finishes, stranding the OTA
+    // page on a board that thinks it is showing Setup.
+    runtime->showing_setup = false;
+    // Returns before the clock and label-only paths: this page carries no
+    // tray, so there is nothing for them to update.
+    return;
+  }
+  if (runtime->showing_ota) {
+    // The write is over. Land back on the carousel the same way leaving Setup
+    // does, with the dwell timer restarted from this instant.
+    runtime->showing_ota = false;
+    runtime->carousel.page_started_ms = now_ms;
+    (void)render_current(*runtime, "ota-exit", false);
+    page_rebuilt = true;
+  }
+
   if (runtime->snapshot.setup.active) {
     if (!runtime->showing_setup) {
       const lv_obj_t* rendered = render_page(

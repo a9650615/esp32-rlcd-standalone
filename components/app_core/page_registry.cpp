@@ -72,6 +72,7 @@ bool page_data_valid(PageId page, const AppSnapshot& snapshot) {
     case PageId::Indoor: return snapshot.indoor.valid;
     case PageId::Home:
     case PageId::Setup:
+    case PageId::Ota:
       return true;
   }
   return true;

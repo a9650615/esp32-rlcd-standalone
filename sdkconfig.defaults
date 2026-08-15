@@ -26,3 +26,14 @@ CONFIG_LWIP_MAX_SOCKETS=16
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
 CONFIG_ESP_TLS_INSECURE=n
+
+# A freshly written OTA image boots as PENDING_VERIFY and is rolled back by the
+# bootloader unless the app confirms it. main's ota_guard_task confirms it only
+# after watching the LVGL render loop actually advance.
+#
+# This must be in place BEFORE the first image is ever written to an OTA slot:
+# turning it on afterwards leaves that first update with no way back. Note that
+# adding it here does nothing to an already-generated sdkconfig - delete
+# sdkconfig and rebuild, then confirm the value landed (see the
+# sdkconfig.defaults trap in the board skill).
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y

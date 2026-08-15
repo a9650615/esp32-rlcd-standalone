@@ -104,6 +104,11 @@ void render_indoor(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
 void render_setup(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
                   Rect bounds, std::size_t page_index,
                   std::size_t page_count, UiContext* context = nullptr);
+// Additive page like Setup, and it outranks Setup: while it is up the
+// firmware is writing its own flash, so nothing may navigate away from it.
+void render_ota(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
+                Rect bounds, std::size_t page_index, std::size_t page_count,
+                UiContext* context = nullptr);
 
 // The caller owns the LVGL lock. A detached replacement is built completely
 // before the previous context-owned page root is deleted and the replacement

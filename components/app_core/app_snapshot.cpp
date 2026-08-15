@@ -112,6 +112,27 @@ uint8_t days_in_month(uint16_t year, uint8_t month) {
   return days_in_month_impl(year, month);
 }
 
+const char* ota_phase_label(OtaPhase phase) {
+  switch (phase) {
+    case OtaPhase::Idle:
+      return "";
+    case OtaPhase::Receiving:
+      return "UPDATING";
+    // Distinct from UPDATING because this is the phase where a power cut is
+    // least survivable, and a user watching the panel deserves to know the
+    // difference between "still downloading" and "committing".
+    case OtaPhase::Writing:
+      return "FINISHING UPDATE";
+    case OtaPhase::Verifying:
+      return "VERIFYING UPDATE";
+    case OtaPhase::RolledBack:
+      return "UPDATE ROLLED BACK";
+    case OtaPhase::Failed:
+      return "UPDATE FAILED";
+  }
+  return "";
+}
+
 RtcDateTime advance_rtc_datetime(RtcDateTime clock,
                                  uint64_t elapsed_seconds) {
   const uint64_t total_seconds = clock.second + elapsed_seconds;

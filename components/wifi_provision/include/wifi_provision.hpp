@@ -35,5 +35,6 @@ void set_weather(const app_core::WeatherData& weather);
 void set_taiwan_market(const app_core::MarketData& market);
 void set_us_market(const app_core::MarketData& market);
 void set_clock(const app_core::ClockData& clock);
+void set_ota(const app_core::OtaData& ota);
 
 }  // namespace wifi_provision
