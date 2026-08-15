@@ -10,7 +10,7 @@ Develop this board from measured hardware facts and pinned first-party sources. 
 ## Start safely
 
 1. Confirm the target says `ESP32-S3-RLCD-4.2`; do not reuse this pin map for similarly named Touch-LCD boards.
-2. List serial ports before and after connecting the board. Prefer `/dev/cu.usbmodem*` on macOS.
+2. Resolve the port by MAC, never by remembering a port number: `PORT="$(./scripts/find-board-port.sh)"`. `/dev/cu.usbmodem1101` is assigned in enumeration order, so any other USB serial device can take that name, and a flash aimed at the wrong target is destructive and irreversible. This board is `a4:cb:8f:df:88:d0`, which is also its USB serial number. The helper probes each candidate with `read_mac --after no_reset`, which is read-only and will not disturb whatever is running on the other ports.
 3. Run `esptool --port "$PORT" chip-id` and `flash-id`. Expect ESP32-S3, 16 MB Flash, and 8 MB embedded PSRAM.
 4. Check for a 16,777,216-byte full dump and its SHA-256 manifest under `firmware/backups/`.
 5. If no verified backup exists, run the read-only helper before any build is flashed:
@@ -89,6 +89,12 @@ After flashing, capture evidence for:
 4. KEY and BOOT application input behavior;
 5. I2C discovery/read of the peripherals touched by the change;
 6. battery ADC, audio, RTC, or SD smoke tests when those subsystems changed.
+
+Capture serial non-interactively rather than attaching a monitor, so the log is a file you can grep and quote. Two things about the interpreter, both of which cost a cycle: this machine's `python3` has no `pyserial`, and `python` is not an `idf.py` action, so `./scripts/idf.sh python foo.py` fails with `No rule to make target 'python'`. Use the IDF environment's interpreter directly:
+
+```bash
+~/.espressif/python_env/idf5.5_py3.9_env/bin/python capture.py "$PORT" 55
+```
 
 For a carousel UI, observe every registered page once and the wrap back to Home. A successful Home render alone does not exercise the other renderers. Treat any stack-overflow message or software-reset loop as a failed flash even when all QIO/Flash/PSRAM gates passed.
 
