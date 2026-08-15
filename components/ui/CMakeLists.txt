@@ -9,6 +9,7 @@ idf_component_register(
         "render_indoor.cpp"
         "render_setup.cpp"
         "render_ota.cpp"
+        "render_settings.cpp"
         "ui_strings.cpp"
         "settings_menu.cpp"
         "ui_fonts.cpp"
@@ -19,6 +20,7 @@ idf_component_register(
         "include"
     REQUIRES
         app_core
+        esp_app_format
         board_rlcd
         lvgl__lvgl
 )

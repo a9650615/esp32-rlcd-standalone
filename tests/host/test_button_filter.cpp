@@ -143,13 +143,34 @@ HOST_TEST(button_key_release_one_sample_before_long_press_threshold_still_emits_
   expect_events(filter.sample(false, false), {});
 }
 
-HOST_TEST(button_boot_long_hold_never_emits_enter_setup) {
+HOST_TEST(button_boot_long_press_opens_the_menu_and_suppresses_its_release) {
   ButtonFilter filter;
 
+  // BOOT long press was previously unused, on the theory that GPIO0 being the
+  // download strap made it unsafe. The strap is sampled at reset, not while
+  // running, so this is the settings gesture now - mirroring KEY exactly, or
+  // the same hold would mean different things on different buttons.
   for (int sample = 0; sample < 3; ++sample) {
     expect_events(filter.sample(false, true), {});
   }
-  for (int sample = 0; sample < static_cast<int>(ButtonFilter::kLongPressSamples) + 50; ++sample) {
+  for (int sample = 0; sample < static_cast<int>(ButtonFilter::kLongPressSamples) - 2; ++sample) {
+    expect_events(filter.sample(false, true), {});
+  }
+  expect_events(filter.sample(false, true), {ButtonEvent::OpenMenu});
+
+  for (int sample = 0; sample < 50; ++sample) {
+    expect_events(filter.sample(false, true), {});
+  }
+
+  // Releasing after the long press must not also page forward.
+  for (int sample = 0; sample < 4; ++sample) {
+    expect_events(filter.sample(false, false), {});
+  }
+}
+
+HOST_TEST(button_boot_short_press_still_pages_forward_after_the_long_press_exists) {
+  ButtonFilter filter;
+  for (int sample = 0; sample < 3; ++sample) {
     expect_events(filter.sample(false, true), {});
   }
   for (int sample = 0; sample < 2; ++sample) {
@@ -158,3 +179,17 @@ HOST_TEST(button_boot_long_hold_never_emits_enter_setup) {
   expect_events(filter.sample(false, false), {ButtonEvent::Next});
   expect_events(filter.sample(false, false), {});
 }
+
+// Both long presses must be independent: holding one must not arm the other.
+HOST_TEST(button_long_presses_do_not_bleed_between_key_and_boot) {
+  ButtonFilter filter;
+  for (int sample = 0; sample < 3; ++sample) {
+    expect_events(filter.sample(true, false), {});
+  }
+  for (int sample = 0; sample < static_cast<int>(ButtonFilter::kLongPressSamples) - 2; ++sample) {
+    expect_events(filter.sample(true, false), {});
+  }
+  // KEY crossing its threshold must produce EnterSetup and nothing else.
+  expect_events(filter.sample(true, false), {ButtonEvent::EnterSetup});
+}
+

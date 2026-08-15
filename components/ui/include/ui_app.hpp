@@ -3,10 +3,12 @@
 #include "app_snapshot.hpp"
 #include "page_registry.hpp"
 #include "ui_data.hpp"
+#include "settings_menu.hpp"
 #include "ui_strings.hpp"
 #include "ui_theme.hpp"
 
 #include <cstddef>
+#include <string>
 
 #ifndef UI_THEME_GEOMETRY_ONLY
 #include <lvgl.h>
@@ -32,6 +34,13 @@ void publish_snapshot(const app_core::AppSnapshot& snapshot);
 // Invoked on the LVGL thread when board::ButtonEvent::EnterSetup arrives.
 // Pass nullptr to unregister; the button drain is null-safe either way.
 void set_setup_gesture_handler(void (*handler)());
+// Registers what the settings menu's "check for updates" row runs. The handler
+// is expected to return immediately and do the work on its own task, then
+// report through set_update_status.
+void set_update_check_handler(void (*handler)());
+// Callable from any task. The text lands on the settings page's update row on
+// the next LVGL tick.
+void set_update_status(const std::string& status);
 
 // Address-sensitive owner retained by the caller for the host's entire LVGL
 // lifetime. LVGL stores a pointer to this exact instance in the host delete
@@ -51,6 +60,12 @@ struct UiContext {
   // showing; setup_status_label only while Setup is showing), so
   // update_visible_fields can unconditionally attempt every field and rely
   // on the null checks to scope the update to what's actually visible.
+  // Which settings row the cursor is on, and the result of the last update
+  // check. Held here rather than in the renderer so a redraw - a language
+  // change repaints every row - does not lose the cursor.
+  std::size_t settings_focus = 0;
+  std::string settings_status;
+
   lv_obj_t* clock_label = nullptr;
   lv_obj_t* network_label = nullptr;
   lv_obj_t* battery_label = nullptr;
@@ -113,6 +128,11 @@ void render_setup(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
 void render_ota(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
                 Rect bounds, std::size_t page_index, std::size_t page_count,
                 UiContext* context = nullptr);
+// Additive page, entered by a BOOT long press. Reads its cursor position and
+// last-check status from `context`.
+void render_settings(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
+                     Rect bounds, std::size_t page_index,
+                     std::size_t page_count, UiContext* context = nullptr);
 
 // The caller owns the LVGL lock. A detached replacement is built completely
 // before the previous context-owned page root is deleted and the replacement

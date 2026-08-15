@@ -41,6 +41,9 @@ struct Runtime {
   bool initialized = false;
   // Same role as showing_setup below, for the OTA takeover page.
   bool showing_ota = false;
+  // Same role as showing_setup, for the settings menu.
+  bool showing_settings = false;
+  SettingsMenu settings;
   // Tracks whether the Setup page (rather than a carousel page) is the last
   // thing rendered, so entering/leaving setup mode triggers exactly one
   // atomic page replacement instead of one every 100 ms tick.
@@ -57,8 +60,15 @@ Runtime g_runtime;
 SemaphoreHandle_t g_publish_mutex = nullptr;
 app_core::AppSnapshot g_published_snapshot;
 bool g_published_dirty = false;
+std::string g_pending_update_status;
+bool g_pending_update_status_dirty = false;
 
 void (*g_setup_gesture_handler)() = nullptr;
+// Runs the release check off the LVGL thread; the result comes back through
+// set_update_status. Null until main registers it, in which case selecting the
+// row simply reports nothing rather than blocking the render loop on a network
+// call.
+void (*g_update_check_handler)() = nullptr;
 
 // The subset of AppSnapshot that non-UI FreeRTOS tasks (wifi_provision, the
 // battery monitor, and now the indoor/weather/market/net_time providers)
@@ -113,6 +123,8 @@ const char* page_name(app_core::PageId page) {
       return "Indoor";
     case app_core::PageId::Setup:
       return "Setup";
+    case app_core::PageId::Settings:
+      return "Settings";
     case app_core::PageId::Ota:
       return "Ota";
   }
@@ -285,6 +297,23 @@ void timer_callback(lv_timer_t* timer) {
 
   if (!runtime->initialized) return;
 
+  // Set when the settings page needs redrawing - the cursor moved, a value
+  // changed, or it was just opened.
+  bool settings_dirty = false;
+  SettingsAction settings_action = SettingsAction::None;
+
+  // Drained here rather than written directly by the checking task: this is
+  // the LVGL thread, and settings_status is read while rendering.
+  if (g_publish_mutex != nullptr &&
+      xSemaphoreTake(g_publish_mutex, 0) == pdTRUE) {
+    if (g_pending_update_status_dirty) {
+      runtime->context.settings_status = g_pending_update_status;
+      g_pending_update_status_dirty = false;
+      settings_dirty = true;
+    }
+    xSemaphoreGive(g_publish_mutex);
+  }
+
   PublishedFields published;
   const bool published_updated = consume_published(published);
   // Compared before the merge below overwrites it. Unlike the four provider
@@ -336,7 +365,6 @@ void timer_callback(lv_timer_t* timer) {
   // skipped entirely - a battery sample or status update on an otherwise
   // unchanged page must never cost a full repaint on this reflective panel.
   bool page_rebuilt = false;
-
   QueueHandle_t queue = board::button_event_queue();
   if (queue != nullptr) {
     board::ButtonEvent event;
@@ -345,6 +373,37 @@ void timer_callback(lv_timer_t* timer) {
       // navigation guard below and would otherwise tear the screen away from
       // an in-progress write and start an AP while it runs.
       if (app_core::ota_owns_screen(runtime->snapshot.ota)) continue;
+      // While the menu owns the screen the two buttons mean something else
+      // entirely, so this block comes first and consumes every event: KEY
+      // moves the cursor, BOOT selects, and a KEY long press leaves. The
+      // bottom band on that page says exactly this, which is the only reason
+      // changing the meaning of a button is defensible at all.
+      if (runtime->showing_settings) {
+        if (event == board::ButtonEvent::EnterSetup) {
+          ESP_LOGI(kTag, "button event=KEY-LONG action=leave-settings");
+          runtime->showing_settings = false;
+          runtime->carousel.page_started_ms = now_ms;
+          (void)render_current(*runtime, "settings-exit", false);
+          page_rebuilt = true;
+        } else if (event == board::ButtonEvent::Previous) {
+          runtime->settings.focus_next();
+          runtime->context.settings_focus = runtime->settings.focused_index();
+          settings_dirty = true;
+        } else if (event == board::ButtonEvent::Next) {
+          settings_action = runtime->settings.activate();
+          settings_dirty = true;
+        }
+        continue;
+      }
+      if (event == board::ButtonEvent::OpenMenu) {
+        ESP_LOGI(kTag, "button event=BOOT-LONG action=open-settings");
+        runtime->settings.reset();
+        runtime->context.settings_focus = 0;
+        runtime->context.settings_status.clear();
+        runtime->showing_settings = true;
+        settings_dirty = true;
+        continue;
+      }
       if (event == board::ButtonEvent::EnterSetup) {
         // Logged because this gesture was previously invisible: a KEY long
         // press that never armed and one whose handler was unregistered
@@ -379,7 +438,7 @@ void timer_callback(lv_timer_t* timer) {
     }
   }
 
-  if (!runtime->snapshot.setup.active &&
+  if (!runtime->snapshot.setup.active && !runtime->showing_settings &&
       !app_core::ota_owns_screen(runtime->snapshot.ota)) {
     const app_core::PageId current_page =
         runtime->active_pages[runtime->carousel.index];
@@ -447,6 +506,29 @@ void timer_callback(lv_timer_t* timer) {
     runtime->carousel.page_started_ms = now_ms;
     (void)render_current(*runtime, "ota-exit", false);
     page_rebuilt = true;
+  }
+
+  if (settings_action == SettingsAction::StartUpdateCheck) {
+    runtime->context.settings_status = text(Text::SettingsChecking);
+    if (g_update_check_handler != nullptr) g_update_check_handler();
+  } else if (settings_action == SettingsAction::EnterWifiSetup) {
+    // Leaves the menu first: Wi-Fi setup is its own page, and the two must not
+    // both believe they own the screen.
+    runtime->showing_settings = false;
+    settings_dirty = false;
+    if (g_setup_gesture_handler != nullptr) g_setup_gesture_handler();
+  }
+
+  if (runtime->showing_settings) {
+    if (settings_dirty) {
+      const lv_obj_t* rendered =
+          render_page(runtime->context, runtime->snapshot,
+                      app_core::PageId::Settings, safe_canvas(), 0, 0);
+      if (rendered == nullptr) ESP_LOGE(kTag, "renderer failure page=Settings");
+    }
+    // Returns before the tray and label paths: this page carries neither.
+    runtime->showing_setup = false;
+    return;
   }
 
   if (runtime->snapshot.setup.active) {
@@ -536,6 +618,21 @@ void publish_snapshot(const app_core::AppSnapshot& snapshot) {
 
 void set_setup_gesture_handler(void (*handler)()) {
   g_setup_gesture_handler = handler;
+}
+
+void set_update_check_handler(void (*handler)()) {
+  g_update_check_handler = handler;
+}
+
+void set_update_status(const std::string& status) {
+  // Written from whatever task ran the check. It is read on the LVGL thread on
+  // the next tick, and a torn read of a std::string would be a crash, so the
+  // publish goes through the same mutex the snapshot handoff uses.
+  if (g_publish_mutex == nullptr) return;
+  if (xSemaphoreTake(g_publish_mutex, portMAX_DELAY) != pdTRUE) return;
+  g_pending_update_status = status;
+  g_pending_update_status_dirty = true;
+  xSemaphoreGive(g_publish_mutex);
 }
 
 }  // namespace ui

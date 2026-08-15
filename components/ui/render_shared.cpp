@@ -387,6 +387,10 @@ lv_obj_t* render_page(UiContext& context,
       render_setup(replacement, snapshot, content, page_index, page_count,
                    &context);
       break;
+    case app_core::PageId::Settings:
+      render_settings(replacement, snapshot, content, page_index, page_count,
+                      &context);
+      break;
     case app_core::PageId::Ota:
       render_ota(replacement, snapshot, content, page_index, page_count,
                  &context);
@@ -397,12 +401,25 @@ lv_obj_t* render_page(UiContext& context,
                   &context);
       break;
   }
-  // Drawn once here rather than by each renderer, against the full page bounds
-  // instead of the tray-and-dot-reduced content area, so the indicator sits in
-  // the same place on every page and no renderer can forget it. content_bounds
-  // has already kept the page's own drawing clear of this band.
+  // One band along the bottom, filled according to what the page is: position
+  // in the rotation for a carousel page, what the buttons currently do for a
+  // page where they mean something else. Drawn here rather than by each
+  // renderer so it cannot be forgotten, and against the full page bounds
+  // rather than the reduced content area, so it sits identically everywhere.
+  //
+  // local_bounds, not bounds: children are positioned relative to the page
+  // root, which is itself already placed at the canvas origin. Passing the
+  // absolute rect here put the dots at 6 + 289 = 295, five pixels below the
+  // safe canvas - which is what the geometry walk caught on the first boot
+  // after this was written.
   if (page_shows_dots(page)) {
-    page_dots(replacement, page_index, page_count, page_dots_band(bounds));
+    page_dots(replacement, page_index, page_count,
+              page_dots_band(local_bounds));
+  } else if (page == app_core::PageId::Settings) {
+    // The hint band is not decoration here. It is the only thing telling
+    // anyone that KEY has stopped turning pages and started moving a cursor.
+    button_hints(replacement, page_dots_band(local_bounds),
+                 input_hints(InputContext::Menu));
   }
   lv_obj_set_parent(replacement, context.host);
   lv_obj_delete(staging_screen);

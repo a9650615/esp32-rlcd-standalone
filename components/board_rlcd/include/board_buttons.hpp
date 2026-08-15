@@ -14,7 +14,13 @@
 
 namespace board {
 
-enum class ButtonEvent : uint8_t { Next, Previous, EnterSetup };
+// EnterSetup is a KEY long press, OpenMenu a BOOT long press.
+//
+// Taking BOOT long presses is safe despite GPIO0 being the download strap: the
+// strap is sampled at reset, not while running. The only cost is that a reset
+// arriving while BOOT happens to be held lands in the ROM downloader, which a
+// power cycle clears.
+enum class ButtonEvent : uint8_t { Next, Previous, EnterSetup, OpenMenu };
 
 // A dependency-free active-low debounce filter. Call sample() once per 10 ms.
 class ButtonFilter {
@@ -40,19 +46,12 @@ class ButtonFilter {
   Events sample(bool key_active_low, bool boot_active_low) {
     Events events;
     update(key_, key_active_low, ButtonEvent::Previous, events, &key_long_press_fired_);
-    update(boot_, boot_active_low, ButtonEvent::Next, events);
+    update(boot_, boot_active_low, ButtonEvent::Next, events, &boot_long_press_fired_);
 
-    if (key_.stable_pressed) {
-      if (key_held_samples_ < kLongPressSamples) {
-        ++key_held_samples_;
-        if (key_held_samples_ == kLongPressSamples && events.count < events.events.size()) {
-          events.events[events.count++] = ButtonEvent::EnterSetup;
-          key_long_press_fired_ = true;
-        }
-      }
-    } else {
-      key_held_samples_ = 0;
-    }
+    hold(key_, key_held_samples_, key_long_press_fired_, ButtonEvent::EnterSetup,
+         events);
+    hold(boot_, boot_held_samples_, boot_long_press_fired_,
+         ButtonEvent::OpenMenu, events);
     return events;
   }
 
@@ -62,6 +61,26 @@ class ButtonFilter {
     bool candidate_pressed = false;
     std::size_t candidate_samples = 0;
   };
+
+  // Fires `event` once, on the sample where the hold crosses the threshold,
+  // and arms the release suppression so the same press does not also emit its
+  // short-press event. Shared by both buttons rather than written twice: the
+  // two long presses have to behave identically or the same hold means
+  // different things depending on which button it was.
+  static void hold(const State& state, std::size_t& held_samples, bool& fired,
+                   ButtonEvent event, Events& events) {
+    if (!state.stable_pressed) {
+      held_samples = 0;
+      return;
+    }
+    if (held_samples >= kLongPressSamples) return;
+    ++held_samples;
+    if (held_samples == kLongPressSamples &&
+        events.count < events.events.size()) {
+      events.events[events.count++] = event;
+      fired = true;
+    }
+  }
 
   // suppress_release, when non-null, skips the release event exactly once
   // (used so a fired long press doesn't also emit the short-press event).
@@ -99,7 +118,9 @@ class ButtonFilter {
   State key_;
   State boot_;
   std::size_t key_held_samples_ = 0;
+  std::size_t boot_held_samples_ = 0;
   bool key_long_press_fired_ = false;
+  bool boot_long_press_fired_ = false;
 };
 
 #ifdef ESP_PLATFORM

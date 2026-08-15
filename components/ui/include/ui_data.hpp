@@ -186,6 +186,53 @@ constexpr bool setup_layout_fits(const Rect content) {
         rect_within(content, layout.status);
 }
 
+struct SettingsLayout {
+  Rect title;
+  // One row per SettingsItem. Fixed-size rather than computed per item so the
+  // rows cannot shift as values change length underneath them.
+  Rect rows[4];
+  Rect value_column;
+};
+
+inline constexpr int kSettingsRowHeight =
+    safe_text_box_height(24, kSetupMediumFontLineHeight);
+inline constexpr int kSettingsRowGap = 4;
+inline constexpr int kSettingsTitleGap = 8;
+// The right-hand column carries each row's current value - the version string,
+// the language name. Wide enough for "Traditional Chinese" at font 14 and for
+// a semantic version, whichever is longer.
+inline constexpr int kSettingsValueWidth = 150;
+inline constexpr int kSettingsCursorWidth = 14;
+
+// Title, then one row per item, each split into a label on the left and its
+// current value on the right. The cursor occupies a fixed gutter so the labels
+// do not shift sideways as it moves down.
+constexpr SettingsLayout settings_layout(const Rect bounds) {
+  const Rect title{bounds.x, bounds.y, bounds.width, kSetupTitleHeight};
+  SettingsLayout layout{};
+  layout.title = title;
+  int y = title.bottom() + kSettingsTitleGap;
+  for (int i = 0; i < 4; ++i) {
+    layout.rows[i] = Rect{bounds.x, y, bounds.width, kSettingsRowHeight};
+    y += kSettingsRowHeight + kSettingsRowGap;
+  }
+  layout.value_column =
+      Rect{bounds.right() - kSettingsValueWidth, 0, kSettingsValueWidth,
+           kSettingsRowHeight};
+  return layout;
+}
+
+constexpr bool settings_layout_fits(const Rect content) {
+  const SettingsLayout layout = settings_layout(content);
+  if (!rect_within(content, layout.title)) return false;
+  for (int i = 0; i < 4; ++i) {
+    if (!rect_within(content, layout.rows[i])) return false;
+  }
+  // The label side must keep usable width once the cursor gutter and the value
+  // column are taken out of the row.
+  return content.width - kSettingsCursorWidth - kSettingsValueWidth > 80;
+}
+
 // Same literal-line-height discipline as the Setup rows above: this header is
 // compiled LVGL-free for host tests, so the values come from
 // lv_font_montserrat_{28,48}.c rather than font->line_height.
@@ -365,7 +412,8 @@ constexpr bool page_shows_tray(app_core::PageId page) {
 // but not part of the rotation, so a position-in-cycle marker would be
 // meaningless on them.
 constexpr bool page_shows_dots(app_core::PageId page) {
-  return page != app_core::PageId::Setup && page != app_core::PageId::Ota;
+  return page != app_core::PageId::Setup &&
+         page != app_core::PageId::Settings && page != app_core::PageId::Ota;
 }
 
 // Height reserved along the bottom for the page dots, matching the gap the

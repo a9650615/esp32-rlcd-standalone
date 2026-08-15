@@ -1,5 +1,8 @@
 #pragma once
 
+// For InputHints, which button_hints below renders.
+#include "settings_menu.hpp"
+
 #include <cstdint>
 #include <array>
 #include <cstddef>
@@ -147,6 +150,9 @@ void weather_icon(lv_obj_t* parent, Rect bounds, WeatherIconKind kind,
                   bool inverse = false);
 void temperature_icon(lv_obj_t* parent, Rect bounds, bool inverse = false);
 void humidity_icon(lv_obj_t* parent, Rect bounds, bool inverse = false);
+// Fills the bottom band on pages where the buttons do something other than
+// turn pages. A no-op when hints.visible is false.
+void button_hints(lv_obj_t* parent, Rect bounds, InputHints hints);
 void page_dots(lv_obj_t* parent, std::size_t page_index,
                std::size_t page_count, Rect bounds);
 lv_obj_t* navigation_overlay(lv_obj_t* parent, Rect bounds);

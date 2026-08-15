@@ -207,6 +207,21 @@ void humidity_icon(lv_obj_t* parent, Rect bounds, bool inverse) {
                inverse);
 }
 
+void button_hints(lv_obj_t* parent, Rect bounds, InputHints hints) {
+  if (!hints.visible) return;
+  // KEY is the middle button and BOOT the right one (see the button table in
+  // the board skill), so the hints run left to right in that order and the
+  // pairing needs no explaining.
+  const int half = bounds.width / 2;
+  const std::string key = std::string("KEY ") + text(hints.key);
+  const std::string boot = std::string(text(hints.boot)) + " BOOT";
+  label(parent, key.c_str(), {bounds.x, bounds.y - 6, half, bounds.height + 6},
+        &lv_font_montserrat_14, LV_TEXT_ALIGN_LEFT);
+  label(parent, boot.c_str(),
+        {bounds.x + half, bounds.y - 6, bounds.width - half, bounds.height + 6},
+        &lv_font_montserrat_14, LV_TEXT_ALIGN_RIGHT);
+}
+
 void page_dots(lv_obj_t* parent, std::size_t page_index,
                std::size_t page_count, Rect bounds) {
   const PageDotsGeometry geometry =
