@@ -3,6 +3,7 @@
 #include "ota_decision.hpp"
 #include "ota_image.hpp"
 #include "ota_prefix.hpp"
+#include "ota_version.hpp"
 #include "ui_data.hpp"
 
 #include "test_support.hpp"
@@ -254,6 +255,46 @@ HOST_TEST(ota_prefix_holds_an_upload_that_ends_inside_the_header) {
   // what stops a stalled upload from erasing the spare copy for nothing.
   EXPECT_TRUE(!inspector.ready());
   EXPECT_EQ(static_cast<int>(inspector.buffered()), 40);
+}
+
+// The image validator deliberately does not gate on version, so this function
+// is the only thing preventing a periodic update check from reinstalling the
+// same firmware forever.
+HOST_TEST(ota_version_only_reports_newer_for_a_genuine_increase) {
+  EXPECT_TRUE(ota::is_newer("0.2.0", "0.1.0"));
+  EXPECT_TRUE(ota::is_newer("1.0.0", "0.9.9"));
+  EXPECT_TRUE(ota::is_newer("0.1.1", "0.1.0"));
+  // A GitHub tag_name carries a leading v; the app descriptor does not.
+  EXPECT_TRUE(ota::is_newer("v0.2.0", "0.1.0"));
+  EXPECT_TRUE(!ota::is_newer("v0.1.0", "0.1.0"));
+
+  // Equal must be false, or every check installs again.
+  EXPECT_TRUE(!ota::is_newer("0.1.0", "0.1.0"));
+  EXPECT_TRUE(!ota::is_newer("0.1.0", "v0.1.0"));
+  // Missing components are zero, so these are the same version.
+  EXPECT_TRUE(!ota::is_newer("0.1", "0.1.0"));
+  EXPECT_TRUE(!ota::is_newer("1", "1.0.0"));
+
+  // Older must be false, including a downgrade offered by a mis-tagged release.
+  EXPECT_TRUE(!ota::is_newer("0.1.0", "0.2.0"));
+  EXPECT_TRUE(!ota::is_newer("0.9.9", "1.0.0"));
+
+  // Numeric, not lexicographic: "0.10.0" is newer than "0.9.0" even though it
+  // sorts earlier as a string.
+  EXPECT_TRUE(ota::is_newer("0.10.0", "0.9.0"));
+  EXPECT_TRUE(!ota::is_newer("0.9.0", "0.10.0"));
+}
+
+HOST_TEST(ota_version_refuses_to_act_on_anything_it_cannot_parse) {
+  // A garbage tag parses to 0.0.0, which would read as "newer than nothing".
+  // Both sides must contain digits before any comparison is trusted.
+  for (const char* junk : {"", "v", "latest", "nightly", "release"}) {
+    EXPECT_TRUE(!ota::is_newer(junk, "0.1.0"));
+    EXPECT_TRUE(!ota::is_newer("0.2.0", junk));
+  }
+  // A suffix after the numbers is fine and must not corrupt the comparison.
+  EXPECT_TRUE(ota::is_newer("0.2.0-rc1", "0.1.0"));
+  EXPECT_TRUE(!ota::is_newer("0.1.0-rc1", "0.1.0"));
 }
 
 HOST_TEST(ota_layout_fits_and_does_not_overlap) {

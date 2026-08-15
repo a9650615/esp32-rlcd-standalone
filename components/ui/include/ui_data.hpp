@@ -299,7 +299,6 @@ inline std::string setup_password_text(const std::string& portal_password) {
 struct SystemTrayLayout {
   Rect time;
   Rect network;
-  Rect dots;
   Rect battery;
 };
 
@@ -316,34 +315,25 @@ inline constexpr int kSystemTrayCellY = 3;
 inline constexpr int kSystemTrayCellHeight = 18;
 inline constexpr int kSystemTrayCellGap = 4;
 inline constexpr int kSystemTrayBatteryWidth = 64;
-// The page-dot indicator used to sit in the bottom-right corner of every
-// data page; it now lives here instead (see render_tray in
-// render_shared.cpp). The network cell was oversized for the short strings
-// it actually carries ("SETUP"/"WIFI"/"NO WIFI"), so this width is carved
-// out of what used to be network's slack rather than growing the tray.
-// Sized for the widest cluster the carousel can show (kPageCount dots),
-// proven by the static_assert below.
-inline constexpr int kSystemTrayDotsWidth = 50;
 
-// Time flush left, battery flush right, page dots immediately left of
-// battery, network status filling whatever remains in the middle. Pure
-// arithmetic on bounds.x/y/width/height, so - like setup_layout - it works
-// for both the zero-offset local frame render_page builds pages with and
-// the absolute safe_canvas() frame the static_asserts below use.
+// Time flush left, battery flush right, network status filling the middle.
+// The page dots briefly lived here too; they are now centred along the bottom
+// of the page (see page_dots_geometry), which gives the network cell back the
+// width it was sharing. Pure arithmetic on bounds.x/y/width/height, so - like
+// setup_layout - it works for both the zero-offset local frame render_page
+// builds pages with and the absolute safe_canvas() frame the static_asserts
+// below use.
 constexpr SystemTrayLayout system_tray_layout(const Rect bounds) {
   const Rect time{bounds.x, bounds.y, kSystemTrayTimeWidth,
                   kSystemTrayTimeHeight};
   const Rect battery{bounds.right() - kSystemTrayBatteryWidth,
                      bounds.y + kSystemTrayCellY, kSystemTrayBatteryWidth,
                      kSystemTrayCellHeight};
-  const Rect dots{battery.x - kSystemTrayCellGap - kSystemTrayDotsWidth,
-                  bounds.y + kSystemTrayCellY, kSystemTrayDotsWidth,
-                  kSystemTrayCellHeight};
   const int network_x = time.right() + kSystemTrayCellGap;
-  const int network_width = dots.x - kSystemTrayCellGap - network_x;
+  const int network_width = battery.x - kSystemTrayCellGap - network_x;
   const Rect network{network_x, bounds.y + kSystemTrayCellY, network_width,
                      kSystemTrayCellHeight};
-  return {time, network, dots, battery};
+  return {time, network, battery};
 }
 
 // One of the three fixed tray network strings.
@@ -362,82 +352,114 @@ inline std::string tray_battery_text(const app_core::BatteryData& battery) {
 
 // One place to decide which pages carry the tray. Home is deliberately
 // excluded so the Clock Hero keeps the full canvas.
-// Ota joins Home in going without a tray, for a different reason: the tray
-// carries page dots, and dots on a screen that is deliberately refusing
-// navigation while it writes flash would advertise an action that is being
-// blocked.
+// Home carries the tray like every other page, so the time, network state and
+// battery stay in one fixed place rather than moving as the carousel turns.
+// Ota is the sole exception: while it owns the screen the firmware is writing
+// its own flash, and a tray would imply a running device to interact with.
 constexpr bool page_shows_tray(app_core::PageId page) {
-  return page != app_core::PageId::Home && page != app_core::PageId::Ota;
+  return page != app_core::PageId::Ota;
 }
 
-// Every page derives its content area through this single path: a
-// tray-less page (Home) gets the untouched bounds back, a tray page gets
-// bounds with kSystemTrayReservedHeight sliced off the top. Bottom stays
-// fixed either way, so page dots anchored to bounds.bottom() do not move.
+// Which pages carry the bottom page-dot indicator. Setup and Ota are reachable
+// but not part of the rotation, so a position-in-cycle marker would be
+// meaningless on them.
+constexpr bool page_shows_dots(app_core::PageId page) {
+  return page != app_core::PageId::Setup && page != app_core::PageId::Ota;
+}
+
+// Height reserved along the bottom for the page dots. The gap is smaller than
+// the tray's own kSystemTrayContentGap on purpose: that one separates content
+// from a separator rule and a row of text, whereas this separates it from five
+// pixels of dots with no rule above them.
+//
+// It is also as much as the weather page can spare. Its forecast columns stack
+// to exactly 160 px inside a band of (170 - this) px, so anything above 10
+// here clips them - forecast_columns_layout_all_fit below is what catches
+// that, and it is load-bearing rather than decorative.
+inline constexpr int kPageDotsBottomGap = 3;
+inline constexpr int kPageDotsReservedHeight =
+    kPageDotSize + kPageDotsBottomGap;
+
+// Every page derives its content area through this single path, so nothing
+// draws into the tray band or under the dots by accident.
 constexpr Rect content_bounds(const Rect bounds, app_core::PageId page) {
-  if (!page_shows_tray(page)) return bounds;
-  return {bounds.x, bounds.y + kSystemTrayReservedHeight, bounds.width,
-          bounds.height - kSystemTrayReservedHeight};
+  int top = bounds.y;
+  int height = bounds.height;
+  if (page_shows_tray(page)) {
+    top += kSystemTrayReservedHeight;
+    height -= kSystemTrayReservedHeight;
+  }
+  if (page_shows_dots(page)) height -= kPageDotsReservedHeight;
+  return {bounds.x, top, bounds.width, height};
+}
+
+// The strip the dots occupy, below every page's content area. Anchored to the
+// bottom of the full page bounds rather than to the content area, so it stays
+// put whatever the page above it does.
+constexpr Rect page_dots_band(const Rect bounds) {
+  return {bounds.x, bounds.bottom() - kPageDotSize, bounds.width,
+          kPageDotSize};
 }
 
 static_assert(system_tray_layout(safe_canvas()).time.right() <=
                   system_tray_layout(safe_canvas()).network.x,
               "tray time and network cells do not overlap");
 static_assert(system_tray_layout(safe_canvas()).network.right() <=
-                  system_tray_layout(safe_canvas()).dots.x,
-              "tray network and dots cells do not overlap");
-static_assert(system_tray_layout(safe_canvas()).dots.right() <=
                   system_tray_layout(safe_canvas()).battery.x,
-              "tray dots and battery cells do not overlap");
+              "tray network and battery cells do not overlap");
 static_assert(system_tray_layout(safe_canvas()).network.width > 0,
               "tray network cell has positive width");
-static_assert(system_tray_layout(safe_canvas()).dots.width >=
-                  static_cast<int>(app_core::kPageCount) * kPageDotSize +
-                      (static_cast<int>(app_core::kPageCount) - 1) *
-                          kPageDotGap,
-              "tray dots cell fits the widest page-dot cluster the carousel "
-              "can show (kPageCount dots)");
 static_assert(system_tray_layout(safe_canvas()).battery.right() ==
                   safe_canvas().right(),
               "tray battery cell sits flush right");
 static_assert(within_safe_canvas(system_tray_layout(safe_canvas()).time) &&
                   within_safe_canvas(system_tray_layout(safe_canvas()).network) &&
-                  within_safe_canvas(system_tray_layout(safe_canvas()).dots) &&
                   within_safe_canvas(system_tray_layout(safe_canvas()).battery),
               "tray cells stay inside the safe canvas");
 
-static_assert(!page_shows_tray(app_core::PageId::Home),
-              "home keeps the full canvas without a tray");
-static_assert(page_shows_tray(app_core::PageId::TaiwanMarket) &&
+static_assert(page_shows_tray(app_core::PageId::Home) &&
+                  page_shows_tray(app_core::PageId::TaiwanMarket) &&
                   page_shows_tray(app_core::PageId::UsMarket) &&
                   page_shows_tray(app_core::PageId::Weather) &&
                   page_shows_tray(app_core::PageId::Indoor) &&
                   page_shows_tray(app_core::PageId::Setup),
-              "data pages and setup carry the tray");
+              "every page except the OTA takeover carries the tray, so the "
+              "clock, network state and battery never move");
 static_assert(!page_shows_tray(app_core::PageId::Ota),
-              "the OTA takeover page must not offer page dots");
+              "the OTA takeover page owns the screen outright");
+static_assert(!page_shows_dots(app_core::PageId::Setup) &&
+                  !page_shows_dots(app_core::PageId::Ota),
+              "pages outside the rotation show no position-in-cycle marker");
 
 static_assert(ota_layout_fits(content_bounds(safe_canvas(),
                                              app_core::PageId::Ota)),
               "OTA layout does not fit its content bounds");
 
-static_assert(content_bounds(safe_canvas(), app_core::PageId::Home).x ==
-                      safe_canvas().x &&
-                  content_bounds(safe_canvas(), app_core::PageId::Home).y ==
-                      safe_canvas().y &&
+static_assert(content_bounds(safe_canvas(), app_core::PageId::Home).y ==
+                      content_bounds(safe_canvas(),
+                                     app_core::PageId::Weather).y &&
                   content_bounds(safe_canvas(), app_core::PageId::Home)
-                          .width == safe_canvas().width &&
-                  content_bounds(safe_canvas(), app_core::PageId::Home)
-                          .height == safe_canvas().height,
-              "home content bounds are the untouched safe canvas");
+                          .height == content_bounds(safe_canvas(),
+                                                    app_core::PageId::Weather)
+                                         .height,
+              "home is laid out on the same content area as every other "
+              "carousel page, so the clock cannot drift relative to them");
 static_assert(
     content_bounds(safe_canvas(), app_core::PageId::Weather).y ==
         safe_canvas().y + kSystemTrayReservedHeight,
     "a tray page loses exactly the reserved tray height off the top");
 static_assert(
-    content_bounds(safe_canvas(), app_core::PageId::Weather).bottom() ==
+    content_bounds(safe_canvas(), app_core::PageId::Weather).bottom() +
+            kPageDotsReservedHeight ==
         safe_canvas().bottom(),
-    "a tray page keeps the same bottom edge, so page dots do not move");
+    "a dotted page stops short of the bottom by exactly the dot band");
+static_assert(
+    page_dots_band(safe_canvas()).y >=
+        content_bounds(safe_canvas(), app_core::PageId::Weather).bottom(),
+    "the dot band sits below the content area rather than over it");
+static_assert(
+    within_safe_canvas(page_dots_band(safe_canvas())),
+    "the dot band stays inside the safe canvas");
 static_assert(
     content_bounds(safe_canvas(), app_core::PageId::Weather).height > 0,
     "tray pages keep positive content height");
@@ -487,7 +509,10 @@ constexpr PageDotsGeometry page_dots_geometry(const Rect bounds,
       page_index < page_count ? page_index : page_count - 1;
   const int total_width = static_cast<int>(
       page_count * kPageDotSize + (page_count - 1) * kPageDotGap);
-  return {page_count, active_index, bounds.right() - total_width, total_width,
+  // Centred, so the cluster stays put as the carousel's page count changes
+  // rather than growing leftward from a fixed right edge.
+  return {page_count, active_index,
+          bounds.x + (bounds.width - total_width) / 2, total_width,
           bounds.y + bounds.height - kPageDotSize};
 }
 

@@ -1,0 +1,25 @@
+config OTA_RELEASE_REPO
+    string "GitHub repository to check for firmware releases"
+    default "a9650615/esp32-rlcd-standalone"
+    help
+        "owner/name" of the repository whose latest release is offered as a
+        firmware update on the settings page. Change this if you forked the
+        project, or the device will offer you someone else's builds.
+
+        The check is read-only and never installs on its own: it reports what
+        it found and leaves the decision on the settings page.
+
+        Unauthenticated GitHub API requests are rate-limited per source
+        address (60/hour at the time of writing), which is ample for a check
+        driven by a button press.
+
+config OTA_RELEASE_ASSET_SUFFIX
+    string "Filename suffix identifying the firmware asset in a release"
+    default ".bin"
+    help
+        A release can carry several attachments. The first asset whose name
+        ends with this suffix is treated as the firmware image.
+
+        Note that a wrong choice here is not dangerous: whatever is downloaded
+        still has to pass the image header check before a single byte of the
+        OTA slot is erased.

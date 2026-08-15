@@ -33,6 +33,7 @@ add_executable(host_tests
     ../../components/net_log/net_log_ring.cpp
     ../../components/ota/ota_image.cpp
     ../../components/ota/ota_prefix.cpp
+    ../../components/ota/ota_version.cpp
     ../../.tools/esp-idf/components/json/cJSON/cJSON.c
 )
 target_include_directories(host_tests PRIVATE

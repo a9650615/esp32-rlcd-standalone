@@ -68,7 +68,9 @@ HOST_TEST(page_dots_geometry_supports_five_four_and_zero_pages) {
   EXPECT_EQ(five.count, static_cast<std::size_t>(5));
   EXPECT_EQ(five.active_index, static_cast<std::size_t>(3));
   EXPECT_EQ(five.total_width, 41);
-  EXPECT_EQ(five.start_x, bounds.right() - 41);
+  // Centred, not flush right: the cluster moved out of the tray to the bottom
+  // of the page, where an off-centre indicator reads as a mistake.
+  EXPECT_EQ(five.start_x, bounds.x + (bounds.width - 41) / 2);
 
   const auto four = ui::page_dots_geometry(bounds, 9, 4);
   EXPECT_EQ(four.count, static_cast<std::size_t>(4));
@@ -238,12 +240,46 @@ HOST_TEST(home_tile_is_none_when_nothing_at_all_is_valid) {
   EXPECT_TRUE(ui::choose_home_tile(snapshot) == ui::HomeTileKind::None);
 }
 
-HOST_TEST(tray_dots_cell_sits_between_network_and_battery) {
-  const auto cells = ui::system_tray_layout(ui::safe_canvas());
-  EXPECT_TRUE(cells.network.right() <= cells.dots.x);
-  EXPECT_TRUE(cells.dots.right() <= cells.battery.x);
-  EXPECT_TRUE(cells.dots.width >=
-              5 * ui::kPageDotSize + 4 * ui::kPageDotGap);
+HOST_TEST(page_dots_sit_centred_along_the_bottom_below_every_page) {
+  const ui::Rect canvas = ui::safe_canvas();
+  const ui::Rect band = ui::page_dots_band(canvas);
+  // Flush to the bottom of the canvas, spanning its full width.
+  EXPECT_EQ(band.bottom(), canvas.bottom());
+  EXPECT_EQ(band.x, canvas.x);
+
+  // Centred, and centred for any page count rather than only the current one:
+  // the cluster must not drift as pages are added or skipped.
+  for (std::size_t count = 1; count <= 7; ++count) {
+    const auto dots = ui::page_dots_geometry(band, 0, count);
+    const int left = dots.start_x - band.x;
+    const int right = band.right() - (dots.start_x + dots.total_width);
+    // Equal margins either side, allowing one pixel for an odd remainder.
+    EXPECT_TRUE(left - right <= 1 && right - left <= 1);
+  }
+
+  // The band never overlaps what the page itself draws into.
+  for (const app_core::PageId page :
+       {app_core::PageId::Home, app_core::PageId::TaiwanMarket,
+        app_core::PageId::Weather, app_core::PageId::Indoor}) {
+    EXPECT_TRUE(ui::content_bounds(canvas, page).bottom() <= band.y);
+  }
+}
+
+HOST_TEST(home_shares_the_tray_and_content_area_with_the_data_pages) {
+  const ui::Rect canvas = ui::safe_canvas();
+  EXPECT_TRUE(ui::page_shows_tray(app_core::PageId::Home));
+  // Identical content area, so the clock cannot sit at a different height from
+  // the pages it alternates with.
+  const ui::Rect home = ui::content_bounds(canvas, app_core::PageId::Home);
+  const ui::Rect weather = ui::content_bounds(canvas, app_core::PageId::Weather);
+  EXPECT_EQ(home.y, weather.y);
+  EXPECT_EQ(home.height, weather.height);
+  EXPECT_TRUE(home.y > canvas.y);  // the tray band is genuinely reserved
+
+  // Pages outside the rotation carry no position marker.
+  EXPECT_TRUE(!ui::page_shows_dots(app_core::PageId::Setup));
+  EXPECT_TRUE(!ui::page_shows_dots(app_core::PageId::Ota));
+  EXPECT_TRUE(ui::page_shows_dots(app_core::PageId::Home));
 }
 
 HOST_TEST(forecast_fixture_contains_rain_probability_for_every_day) {

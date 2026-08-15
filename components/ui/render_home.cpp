@@ -54,7 +54,6 @@ void render_home(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
   label(parent, sync.c_str(), layout.sync, row_font());
 
   render_right_tiles(parent, snapshot, layout.tile);
-  page_dots(parent, page_index, page_count, bounds);
 }
 
 }  // namespace ui

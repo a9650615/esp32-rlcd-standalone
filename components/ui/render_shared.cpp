@@ -315,12 +315,6 @@ void render_tray(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
                                   small_font(), LV_TEXT_ALIGN_RIGHT);
   if (context != nullptr) context->staging_battery_label = battery_label;
 
-  // The page-dot indicator moved here from the bottom-right corner of every
-  // data page (see render_weather.cpp/render_indoor.cpp/render_market.cpp).
-  // Setup calls render_page with (page_index, page_count) == (0, 0), which
-  // page_dots_geometry already renders as zero dots.
-  page_dots(parent, page_index, page_count, cells.dots);
-
   divider(parent, {bounds.x, bounds.y + kSystemTrayHeight, bounds.width,
                    kSeparatorWidth});
 }
@@ -401,6 +395,13 @@ lv_obj_t* render_page(UiContext& context,
       render_home(replacement, snapshot, content, page_index, page_count,
                   &context);
       break;
+  }
+  // Drawn once here rather than by each renderer, against the full page bounds
+  // instead of the tray-and-dot-reduced content area, so the indicator sits in
+  // the same place on every page and no renderer can forget it. content_bounds
+  // has already kept the page's own drawing clear of this band.
+  if (page_shows_dots(page)) {
+    page_dots(replacement, page_index, page_count, page_dots_band(bounds));
   }
   lv_obj_set_parent(replacement, context.host);
   lv_obj_delete(staging_screen);

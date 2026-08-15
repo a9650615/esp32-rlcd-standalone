@@ -9,6 +9,7 @@
 
 #include "dns_server.h"
 #include "ota_pull.hpp"
+#include "ota_release.hpp"
 #include "ota_session.hpp"
 #include "wifi_provision.hpp"
 
@@ -96,33 +97,72 @@ std::string render_form_page(const std::string& error, const std::string& pw) {
       "Password: <input name=\"password\" type=\"password\" "
       "maxlength=\"63\"><br>"
       "<input type=\"submit\" value=\"Connect\"></form>";
-  // Firmware upload lives on the same authenticated page rather than a route
-  // of its own: reaching here already required the KEY long-press that starts
-  // setup mode plus the session password, and that pair is the access control
-  // for flashing the device. enctype is deliberately absent - the handler
-  // streams the raw body into flash, so a multipart wrapper would have to be
-  // parsed back off on a device with no spare RAM to hold the whole image.
+  html += "<hr><p><a href=\"/update?pw=" + pw +
+          "\">Firmware update</a> (running " +
+          std::string(current_app_version()) + ")</p>";
+  html += "</body></html>";
+  return html;
+}
+
+// Its own page rather than more rows on the setup form. The three ways in -
+// check a release, upload a file, fetch a URL - are each a few controls, and
+// stacked under the Wi-Fi form on a phone they pushed the thing most people
+// came for off the screen.
+//
+// `release` is the result of a check the user asked for, empty on first view;
+// nothing is fetched just because the page was opened.
+std::string render_update_page(const std::string& pw,
+                               const std::string& release_message,
+                               const std::string& release_url,
+                               const std::string& error) {
+  std::string html =
+      "<!DOCTYPE html><html><head><title>RLCD Firmware</title>"
+      "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+      "</head><body>";
+  html += "<h1>Firmware</h1>";
+  html += "<p>Running version <b>" + std::string(current_app_version()) +
+          "</b></p>";
+  if (!error.empty()) html += "<p><b>" + error + "</b></p>";
+
+  html += "<h2>Check for a release</h2>";
+  if (!release_message.empty()) html += "<p>" + release_message + "</p>";
   html +=
-      "<hr><h2>Firmware</h2>"
-      "<p>Current: " + std::string(current_app_version()) + "</p>"
+      "<form method=\"POST\" action=\"/update\">"
+      "<input type=\"hidden\" name=\"pw\" value=\"" + pw + "\">"
+      "<input type=\"hidden\" name=\"action\" value=\"check\">"
+      "<input type=\"submit\" value=\"Check now\"></form>";
+  // Only offered once a check actually found a newer build with an asset, so
+  // the install button cannot be pressed on a guess.
+  if (!release_url.empty()) {
+    html +=
+        "<form method=\"POST\" action=\"/ota-url\">"
+        "<input type=\"hidden\" name=\"pw\" value=\"" + pw + "\">"
+        "<input type=\"hidden\" name=\"url\" value=\"" + release_url + "\">"
+        "<input type=\"submit\" value=\"Install this release\"></form>";
+  }
+
+  html +=
+      "<h2>Upload a file</h2>"
       "<form method=\"POST\" action=\"/ota?pw=" + pw + "\" id=\"f\">"
       "<input type=\"file\" id=\"b\" accept=\".bin\"><br>"
       "<input type=\"submit\" value=\"Upload and restart\"></form>"
-      // Sends the file as the raw request body. Four lines of script instead
-      // of a multipart parser in firmware.
+      // Sends the file as the raw request body. A few lines of script instead
+      // of a multipart parser on a device with no RAM to buffer the image.
       "<script>document.getElementById('f').onsubmit=function(e){"
       "e.preventDefault();var f=document.getElementById('b').files[0];"
       "if(!f)return;fetch(this.action,{method:'POST',body:f})"
       ".then(r=>r.text()).then(t=>{document.body.innerHTML='<p>'+t+'</p>';});"
       "};</script>";
-  // The second feeder. Same Session, same validation - the only difference is
-  // that the bytes come from the network instead of the browser.
+
   html +=
-      "<p>Or pull from a URL (https only):</p>"
+      "<h2>Fetch a URL</h2>"
       "<form method=\"POST\" action=\"/ota-url\">"
       "<input type=\"hidden\" name=\"pw\" value=\"" + pw + "\">"
       "<input name=\"url\" size=\"40\" placeholder=\"https://...\"><br>"
       "<input type=\"submit\" value=\"Download and restart\"></form>";
+
+  html += "<p>Progress and any failure also appear on the device's screen.</p>";
+  html += "<p><a href=\"/?pw=" + pw + "\">Back to setup</a></p>";
   html += "</body></html>";
   return html;
 }
@@ -416,6 +456,62 @@ esp_err_t ota_url_post_handler(httpd_req_t* req) {
   return ESP_OK;
 }
 
+esp_err_t update_get_handler(httpd_req_t* req) {
+  const std::string pw = query_pw(req);
+  if (!wifi_config::constant_time_equal(pw, current_portal_password())) {
+    send_html(req, render_password_page(false));
+    return ESP_OK;
+  }
+  // No check is run on load: opening the page should not reach out to the
+  // network, and a rate-limited API answer would be a confusing thing to greet
+  // someone with.
+  send_html(req, render_update_page(pw, {}, {}, {}));
+  return ESP_OK;
+}
+
+// Runs the release query on the request thread rather than a task, unlike the
+// download: this is one small HTTPS GET, and the answer is what the page is
+// being re-rendered to show.
+esp_err_t update_post_handler(httpd_req_t* req) {
+  if (req->content_len == 0 || req->content_len >= kMaxFormBody) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad request");
+    return ESP_OK;
+  }
+  char buffer[kMaxFormBody];
+  size_t received = 0;
+  while (received < req->content_len) {
+    const int chunk =
+        httpd_req_recv(req, buffer + received, req->content_len - received);
+    if (chunk == HTTPD_SOCK_ERR_TIMEOUT) continue;
+    if (chunk <= 0) return ESP_FAIL;
+    received += static_cast<size_t>(chunk);
+  }
+  const std::string_view body(buffer, received);
+
+  std::string body_pw;
+  wifi_config::find_form_value(body, "pw", body_pw);
+  const std::string query_password = query_pw(req);
+  const std::string& pw = !query_password.empty() ? query_password : body_pw;
+  if (!wifi_config::constant_time_equal(pw, current_portal_password())) {
+    ESP_LOGW(kTag, "POST /update -> wrong page password");
+    send_html(req, render_password_page(true));
+    return ESP_OK;
+  }
+
+  const ota::ReleaseInfo release = ota::check_latest_release();
+  // The install button is offered only for a release that both parsed as newer
+  // and actually carries firmware; check_latest_release decides that, and this
+  // does not second-guess it.
+  const std::string url =
+      release.update_available ? release.firmware_url : std::string();
+  send_html(req, render_update_page(pw, release.message, url, {}));
+  return ESP_OK;
+}
+
+const httpd_uri_t kUpdateGet = {"/update", HTTP_GET, update_get_handler,
+                                nullptr};
+const httpd_uri_t kUpdatePost = {"/update", HTTP_POST, update_post_handler,
+                                 nullptr};
 const httpd_uri_t kOtaPost = {"/ota", HTTP_POST, ota_post_handler, nullptr};
 const httpd_uri_t kOtaUrlPost = {"/ota-url", HTTP_POST, ota_url_post_handler,
                                  nullptr};
@@ -432,16 +528,31 @@ void portal_start() {
 
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.lru_purge_enable = true;
-  if (httpd_start(&server_, &config) == ESP_OK) {
-    httpd_register_uri_handler(server_, &kRootGet);
-    httpd_register_uri_handler(server_, &kRootPost);
-    httpd_register_uri_handler(server_, &kOtaPost);
-    httpd_register_uri_handler(server_, &kOtaUrlPost);
-    httpd_register_err_handler(server_, HTTPD_404_NOT_FOUND,
-                               &redirect_404_handler);
-  } else {
-    ESP_LOGW(kTag, "httpd_start failed");
+  // Sized to the table below with room to grow. The default is 8, and
+  // registration past the limit fails by returning an error rather than by
+  // complaining, so a route added as the ninth would simply 404 with nothing
+  // to explain why.
+  config.max_uri_handlers = 12;
+  // A firmware upload holds the socket for the length of the transfer, and a
+  // release check waits on GitHub's TLS handshake.
+  config.recv_wait_timeout = 20;
+  config.send_wait_timeout = 20;
+  if (httpd_start(&server_, &config) != ESP_OK) {
+    ESP_LOGE(kTag, "httpd_start failed; the setup portal will not answer");
+    return;
   }
+
+  const httpd_uri_t* routes[] = {&kRootGet,   &kRootPost,  &kOtaPost,
+                                 &kOtaUrlPost, &kUpdateGet, &kUpdatePost};
+  for (const httpd_uri_t* route : routes) {
+    const esp_err_t result = httpd_register_uri_handler(server_, route);
+    if (result != ESP_OK) {
+      ESP_LOGE(kTag, "route %s unavailable: %s", route->uri,
+               esp_err_to_name(result));
+    }
+  }
+  httpd_register_err_handler(server_, HTTPD_404_NOT_FOUND,
+                             &redirect_404_handler);
 
   dns_server_config_t dns_config = DNS_SERVER_CONFIG_SINGLE("*", "WIFI_AP_DEF");
   dns_ = start_dns_server(&dns_config);
