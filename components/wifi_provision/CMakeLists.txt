@@ -17,4 +17,6 @@ idf_component_register(
         esp_event
         esp_http_server
         esp_timer
+        esp_app_format
+        ota
 )
