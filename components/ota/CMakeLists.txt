@@ -2,9 +2,13 @@ idf_component_register(
     SRCS
         "ota.cpp"
         "ota_image.cpp"
+        "ota_prefix.cpp"
+        "ota_session.cpp"
     INCLUDE_DIRS
         "include"
-    PRIV_REQUIRES
+    REQUIRES
+        app_core
         app_update
+    PRIV_REQUIRES
         esp_partition
 )

@@ -9,6 +9,7 @@
 #include "net_log.hpp"
 #include "net_time.hpp"
 #include "ota.hpp"
+#include "ota_session.hpp"
 #include "shtc3.hpp"
 #include "ui_app.hpp"
 #include "weather.hpp"
@@ -436,6 +437,10 @@ extern "C" void app_main() {
   }
   ESP_LOGI(kTag, "startup diagnostics registry=ready cycle=1");
 
+  // Same indirection as the setup gesture below: wifi_provision owns the one
+  // AppSnapshot, so the ota component is handed a way to publish rather than
+  // depending on it and inverting the layering.
+  ota::set_progress_handler(&wifi_provision::set_ota);
   ui::set_setup_gesture_handler(&wifi_provision::toggle_setup);
   result = wifi_provision::start(snapshot);
   if (result != ESP_OK) {

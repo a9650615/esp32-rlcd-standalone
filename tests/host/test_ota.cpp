@@ -2,10 +2,12 @@
 #include "app_snapshot.hpp"
 #include "ota_decision.hpp"
 #include "ota_image.hpp"
+#include "ota_prefix.hpp"
 #include "ui_data.hpp"
 
 #include "test_support.hpp"
 
+#include <algorithm>
 #include <cstring>
 #include <vector>
 
@@ -188,6 +190,70 @@ HOST_TEST(ota_image_verdict_messages_are_ascii_and_distinct) {
     // Each rejection must say something different, or the message is noise.
     EXPECT_TRUE(std::strcmp(message, "OK") != 0);
   }
+}
+
+// The failure this guards against is silent: write the whole chunk after
+// buffering part of it and the overlap lands in flash twice, shifting
+// everything after it. The image still passes its header check and only fails
+// much later, as a corrupt slot.
+HOST_TEST(ota_prefix_reassembles_exactly_once_across_chunk_boundaries) {
+  const std::vector<uint8_t> image = valid_prefix();
+  // A payload longer than the prefix, with a recognisable tail.
+  std::vector<uint8_t> full = image;
+  for (int i = 0; i < 200; ++i) full.push_back(static_cast<uint8_t>(i));
+
+  // Feed it in awkward pieces, none aligned to the 112-byte boundary, and
+  // rebuild exactly what a Session would write to flash.
+  for (const std::size_t chunk : {std::size_t{1}, std::size_t{7},
+                                  std::size_t{50}, std::size_t{111},
+                                  std::size_t{113}, std::size_t{5000}}) {
+    ota::PrefixInspector inspector;
+    std::vector<uint8_t> flashed;
+    for (std::size_t offset = 0; offset < full.size(); offset += chunk) {
+      const std::size_t length = std::min(chunk, full.size() - offset);
+      const uint8_t* data = full.data() + offset;
+      if (!inspector.ready()) {
+        inspector.feed(data, length);
+        if (!inspector.ready()) continue;
+        flashed.insert(flashed.end(), inspector.buffer(),
+                       inspector.buffer() + ota::kImagePrefixBytes);
+        const std::size_t consumed = inspector.consumed_from_last_chunk();
+        flashed.insert(flashed.end(), data + consumed, data + length);
+        continue;
+      }
+      flashed.insert(flashed.end(), data, data + length);
+    }
+    EXPECT_TRUE(inspector.ready());
+    EXPECT_TRUE(inspector.verdict() == ota::ImageVerdict::Ok);
+    // Byte-for-byte identical to the input: nothing duplicated, nothing lost.
+    EXPECT_EQ(static_cast<int>(flashed.size()), static_cast<int>(full.size()));
+    EXPECT_TRUE(flashed == full);
+  }
+}
+
+HOST_TEST(ota_prefix_latches_its_verdict_and_never_rejudges) {
+  std::vector<uint8_t> jpeg(ota::kImagePrefixBytes, 0);
+  jpeg[0] = 0xFF;
+  ota::PrefixInspector inspector;
+  inspector.feed(jpeg.data(), jpeg.size());
+  EXPECT_TRUE(inspector.verdict() == ota::ImageVerdict::NotAnEspImage);
+
+  // A later chunk that looks like a valid header must not launder the
+  // rejection into an acceptance.
+  const std::vector<uint8_t> image = valid_prefix();
+  inspector.feed(image.data(), image.size());
+  EXPECT_TRUE(inspector.verdict() == ota::ImageVerdict::NotAnEspImage);
+  EXPECT_EQ(static_cast<int>(inspector.consumed_from_last_chunk()), 0);
+}
+
+HOST_TEST(ota_prefix_holds_an_upload_that_ends_inside_the_header) {
+  const std::vector<uint8_t> image = valid_prefix();
+  ota::PrefixInspector inspector;
+  inspector.feed(image.data(), 40);
+  // No verdict, so a Session built on this never opens the slot - which is
+  // what stops a stalled upload from erasing the spare copy for nothing.
+  EXPECT_TRUE(!inspector.ready());
+  EXPECT_EQ(static_cast<int>(inspector.buffered()), 40);
 }
 
 HOST_TEST(ota_layout_fits_and_does_not_overlap) {
