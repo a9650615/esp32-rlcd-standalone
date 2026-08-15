@@ -8,6 +8,7 @@
 #include <esp_timer.h>
 
 #include "dns_server.h"
+#include "ota_pull.hpp"
 #include "ota_session.hpp"
 #include "wifi_provision.hpp"
 
@@ -115,6 +116,14 @@ std::string render_form_page(const std::string& error, const std::string& pw) {
       "if(!f)return;fetch(this.action,{method:'POST',body:f})"
       ".then(r=>r.text()).then(t=>{document.body.innerHTML='<p>'+t+'</p>';});"
       "};</script>";
+  // The second feeder. Same Session, same validation - the only difference is
+  // that the bytes come from the network instead of the browser.
+  html +=
+      "<p>Or pull from a URL (https only):</p>"
+      "<form method=\"POST\" action=\"/ota-url\">"
+      "<input type=\"hidden\" name=\"pw\" value=\"" + pw + "\">"
+      "<input name=\"url\" size=\"40\" placeholder=\"https://...\"><br>"
+      "<input type=\"submit\" value=\"Download and restart\"></form>";
   html += "</body></html>";
   return html;
 }
@@ -339,7 +348,78 @@ esp_err_t ota_post_handler(httpd_req_t* req) {
   return ESP_OK;
 }
 
+// Runs the download off the HTTP task. A pull takes tens of seconds, and
+// blocking the handler that long stalls the whole server: the phone times out
+// and retries, which would start a second update on top of the first.
+void ota_pull_task(void* argument) {
+  std::unique_ptr<std::string> url(static_cast<std::string*>(argument));
+  const ota::PullResult result = ota::pull_from_url(*url);
+  if (result == ota::PullResult::Armed) {
+    ESP_LOGW(kTag, "pulled firmware armed; restarting");
+    esp_restart();
+  }
+  // pull_from_url already put the reason on the panel. Nothing to reboot for;
+  // the running image is untouched and the carousel simply carries on.
+  ESP_LOGE(kTag, "firmware pull failed: %s", ota::pull_result_message(result));
+  vTaskDelete(nullptr);
+}
+
+esp_err_t ota_url_post_handler(httpd_req_t* req) {
+  if (req->content_len == 0 || req->content_len >= kMaxFormBody) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad request");
+    return ESP_OK;
+  }
+  char buffer[kMaxFormBody];
+  size_t received = 0;
+  while (received < req->content_len) {
+    const int chunk =
+        httpd_req_recv(req, buffer + received, req->content_len - received);
+    if (chunk == HTTPD_SOCK_ERR_TIMEOUT) continue;
+    if (chunk <= 0) return ESP_FAIL;
+    received += static_cast<size_t>(chunk);
+  }
+  const std::string_view body(buffer, received);
+
+  std::string body_pw;
+  wifi_config::find_form_value(body, "pw", body_pw);
+  const std::string query_password = query_pw(req);
+  const std::string& pw = !query_password.empty() ? query_password : body_pw;
+  if (!wifi_config::constant_time_equal(pw, current_portal_password())) {
+    ESP_LOGW(kTag, "POST /ota-url -> wrong page password");
+    send_html(req, render_password_page(true));
+    return ESP_OK;
+  }
+
+  std::string url;
+  wifi_config::find_form_value(body, "url", url);
+  if (url.empty()) {
+    send_html(req, render_form_page("Enter a firmware URL.", pw));
+    return ESP_OK;
+  }
+
+  // 4096 B of stack would not survive the TLS handshake; weather_monitor_task
+  // needed 16 KiB for the same reason and this additionally holds a 4 KiB
+  // read buffer of its own.
+  auto* argument = new std::string(url);
+  if (xTaskCreate(&ota_pull_task, "ota_pull", 16384, argument,
+                  tskIDLE_PRIORITY + 1, nullptr) != pdPASS) {
+    delete argument;
+    ESP_LOGE(kTag, "POST /ota-url -> could not start the download task");
+    send_html(req, render_form_page("Device busy; try again.", pw));
+    return ESP_OK;
+  }
+
+  ESP_LOGW(kTag, "POST /ota-url -> download started");
+  httpd_resp_sendstr(req,
+                     "Downloading firmware. Watch the display for progress. "
+                     "The device restarts on its own if the image is good, "
+                     "and stays on the current firmware if it is not.");
+  return ESP_OK;
+}
+
 const httpd_uri_t kOtaPost = {"/ota", HTTP_POST, ota_post_handler, nullptr};
+const httpd_uri_t kOtaUrlPost = {"/ota-url", HTTP_POST, ota_url_post_handler,
+                                 nullptr};
 const httpd_uri_t kRootGet = {"/", HTTP_GET, root_get_handler, nullptr};
 const httpd_uri_t kRootPost = {"/", HTTP_POST, root_post_handler, nullptr};
 
@@ -357,6 +437,7 @@ void portal_start() {
     httpd_register_uri_handler(server_, &kRootGet);
     httpd_register_uri_handler(server_, &kRootPost);
     httpd_register_uri_handler(server_, &kOtaPost);
+    httpd_register_uri_handler(server_, &kOtaUrlPost);
     httpd_register_err_handler(server_, HTTPD_404_NOT_FOUND,
                                &redirect_404_handler);
   } else {

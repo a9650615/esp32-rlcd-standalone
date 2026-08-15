@@ -4,6 +4,7 @@ idf_component_register(
         "ota_image.cpp"
         "ota_prefix.cpp"
         "ota_session.cpp"
+        "ota_pull.cpp"
     INCLUDE_DIRS
         "include"
     REQUIRES
@@ -11,4 +12,7 @@ idf_component_register(
         app_update
     PRIV_REQUIRES
         esp_partition
+        esp_http_client
+        esp-tls
+        mbedtls
 )

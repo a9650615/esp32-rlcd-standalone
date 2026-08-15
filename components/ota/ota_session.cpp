@@ -16,6 +16,10 @@ void set_progress_handler(void (*handler)(const app_core::OtaData&)) {
   g_progress_handler = handler;
 }
 
+void publish_progress(const app_core::OtaData& data) {
+  if (g_progress_handler != nullptr) g_progress_handler(data);
+}
+
 Session::Session(std::size_t total_bytes) : total_(total_bytes) {}
 
 Session::~Session() { abort(); }

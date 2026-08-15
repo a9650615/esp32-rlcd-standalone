@@ -19,6 +19,11 @@ namespace ota {
 // ui::set_setup_gesture_handler.
 void set_progress_handler(void (*handler)(const app_core::OtaData&));
 
+// Publishes through that handler. Exposed so the feeders can report their own
+// failures - a download that never reached Session still needs to say so on
+// the panel. A no-op when no handler is set.
+void publish_progress(const app_core::OtaData& data);
+
 // The single write path both feeders share: a browser upload streaming a
 // request body, and a URL pull streaming an HTTP response. Neither knows
 // anything about partitions or validation; they only supply bytes.
