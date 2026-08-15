@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 
@@ -14,6 +15,21 @@ struct ClockData {
   std::string date;
   std::string source;
 };
+
+// Register order is PCF85063 seconds, minutes, hours, day, weekday, month,
+// year. This is deliberately a value-only type so host tests can validate the
+// read path without pulling in an I2C driver.
+struct RtcDateTime {
+  uint16_t year = 0;
+  uint8_t month = 0;
+  uint8_t day = 0;
+  uint8_t hour = 0;
+  uint8_t minute = 0;
+  uint8_t second = 0;
+};
+
+bool decode_pcf85063(const uint8_t* registers, std::size_t length,
+                     RtcDateTime& decoded);
 
 struct MarketData {
   std::string display_name;

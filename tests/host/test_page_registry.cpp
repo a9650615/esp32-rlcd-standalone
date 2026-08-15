@@ -162,3 +162,29 @@ HOST_TEST(mock_fixture_contains_required_deterministic_content) {
             (std::array<int, 8>{5'410, 5'425, 5'420, 5'438,
                                 5'430, 5'440, 5'426, 5'432}));
 }
+
+HOST_TEST(pcf85063_decode_rejects_invalid_bcd_and_ranges) {
+  app_core::RtcDateTime decoded{};
+  const std::array<uint8_t, 7> valid = {0x30, 0x41, 0x09, 0x15, 0x06, 0x08,
+                                        0x26};
+  EXPECT_TRUE(app_core::decode_pcf85063(valid.data(), valid.size(), decoded));
+  EXPECT_EQ(decoded.year, static_cast<uint16_t>(2026));
+  EXPECT_EQ(decoded.month, static_cast<uint8_t>(8));
+  EXPECT_EQ(decoded.day, static_cast<uint8_t>(15));
+  EXPECT_EQ(decoded.hour, static_cast<uint8_t>(9));
+  EXPECT_EQ(decoded.minute, static_cast<uint8_t>(41));
+  EXPECT_EQ(decoded.second, static_cast<uint8_t>(30));
+
+  const std::array<uint8_t, 7> invalid_bcd = {0x70, 0x41, 0x09, 0x15,
+                                              0x06, 0x08, 0x26};
+  EXPECT_TRUE(!app_core::decode_pcf85063(invalid_bcd.data(), invalid_bcd.size(),
+                                         decoded));
+  const std::array<uint8_t, 7> invalid_range = {0x30, 0x61, 0x09, 0x15,
+                                                0x06, 0x08, 0x26};
+  EXPECT_TRUE(!app_core::decode_pcf85063(invalid_range.data(), invalid_range.size(),
+                                         decoded));
+  const std::array<uint8_t, 7> invalid_calendar = {0x30, 0x41, 0x09, 0x31,
+                                                    0x02, 0x02, 0x23};
+  EXPECT_TRUE(!app_core::decode_pcf85063(invalid_calendar.data(),
+                                         invalid_calendar.size(), decoded));
+}

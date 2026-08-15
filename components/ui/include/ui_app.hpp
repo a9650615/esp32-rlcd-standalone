@@ -1,6 +1,7 @@
 #pragma once
 
 #include "app_snapshot.hpp"
+#include "page_registry.hpp"
 #include "ui_data.hpp"
 #include "ui_theme.hpp"
 
@@ -11,6 +12,12 @@
 #endif
 
 namespace ui {
+
+// Starts the UI lifecycle. The caller owns startup ordering; this function
+// only schedules the LVGL-thread runtime and retains a copy of the snapshot.
+// rtc_fallback is diagnostic state and does not alter the read-only RTC data.
+bool start(const app_core::AppSnapshot& snapshot,
+           const app_core::RtcDateTime& clock, bool rtc_fallback);
 
 // Address-sensitive owner retained by the caller for the host's entire LVGL
 // lifetime. LVGL stores a pointer to this exact instance in the host delete

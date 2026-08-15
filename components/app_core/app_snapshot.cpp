@@ -3,6 +3,26 @@
 namespace app_core {
 namespace {
 
+bool decode_bcd(uint8_t value, uint8_t mask, uint8_t maximum,
+                uint8_t& decoded) {
+  value &= mask;
+  const uint8_t low = value & 0x0f;
+  const uint8_t high = static_cast<uint8_t>((value >> 4) & 0x0f);
+  if (low > 9 || high > 9) return false;
+  decoded = static_cast<uint8_t>(high * 10 + low);
+  return decoded <= maximum;
+}
+
+uint8_t days_in_month(uint16_t year, uint8_t month) {
+  static constexpr uint8_t days[] = {31, 28, 31, 30, 31, 30,
+                                     31, 31, 30, 31, 30, 31};
+  if (month == 2 &&
+      (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0))) {
+    return 29;
+  }
+  return days[month - 1];
+}
+
 MarketData taiwan_market() {
   MarketData market;
   market.display_name = "Taiwan Market";
@@ -60,6 +80,34 @@ WeatherData new_york_weather() {
 }
 
 }  // namespace
+
+bool decode_pcf85063(const uint8_t* registers, std::size_t length,
+                     RtcDateTime& decoded) {
+  if (registers == nullptr || length < 7) return false;
+
+  uint8_t second = 0;
+  uint8_t minute = 0;
+  uint8_t hour = 0;
+  uint8_t day = 0;
+  uint8_t weekday = 0;
+  uint8_t month = 0;
+  uint8_t year = 0;
+  if (!decode_bcd(registers[0], 0x7f, 59, second) ||
+      !decode_bcd(registers[1], 0x7f, 59, minute) ||
+      !decode_bcd(registers[2], 0x3f, 23, hour) ||
+      !decode_bcd(registers[3], 0x3f, 31, day) || day == 0 ||
+      !decode_bcd(registers[4], 0x07, 6, weekday) ||
+      !decode_bcd(registers[5], 0x1f, 12, month) || month == 0 ||
+      !decode_bcd(registers[6], 0xff, 99, year)) {
+    return false;
+  }
+  (void)weekday;
+  const uint16_t full_year = static_cast<uint16_t>(2000 + year);
+  if (day > days_in_month(full_year, month)) return false;
+  decoded = {full_year, month, day,
+             hour, minute, second};
+  return true;
+}
 
 AppSnapshot make_mock_snapshot(DemoScenario scenario) {
   AppSnapshot snapshot;

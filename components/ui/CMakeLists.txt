@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "ui_theme.cpp"
+        "ui_app.cpp"
         "render_shared.cpp"
         "render_home.cpp"
         "render_market.cpp"
@@ -10,5 +11,6 @@ idf_component_register(
         "include"
     REQUIRES
         app_core
+        board_rlcd
         lvgl__lvgl
 )
