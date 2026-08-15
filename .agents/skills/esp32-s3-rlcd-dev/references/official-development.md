@@ -212,6 +212,20 @@ PY
 
 Keep clean-target compile proof separate from dependency-graph, final link/retention, and runtime proof. An unchanged binary size indicates likely dead-strip or unretained code: investigate the graph and ELF/map before accepting the UI.
 
+### LVGL first-render stack gate
+
+Host tests cannot expose an ESP32 FreeRTOS task-stack overflow. In this project's first full-device run, Flash, PSRAM, display, LVGL, RTC, buttons, and the five-page registry all initialized, but the 3584-byte default `main` task stack overflowed immediately after `registry cycle=1 pages=5`, during the synchronous first-page render. The corrupted backtrace was therefore secondary evidence; the last successful lifecycle log located the boundary.
+
+For a full 400 x 300 LVGL layout that deliberately renders once before arming its timer, use:
+
+```text
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+```
+
+Record `uxTaskGetStackHighWaterMark(nullptr)` immediately before UI initialization and after the first render. ESP-IDF reports this value in **bytes**, unlike upstream FreeRTOS documentation; the pinned 5.5.2 source states that explicitly in `components/freertos/FreeRTOS-Kernel/include/freertos/task.h`. This board/project measured 4812 bytes free before UI initialization and 4108 bytes free after the first render. Require at least 2048 bytes of high-water headroom, no stack-overflow hook, no reset loop, and a complete Home -> TaiwanMarket -> UsMarket -> Weather -> Indoor -> Home cycle before accepting the flash.
+
+When only the application changed, prefer `idf.py -p "$PORT" app-flash`: it writes the factory app partition at `0x10000` without rewriting the bootloader or partition table. Still run the verified full-backup gate first, and confirm esptool's post-write hash check.
+
 ### Arduino
 
 Waveshare 要求 `arduino-esp32 >= 3.3.0`，官方 `Tools-Configuration.png` 的設定是：[官方設定圖](https://github.com/waveshareteam/ESP32-S3-RLCD-4.2/blob/eb1f63427d735a22b9c30e22fa63ebddae1834d3/Tools-Configuration.png)

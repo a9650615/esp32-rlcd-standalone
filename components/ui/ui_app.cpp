@@ -270,6 +270,8 @@ void timer_callback(lv_timer_t* timer) {
 bool start(const app_core::AppSnapshot& snapshot,
            const app_core::RtcDateTime& clock, bool rtc_fallback) {
   if (g_runtime.timer != nullptr) return false;
+  ESP_LOGI(kTag, "main task stack free before UI init=%u bytes",
+           static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
   g_runtime.snapshot = snapshot;
   g_runtime.initial_clock = clock;
   g_runtime.rtc_fallback = rtc_fallback;
@@ -285,6 +287,8 @@ bool start(const app_core::AppSnapshot& snapshot,
     board::lvgl_unlock();
     return false;
   }
+  ESP_LOGI(kTag, "main task stack free after first render=%u bytes",
+           static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
   g_runtime.timer = lv_timer_create(timer_callback, kTimerPeriodMs, &g_runtime);
   if (g_runtime.timer == nullptr) {
     ESP_LOGE(kTag, "fatal: unable to create 100 ms UI timer");

@@ -60,6 +60,7 @@ Build/flash gates:
 - With ESP-IDF 5.5.x, `CONFIG_ESPTOOLPY_FLASHMODE_QIO=y` may legitimately produce `--flash_mode dio` in generated `flash_args`; judge the post-flash serial handoff, not that argument alone. Require **all** exact QIO/Flash/PSRAM log gates in [references/official-development.md](references/official-development.md), and stop on any missing gate, reset loop, or non-QIO runtime.
 - A full backup in a main checkout is not automatically present in a linked worktree. Copy/link the ignored `.bin` into the verifier's expected active-worktree relative path before running that verifier, or use the separate absolute-path size/hash check. A manifest alone is not proof that the binary exists.
 - A component directory and successful project build do not prove that its sources compiled or linked. Force a clean component target build, capture object/target evidence, then require dependency, final ELF/map or runtime-call, and hardware evidence; unchanged binary size is a warning, not proof.
+- A full 400 x 300 LVGL tree rendered synchronously from `app_main` can overflow ESP-IDF's 3584-byte default main-task stack even when host tests and the firmware build pass. Set `CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192`, log `uxTaskGetStackHighWaterMark(nullptr)` before and after the first render, and require at least 2 KiB of measured headroom plus a clean first carousel cycle. The measured reference for this project is 4108 bytes free after the first render.
 
 For Arduino, configure `ESP32S3 Dev Module`, USB CDC enabled, Hardware CDC/JTAG, QIO 80 MHz, 16 MB Flash, OPI PSRAM, and the official 16 MB partition scheme. Start at 921600 upload baud only if stable; lower it after a reproducible serial error.
 
@@ -73,6 +74,8 @@ After flashing, capture evidence for:
 4. KEY and BOOT application input behavior;
 5. I2C discovery/read of the peripherals touched by the change;
 6. battery ADC, audio, RTC, or SD smoke tests when those subsystems changed.
+
+For a carousel UI, observe every registered page once and the wrap back to Home. A successful Home render alone does not exercise the other renderers. Treat any stack-overflow message or software-reset loop as a failed flash even when all QIO/Flash/PSRAM gates passed.
 
 Do not claim completion from a successful compile alone. Preserve the first failing log when diagnosing USB, PSRAM, LVGL, or peripheral issues.
 
