@@ -86,3 +86,20 @@ Physical acceptance for `docs/superpowers/specs/2026-08-15-rlcd-system-tray-and-
 - [ ] The `CONFIG_BATTERY_CALIBRATION_PERMILLE` calibration step (reported mV vs. multimeter mV, per the spec's Calibration procedure) has been performed at least once on this board and its resulting value recorded.
 - [ ] After installing the cell and connecting Type-C first to start the power path, the board continues running normally once Type-C is unplugged (battery-only operation).
 - [ ] Watching the panel across a battery sample (30 s cadence) shows no visible full-screen repaint/flash attributable to the battery publish alone.
+
+## OTA partition table migration
+
+Physical acceptance for `docs/hardware/ota-partition-migration.md`. Layout-only
+change: no OTA client or rollback code exists yet. Do not tick any item until
+observed on the physical board.
+
+- [ ] `./scripts/verify-factory-backup.sh` passes before the new table is written.
+- [ ] `rm -f sdkconfig && ./scripts/idf.sh build` succeeds and prints the new six-partition table (`nvs`, `phy_init`, `otadata`, `factory`, `ota_0`, `ota_1`).
+- [ ] The generated `sdkconfig` still shows `CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y`, `CONFIG_SPIRAM_MODE_OCT=y`, `CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192`, and `CONFIG_LV_USE_QRCODE=y` after the regeneration, diffed against the prior `sdkconfig`.
+- [ ] The full four-range write (`bootloader`, `partition-table`, `ota_data_initial`, `app`) completes with esptool's post-write hash verified for each range.
+- [ ] Clean serial boot after the write: no reset loop, no memory error.
+- [ ] 16 MB flash and 8 MB PSRAM still detected; QIO gate still passes.
+- [ ] The app runs and completes at least one full carousel cycle from the new `factory` slot at `0x20000`.
+- [ ] Previously saved Wi-Fi credentials are still present: the board reconnects on its own without entering Setup mode.
+- [ ] GPIO0 ROM-downloader recovery still works end to end (hold BOOT during power-on, `chip-id` responds, then normal boot resumes).
+- [ ] `python3 .tools/esp-idf/components/partition_table/gen_esp32part.py build/partition_table/partition-table.bin` output matches `partitions.csv` exactly, confirming no stale cached table was flashed.

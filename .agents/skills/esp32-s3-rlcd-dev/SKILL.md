@@ -96,6 +96,10 @@ Do not claim completion from a successful compile alone. Preserve the first fail
 
 `sdkconfig.defaults` is applied only when `sdkconfig` is first generated. Adding an option to the defaults file does nothing to an existing `sdkconfig`, and the build still succeeds, so a feature guarded by `#if CONFIG_...` is silently compiled out. This bit `CONFIG_LV_USE_QRCODE`: the build passed, the binary flashed, and the QR simply never existed. After adding any `sdkconfig.defaults` entry, grep the generated `sdkconfig` to confirm the value actually landed; `sdkconfig` is gitignored and regenerating it (delete, rebuild) is safe, but diff the regenerated file against the old one to prove the flash/PSRAM/partition/stack settings survived.
 
+`version.txt` is read by CMake at configure time only. Creating or editing it does nothing to an existing `build/` directory: the build succeeds, the flash succeeds, esptool verifies the hash, and the app descriptor still carries the old version. Delete `build/` to force a reconfigure, then confirm the value in the boot log's `App version:` line before believing it. This is the same shape as the `sdkconfig.defaults` trap above.
+
+Never build or flash while an agent or editor may be mid-edit on `partitions.csv`. `app-flash` writes only the application, at whatever offset the *current* CSV declares, while the device keeps the partition table it was last given. Moving the app from `0x10000` to `0x20000` that way produces `No bootable app partition` and a reset loop within seconds. Recovery is a full `flash` of bootloader, table, otadata and app - not an erase - but the cheaper habit is to run `git status partitions.csv` before any build you intend to flash.
+
 A feature that can fail at runtime and fall back silently needs a log line saying which branch it took. The same session lost a cycle to a QR that was compiled out and to a battery reading that was sampled correctly but never printed, so the documented multimeter calibration procedure had no number to compare against.
 
 ## Recover without making damage worse
