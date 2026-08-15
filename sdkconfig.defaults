@@ -27,6 +27,21 @@ CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
 CONFIG_ESP_TLS_INSECURE=n
 
+# mbedTLS allocates from PSRAM instead of internal RAM.
+#
+# Four providers on independent timers will overlap sooner or later, and two
+# concurrent TLS sessions with the full certificate bundle do not fit in the
+# ~240 KiB of internal heap: the second one fails ssl_setup with
+# MBEDTLS_ERR_SSL_ALLOC_FAILED (-0x7F00) and its page shows NO DATA until the
+# retry, minutes later. Observed with weather landing between the two market
+# fetches.
+#
+# This board has 8 MiB of PSRAM that nothing else is competing for, so the fix
+# is to stop making TLS share the scarce pool rather than to serialise the
+# providers and have them wait on each other. Handshake buffers are not
+# DMA targets, so PSRAM's restrictions do not apply to them.
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+
 # A freshly written OTA image boots as PENDING_VERIFY and is rolled back by the
 # bootloader unless the app confirms it. main's ota_guard_task confirms it only
 # after watching the LVGL render loop actually advance.
