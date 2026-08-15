@@ -57,8 +57,13 @@ void render_market(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
   apply_surface(parent);
   const MarketLayout layout = market_layout(bounds);
   const Rect primary = layout.primary;
+  // The axis labels below the chart get whatever label() will actually give
+  // them, not what we ask for: a 17 px box grows to font.line_height + 2 and
+  // the extra row used to land one pixel past the safe canvas. Reserve the
+  // real height here so the chart yields the row instead.
+  const int axis_height = safe_text_box_height(17, small_font()->line_height);
   const Rect chart{primary.x + 8, primary.y + 70, primary.width - 16,
-                   std::max(1, primary.bottom() - primary.y - 88)};
+                   std::max(1, primary.bottom() - primary.y - 71 - axis_height)};
 
   label(parent, us_market ? "US MARKET" : "TAIWAN MARKET",
         {primary.x + 8, primary.y + 4, primary.width - 16, 18}, small_font());
@@ -84,14 +89,14 @@ void render_market(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
   dotted_grid(parent, chart);
   polyline(parent, normalize_chart_samples(market.intraday_samples, chart),
            chart);
-  label(parent, "09:00", {chart.x, chart.bottom() + 1, chart.width / 3, 17},
+  label(parent, "09:00", {chart.x, chart.bottom() + 1, chart.width / 3, axis_height},
         small_font());
   label(parent, "MID",
-        {chart.x + chart.width / 3, chart.bottom() + 1, chart.width / 3, 17},
+        {chart.x + chart.width / 3, chart.bottom() + 1, chart.width / 3, axis_height},
         small_font(), LV_TEXT_ALIGN_CENTER);
   label(parent, "NOW",
         {chart.x + 2 * chart.width / 3, chart.bottom() + 1,
-         chart.width / 3, 17},
+         chart.width / 3, axis_height},
         small_font(), LV_TEXT_ALIGN_RIGHT);
 
   render_market_sidebar(parent, snapshot, market, layout.side, us_market);

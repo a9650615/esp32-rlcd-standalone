@@ -3,8 +3,16 @@
 #include <cstdio>
 #include <string>
 
+#ifndef NDEBUG
+#include <esp_log.h>
+#endif
+
 namespace ui {
 namespace {
+
+#ifndef NDEBUG
+constexpr char kTag[] = "ui_geometry";
+#endif
 
 const lv_font_t* hero_font() { return &lv_font_montserrat_48; }
 const lv_font_t* medium_font() { return &lv_font_montserrat_20; }
@@ -33,10 +41,14 @@ void render_home(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
                  Rect bounds, std::size_t page_index,
                  std::size_t page_count, UiContext* context) {
 #ifndef NDEBUG
-  LV_ASSERT_MSG(bounds.x >= 0 && bounds.y >= 0 &&
-                    bounds.right() <= kCanvasWidth &&
-                    bounds.bottom() <= kCanvasHeight,
-                "home bounds outside replacement root");
+  // Logged, not asserted: LVGL's assert handler is an infinite loop, so a
+  // geometry complaint here would hang the LVGL task and blank the display
+  // rather than tell anyone what was wrong. See render_shared.cpp.
+  if (bounds.x < 0 || bounds.y < 0 || bounds.right() > kCanvasWidth ||
+      bounds.bottom() > kCanvasHeight) {
+    ESP_LOGW(kTag, "home bounds outside replacement root: x=%d y=%d w=%d h=%d",
+             bounds.x, bounds.y, bounds.width, bounds.height);
+  }
 #endif
   apply_surface(parent);
   const int right_width = 118;

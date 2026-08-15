@@ -4,8 +4,16 @@
 #include <cstring>
 #include <string>
 
+#ifndef NDEBUG
+#include <esp_log.h>
+#endif
+
 namespace ui {
 namespace {
+
+#ifndef NDEBUG
+constexpr char kTag[] = "ui_geometry";
+#endif
 
 const lv_font_t* small_font() { return &lv_font_montserrat_14; }
 const lv_font_t* medium_font() { return &lv_font_montserrat_20; }
@@ -62,32 +70,54 @@ void set_setup_status_if_changed(lv_obj_t* label_obj,
 // turning an N-object page into N full layout passes; that O(N^2) cost is
 // what stalled the LVGL task long enough to starve IDLE0 and trip the task
 // watchdog once the Setup page's QR widget pushed the object count up.
-void assert_tree_in_safe_canvas_walk(lv_obj_t* object) {
+//
+// It reports instead of asserting. LV_ASSERT_MSG calls LVGL's assert handler,
+// whose default body is an infinite loop, so on device the first out-of-bounds
+// object hung the LVGL task forever and bricked the UI - with no message at
+// all, because LV_USE_LOG is off. The observed symptom was a task watchdog
+// every 5 s starting the moment a button press rendered the first page
+// carrying the tray. A geometry bug is worth a loud log line, not a dead
+// display. The layout rects themselves are already proven by static_assert in
+// ui_data.hpp; this walk exists to catch runtime growth those cannot see, such
+// as a label auto-sizing past the box it was given.
+void assert_tree_in_safe_canvas_walk(lv_obj_t* object, int page) {
   lv_area_t area{};
   lv_obj_get_coords(object, &area);
   const Rect safe = safe_canvas();
-  LV_ASSERT_MSG(area.x1 >= safe.x && area.y1 >= safe.y &&
-                    area.x2 < safe.right() && area.y2 < safe.bottom(),
-                "page object outside 6px safe canvas");
+  if (area.x1 < safe.x || area.y1 < safe.y || area.x2 >= safe.right() ||
+      area.y2 >= safe.bottom()) {
+    ESP_LOGW(kTag,
+             "page=%d object outside safe canvas: x1=%d y1=%d x2=%d y2=%d "
+             "(safe x=%d y=%d right=%d bottom=%d)",
+             page, static_cast<int>(area.x1), static_cast<int>(area.y1),
+             static_cast<int>(area.x2), static_cast<int>(area.y2), safe.x,
+             safe.y, safe.right(), safe.bottom());
+  }
   const uint32_t child_count = lv_obj_get_child_count(object);
   for (uint32_t index = 0; index < child_count; ++index) {
-    assert_tree_in_safe_canvas_walk(lv_obj_get_child(object, index));
+    assert_tree_in_safe_canvas_walk(lv_obj_get_child(object, index), page);
   }
 }
 
-void assert_tree_in_safe_canvas(lv_obj_t* object) {
+void assert_tree_in_safe_canvas(lv_obj_t* object, int page) {
   lv_obj_update_layout(object);
-  assert_tree_in_safe_canvas_walk(object);
+  assert_tree_in_safe_canvas_walk(object, page);
 }
 #endif
 
 void tile(lv_obj_t* parent, const char* title, const char* value,
           const char* detail, Rect bounds, bool weather, bool indoor) {
 #ifndef NDEBUG
-  LV_ASSERT_MSG(tile_content_is_centered(bounds),
-                "right tile content is not vertically centered");
-  LV_ASSERT_MSG(tile_content_has_no_reserved_footer(bounds),
-                "right tile has a reserved footer band");
+  // Logged, not asserted: see the tree walk above - LVGL's assert handler
+  // never returns, so a layout complaint would cost the whole display.
+  if (!tile_content_is_centered(bounds)) {
+    ESP_LOGW(kTag, "right tile content not vertically centered: y=%d h=%d",
+             bounds.y, bounds.height);
+  }
+  if (!tile_content_has_no_reserved_footer(bounds)) {
+    ESP_LOGW(kTag, "right tile has a reserved footer band: y=%d h=%d", bounds.y,
+             bounds.height);
+  }
 #endif
   const TileTextLayout rows = tile_text_layout(bounds);
   label(parent, title, rows.title, small_font(), LV_TEXT_ALIGN_LEFT);
@@ -268,8 +298,12 @@ lv_obj_t* render_page(UiContext& context,
   lv_obj_set_size(replacement, bounds.width, bounds.height);
 
 #ifndef NDEBUG
-  LV_ASSERT_MSG(within_safe_canvas(bounds),
-                "replacement root outside safe canvas");
+  // Logged, not asserted, for the same reason as the tree walk above: LVGL's
+  // assert handler spins forever and takes the display with it.
+  if (!within_safe_canvas(bounds)) {
+    ESP_LOGW(kTag, "replacement root outside safe canvas: x=%d y=%d w=%d h=%d",
+             bounds.x, bounds.y, bounds.width, bounds.height);
+  }
 #endif
 
   const Rect local_bounds{0, 0, bounds.width, bounds.height};
@@ -334,7 +368,11 @@ lv_obj_t* render_page(UiContext& context,
   context.staging_setup_status_label = nullptr;
   lv_obj_clear_flag(replacement, LV_OBJ_FLAG_HIDDEN);
 #ifndef NDEBUG
-  assert_tree_in_safe_canvas(replacement);
+  // PageId ordinal, not a name: page_name() lives in another translation
+  // unit's anonymous namespace and is not worth widening a public header for
+  // one diagnostic. Order is Home, TaiwanMarket, UsMarket, Weather, Indoor,
+  // Setup.
+  assert_tree_in_safe_canvas(replacement, static_cast<int>(page));
 #endif
   return replacement;
 }
