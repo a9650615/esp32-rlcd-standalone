@@ -1,4 +1,5 @@
 #define UI_THEME_GEOMETRY_ONLY
+#include "app_snapshot.hpp"
 #include "ui_data.hpp"
 
 #include "test_support.hpp"
@@ -46,4 +47,67 @@ HOST_TEST(forecast_columns_are_equal_and_fill_the_available_width) {
     EXPECT_EQ(columns[index].width, columns.front().width);
     EXPECT_EQ(columns[index].x, columns[index - 1].right());
   }
+}
+
+HOST_TEST(page_dots_geometry_supports_five_four_and_zero_pages) {
+  const ui::Rect bounds{6, 6, 388, 288};
+  const auto five = ui::page_dots_geometry(bounds, 3, 5);
+  EXPECT_EQ(five.count, static_cast<std::size_t>(5));
+  EXPECT_EQ(five.active_index, static_cast<std::size_t>(3));
+  EXPECT_EQ(five.total_width, 41);
+  EXPECT_EQ(five.start_x, bounds.right() - 41);
+
+  const auto four = ui::page_dots_geometry(bounds, 9, 4);
+  EXPECT_EQ(four.count, static_cast<std::size_t>(4));
+  EXPECT_EQ(four.active_index, static_cast<std::size_t>(3));
+  EXPECT_EQ(four.total_width, 32);
+
+  const auto none = ui::page_dots_geometry(bounds, 0, 0);
+  EXPECT_EQ(none.count, static_cast<std::size_t>(0));
+  EXPECT_EQ(none.active_index, static_cast<std::size_t>(0));
+  EXPECT_EQ(none.total_width, 0);
+}
+
+HOST_TEST(minute_formatter_keeps_only_hours_and_minutes) {
+  EXPECT_EQ(ui::format_minute_clock("09:41:59"), std::string("09:41"));
+  EXPECT_EQ(ui::format_minute_clock("09:41"), std::string("09:41"));
+  EXPECT_EQ(ui::format_minute_clock("unknown"), std::string("unknown"));
+}
+
+HOST_TEST(new_york_fixture_is_distinct_from_taipei_weather) {
+  const app_core::AppSnapshot snapshot =
+      app_core::make_mock_snapshot(app_core::DemoScenario::TaiwanSession);
+  EXPECT_EQ(snapshot.weather.current.location, std::string("Taipei"));
+  EXPECT_EQ(snapshot.new_york_weather.current.location, std::string("New York"));
+  EXPECT_EQ(snapshot.new_york_weather.current.condition, std::string("Sunny"));
+  EXPECT_EQ(snapshot.new_york_weather.current.temperature_c, 22.0);
+  EXPECT_EQ(snapshot.new_york_weather.current.rain_probability_percent, 15);
+}
+
+HOST_TEST(indoor_fixture_has_non_flat_temperature_history) {
+  const app_core::AppSnapshot snapshot =
+      app_core::make_mock_snapshot(app_core::DemoScenario::TaiwanSession);
+  EXPECT_EQ(snapshot.indoor.temperature_history_c,
+            (std::array<double, 8>{24.2, 24.3, 24.5, 24.6,
+                                   24.7, 24.8, 24.8, 24.8}));
+  EXPECT_TRUE(snapshot.indoor.temperature_history_c.front() !=
+              snapshot.indoor.temperature_history_c.back());
+  const auto points = ui::normalize_chart_samples(
+      std::array<int, 8>{242, 243, 245, 246, 247, 248, 248, 248},
+      ui::Rect{0, 0, 80, 20});
+  EXPECT_TRUE(points.front().y != points.back().y);
+}
+
+HOST_TEST(forecast_fixture_contains_rain_probability_for_every_day) {
+  const app_core::AppSnapshot snapshot =
+      app_core::make_mock_snapshot(app_core::DemoScenario::TaiwanSession);
+  EXPECT_EQ(snapshot.weather.seven_day[0].rain_probability_percent, 25);
+  EXPECT_EQ(snapshot.weather.seven_day[1].rain_probability_percent, 70);
+  EXPECT_EQ(snapshot.weather.seven_day[2].rain_probability_percent, 65);
+  EXPECT_EQ(snapshot.weather.seven_day[3].rain_probability_percent, 35);
+  EXPECT_EQ(snapshot.weather.seven_day[4].rain_probability_percent, 10);
+  EXPECT_EQ(snapshot.weather.seven_day[5].rain_probability_percent, 30);
+  EXPECT_EQ(snapshot.weather.seven_day[6].rain_probability_percent, 5);
+  const auto columns = ui::forecast_columns(ui::Rect{0, 0, 400, 120});
+  EXPECT_EQ(columns.back().right(), 400);
 }

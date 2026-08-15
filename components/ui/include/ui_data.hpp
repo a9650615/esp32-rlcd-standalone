@@ -3,6 +3,8 @@
 #include "ui_theme.hpp"
 
 #include <array>
+#include <cstddef>
+#include <string>
 
 namespace ui {
 
@@ -15,6 +17,40 @@ struct MarketLayout {
   Rect primary;
   Rect side;
 };
+
+struct PageDotsGeometry {
+  std::size_t count = 0;
+  std::size_t active_index = 0;
+  int start_x = 0;
+  int total_width = 0;
+  int y = 0;
+};
+
+inline constexpr int kPageDotSize = 5;
+inline constexpr int kPageDotGap = 4;
+
+constexpr PageDotsGeometry page_dots_geometry(const Rect bounds,
+                                              std::size_t page_index,
+                                              std::size_t page_count) {
+  if (page_count == 0) {
+    return {0, 0, bounds.right(), 0, bounds.y + bounds.height - kPageDotSize};
+  }
+  const std::size_t active_index =
+      page_index < page_count ? page_index : page_count - 1;
+  const int total_width = static_cast<int>(
+      page_count * kPageDotSize + (page_count - 1) * kPageDotGap);
+  return {page_count, active_index, bounds.right() - total_width, total_width,
+          bounds.y + bounds.height - kPageDotSize};
+}
+
+inline std::string format_minute_clock(std::string clock) {
+  const std::size_t first = clock.find(':');
+  if (first != std::string::npos) {
+    const std::size_t second = clock.find(':', first + 1);
+    if (second != std::string::npos) clock.resize(second);
+  }
+  return clock;
+}
 
 constexpr MarketLayout market_layout(const Rect bounds) {
   constexpr int kPrimaryNumerator = 72;

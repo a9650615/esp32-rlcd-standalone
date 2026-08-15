@@ -16,9 +16,12 @@ void release_points(lv_event_t* event) {
   delete[] points;
 }
 
-void mini_history(lv_obj_t* parent, const Rect bounds, int sample) {
-  const std::array<int, 8> samples{sample, sample, sample, sample,
-                                   sample, sample, sample, sample};
+void mini_history(lv_obj_t* parent, const Rect bounds,
+                  const std::array<double, 8>& history) {
+  std::array<int, 8> samples{};
+  for (std::size_t index = 0; index < history.size(); ++index) {
+    samples[index] = static_cast<int>(history[index] * 10.0);
+  }
   const auto normalized = normalize_chart_samples(samples, bounds);
   auto* points = new (std::nothrow) lv_point_precise_t[normalized.size()];
   if (points == nullptr) return;
@@ -44,7 +47,8 @@ void mini_history(lv_obj_t* parent, const Rect bounds, int sample) {
 }  // namespace
 
 void render_indoor(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
-                   Rect bounds, uint8_t active_page) {
+                   Rect bounds, std::size_t page_index,
+                   std::size_t page_count) {
   apply_surface(parent);
   render_mast(parent, snapshot, {bounds.x, bounds.y, bounds.width, 28});
 
@@ -83,13 +87,12 @@ void render_indoor(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
         small_font(), LV_TEXT_ALIGN_RIGHT);
   label(parent, "HISTORY", {primary.x + 8, primary.y + 174, 72, 18},
         small_font());
-  const int sample = static_cast<int>(snapshot.indoor.temperature_c * 10.0);
   mini_history(parent, {primary.x + 8, primary.y + 195, primary.width - 16, 35},
-               sample);
+               snapshot.indoor.temperature_history_c);
 
   render_market_sidebar(parent, snapshot, snapshot.taiwan_market, layout.side,
                         false);
-  page_dots(parent, active_page, bounds);
+  page_dots(parent, page_index, page_count, bounds);
 }
 
 }  // namespace ui

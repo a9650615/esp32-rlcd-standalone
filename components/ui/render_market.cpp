@@ -51,7 +51,8 @@ void polyline(lv_obj_t* parent, const std::array<ChartPoint, 8>& source,
 
 void render_market(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
                    const app_core::MarketData& market, Rect bounds,
-                   uint8_t active_page, bool us_market) {
+                   std::size_t page_index, std::size_t page_count,
+                   bool us_market) {
   apply_surface(parent);
   render_mast(parent, snapshot, {bounds.x, bounds.y, bounds.width, 28});
 
@@ -97,7 +98,7 @@ void render_market(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
         small_font(), LV_TEXT_ALIGN_RIGHT);
 
   render_market_sidebar(parent, snapshot, market, layout.side, us_market);
-  page_dots(parent, active_page, bounds);
+  page_dots(parent, page_index, page_count, bounds);
 }
 
 }  // namespace ui

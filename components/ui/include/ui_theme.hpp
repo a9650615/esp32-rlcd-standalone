@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <array>
+#include <cstddef>
 
 #ifndef UI_THEME_GEOMETRY_ONLY
 #include <lvgl.h>
@@ -88,7 +89,8 @@ void weather_icon(lv_obj_t* parent, Rect bounds, bool rain,
                   bool inverse = false);
 void temperature_icon(lv_obj_t* parent, Rect bounds, bool inverse = false);
 void humidity_icon(lv_obj_t* parent, Rect bounds, bool inverse = false);
-void page_dots(lv_obj_t* parent, uint8_t active_page, Rect bounds);
+void page_dots(lv_obj_t* parent, std::size_t page_index,
+               std::size_t page_count, Rect bounds);
 lv_obj_t* navigation_overlay(lv_obj_t* parent, Rect bounds);
 
 #endif

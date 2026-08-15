@@ -17,7 +17,8 @@ bool rainy(const std::string& condition) {
 }  // namespace
 
 void render_weather(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
-                    Rect bounds, uint8_t active_page) {
+                    Rect bounds, std::size_t page_index,
+                    std::size_t page_count) {
   apply_surface(parent);
   render_mast(parent, snapshot, {bounds.x, bounds.y, bounds.width, 28});
 
@@ -56,8 +57,14 @@ void render_weather(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
     label(parent, high_low,
           {column.x + 1, column.y + 77, column.width - 2, 18}, small_font(),
           LV_TEXT_ALIGN_CENTER);
+    char rain[16];
+    std::snprintf(rain, sizeof(rain), "R%u%%",
+                  day.rain_probability_percent);
+    label(parent, rain,
+          {column.x + 1, column.y + 96, column.width - 2, 18}, small_font(),
+          LV_TEXT_ALIGN_CENTER);
   }
-  page_dots(parent, active_page, bounds);
+  page_dots(parent, page_index, page_count, bounds);
 }
 
 }  // namespace ui

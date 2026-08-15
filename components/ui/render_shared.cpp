@@ -61,15 +61,6 @@ void tile(lv_obj_t* parent, const char* title, const char* value,
         small_font(), LV_TEXT_ALIGN_CENTER);
 }
 
-std::string minute_clock(std::string clock) {
-  const std::size_t first = clock.find(':');
-  if (first != std::string::npos) {
-    const std::size_t second = clock.find(':', first + 1);
-    if (second != std::string::npos) clock.resize(second);
-  }
-  return clock;
-}
-
 }  // namespace
 
 bool init_context(UiContext& context, lv_obj_t* host) {
@@ -141,21 +132,23 @@ void render_market_sidebar(lv_obj_t* parent,
   char weather_detail[24];
   char indoor_value[24];
   char indoor_detail[24];
+  const auto& weather_snapshot =
+      us_market ? snapshot.new_york_weather : snapshot.weather;
   std::snprintf(index_value, sizeof(index_value), "%d", market.secondary_value);
   std::snprintf(index_detail, sizeof(index_detail), "%+.2f%%",
                 market.secondary_change_percent);
   std::snprintf(weather_value, sizeof(weather_value), "%.0f C",
-                snapshot.weather.current.temperature_c);
+                weather_snapshot.current.temperature_c);
   std::snprintf(weather_detail, sizeof(weather_detail), "%s %u%%",
-                snapshot.weather.current.condition.c_str(),
-                snapshot.weather.current.rain_probability_percent);
+                weather_snapshot.current.condition.c_str(),
+                weather_snapshot.current.rain_probability_percent);
   std::snprintf(indoor_value, sizeof(indoor_value), "%.1f C",
                 snapshot.indoor.temperature_c);
   std::snprintf(indoor_detail, sizeof(indoor_detail), "RH %u%%",
                 snapshot.indoor.humidity_percent);
   tile(parent, market.secondary_label.c_str(), index_value, index_detail, index,
        false, false);
-  tile(parent, us_market ? "NEW YORK" : "TAIPEI", weather_value,
+  tile(parent, weather_snapshot.current.location.c_str(), weather_value,
        weather_detail, weather, true, false);
   tile(parent, "INDOOR", indoor_value, indoor_detail, indoor, false, true);
   divider(parent, {bounds.x, index.bottom(), bounds.width, kSeparatorWidth});
@@ -164,7 +157,7 @@ void render_market_sidebar(lv_obj_t* parent,
 
 void render_mast(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
                  Rect bounds) {
-  const std::string clock = minute_clock(snapshot.clock.hero);
+  const std::string clock = format_minute_clock(snapshot.clock.hero);
   const std::string source = snapshot.clock.source.empty()
                                  ? "SOURCE UNKNOWN"
                                  : snapshot.clock.source;
@@ -187,7 +180,7 @@ void render_mast(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
 lv_obj_t* render_page(UiContext& context,
                       const app_core::AppSnapshot& snapshot,
                       app_core::PageId page, Rect bounds,
-                      uint8_t active_page) {
+                      std::size_t page_index, std::size_t page_count) {
   if (!context_ready(context) || !within_safe_canvas(bounds)) return nullptr;
 
   // LVGL screens are parentless and therefore form a genuinely detached
@@ -215,21 +208,21 @@ lv_obj_t* render_page(UiContext& context,
   switch (page) {
     case app_core::PageId::TaiwanMarket:
       render_market(replacement, snapshot, snapshot.taiwan_market, local_bounds,
-                    active_page, false);
+                    page_index, page_count, false);
       break;
     case app_core::PageId::UsMarket:
       render_market(replacement, snapshot, snapshot.us_market, local_bounds,
-                    active_page, true);
+                    page_index, page_count, true);
       break;
     case app_core::PageId::Weather:
-      render_weather(replacement, snapshot, local_bounds, active_page);
+      render_weather(replacement, snapshot, local_bounds, page_index, page_count);
       break;
     case app_core::PageId::Indoor:
-      render_indoor(replacement, snapshot, local_bounds, active_page);
+      render_indoor(replacement, snapshot, local_bounds, page_index, page_count);
       break;
     case app_core::PageId::Home:
     default:
-      render_home(replacement, snapshot, local_bounds, active_page);
+      render_home(replacement, snapshot, local_bounds, page_index, page_count);
       break;
   }
   lv_obj_set_parent(replacement, context.host);

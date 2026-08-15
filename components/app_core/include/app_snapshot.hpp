@@ -38,6 +38,7 @@ struct WeatherDay {
   std::string condition;
   double high_c = 0.0;
   double low_c = 0.0;
+  uint8_t rain_probability_percent = 0;
 };
 
 struct WeatherData {
@@ -49,6 +50,8 @@ struct WeatherData {
 struct IndoorData {
   double temperature_c = 0.0;
   uint8_t humidity_percent = 0;
+  // Deterministic mock history for this snapshot-only slice.
+  std::array<double, 8> temperature_history_c{};
 };
 
 struct Availability {
@@ -63,6 +66,7 @@ struct AppSnapshot {
   MarketData taiwan_market;
   MarketData us_market;
   WeatherData weather;
+  WeatherData new_york_weather;
   IndoorData indoor;
   Availability availability;
   DemoScenario scenario = DemoScenario::TaiwanSession;

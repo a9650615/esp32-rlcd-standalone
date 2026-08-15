@@ -125,15 +125,19 @@ HOST_TEST(mock_fixture_contains_required_deterministic_content) {
   EXPECT_EQ(snapshot.weather.current.condition, std::string("Cloudy"));
   EXPECT_EQ(snapshot.weather.current.temperature_c, 29.0);
   EXPECT_EQ(snapshot.weather.current.rain_probability_percent, 40);
+  EXPECT_EQ(snapshot.new_york_weather.current.location, std::string("New York"));
+  EXPECT_EQ(snapshot.new_york_weather.current.condition, std::string("Sunny"));
+  EXPECT_EQ(snapshot.new_york_weather.current.temperature_c, 22.0);
+  EXPECT_EQ(snapshot.new_york_weather.current.rain_probability_percent, 15);
   EXPECT_EQ(snapshot.weather.seven_day.size(), static_cast<size_t>(7));
   const std::array<app_core::WeatherDay, 7> expected_forecast = {{
-      {"Sat", "Cloudy", 30.0, 25.0},
-      {"Sun", "Rain", 28.0, 24.0},
-      {"Mon", "Rain", 27.0, 23.0},
-      {"Tue", "Cloudy", 29.0, 24.0},
-      {"Wed", "Sunny", 31.0, 25.0},
-      {"Thu", "Cloudy", 30.0, 25.0},
-      {"Fri", "Sunny", 32.0, 26.0},
+      {"Sat", "Cloudy", 30.0, 25.0, 25},
+      {"Sun", "Rain", 28.0, 24.0, 70},
+      {"Mon", "Rain", 27.0, 23.0, 65},
+      {"Tue", "Cloudy", 29.0, 24.0, 35},
+      {"Wed", "Sunny", 31.0, 25.0, 10},
+      {"Thu", "Cloudy", 30.0, 25.0, 30},
+      {"Fri", "Sunny", 32.0, 26.0, 5},
   }};
   for (size_t i = 0; i < expected_forecast.size(); ++i) {
     EXPECT_EQ(snapshot.weather.seven_day[i].day, expected_forecast[i].day);
@@ -141,10 +145,15 @@ HOST_TEST(mock_fixture_contains_required_deterministic_content) {
               expected_forecast[i].condition);
     EXPECT_EQ(snapshot.weather.seven_day[i].high_c, expected_forecast[i].high_c);
     EXPECT_EQ(snapshot.weather.seven_day[i].low_c, expected_forecast[i].low_c);
+    EXPECT_EQ(snapshot.weather.seven_day[i].rain_probability_percent,
+              expected_forecast[i].rain_probability_percent);
   }
 
   EXPECT_EQ(snapshot.indoor.temperature_c, 24.8);
   EXPECT_EQ(snapshot.indoor.humidity_percent, 57);
+  EXPECT_EQ(snapshot.indoor.temperature_history_c,
+            (std::array<double, 8>{24.2, 24.3, 24.5, 24.6,
+                                   24.7, 24.8, 24.8, 24.8}));
 
   EXPECT_EQ(snapshot.taiwan_market.intraday_samples,
             (std::array<int, 8>{24'060, 24'110, 24'095, 24'180,

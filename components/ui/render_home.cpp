@@ -10,15 +10,6 @@ const lv_font_t* hero_font() { return &lv_font_montserrat_48; }
 const lv_font_t* medium_font() { return &lv_font_montserrat_20; }
 const lv_font_t* small_font() { return &lv_font_montserrat_14; }
 
-std::string minute_clock(std::string clock) {
-  const std::size_t first = clock.find(':');
-  if (first != std::string::npos) {
-    const std::size_t second = clock.find(':', first + 1);
-    if (second != std::string::npos) clock.resize(second);
-  }
-  return clock;
-}
-
 std::string sync_status(const app_core::AppSnapshot& snapshot) {
   const std::string source = snapshot.clock.source.empty()
                                  ? "SOURCE UNKNOWN"
@@ -39,7 +30,8 @@ std::string next_event(const app_core::AppSnapshot& snapshot) {
 }  // namespace
 
 void render_home(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
-                 Rect bounds, uint8_t active_page) {
+                 Rect bounds, std::size_t page_index,
+                 std::size_t page_count) {
 #ifndef NDEBUG
   LV_ASSERT_MSG(bounds.x >= 0 && bounds.y >= 0 &&
                     bounds.right() <= kCanvasWidth &&
@@ -56,7 +48,7 @@ void render_home(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
   const int split_x = right.x - split_gap / 2;
   divider(parent, {split_x, bounds.y, kSeparatorWidth, left.height});
 
-  const std::string clock = minute_clock(snapshot.clock.hero);
+  const std::string clock = format_minute_clock(snapshot.clock.hero);
   label(parent, clock.c_str(), {left.x + 2, left.y + 2, left.width - 4, 59},
         hero_font(), LV_TEXT_ALIGN_LEFT);
   label(parent, snapshot.clock.date.c_str(),
@@ -91,7 +83,7 @@ void render_home(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
         {left.x + 3, left.y + 243, left.width - 6, 18}, small_font());
 
   render_right_tiles(parent, snapshot, right);
-  page_dots(parent, active_page, bounds);
+  page_dots(parent, page_index, page_count, bounds);
 }
 
 }  // namespace ui

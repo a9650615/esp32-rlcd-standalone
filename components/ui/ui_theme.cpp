@@ -1,4 +1,5 @@
 #include "ui_theme.hpp"
+#include "ui_data.hpp"
 
 #include <algorithm>
 #include <new>
@@ -91,24 +92,26 @@ void humidity_icon(lv_obj_t* parent, Rect bounds, bool inverse) {
                inverse);
 }
 
-void page_dots(lv_obj_t* parent, uint8_t active_page, Rect bounds) {
-  constexpr int kDotSize = 5;
-  constexpr int kGap = 4;
-  constexpr int kCount = 5;
-  const int total_width = kCount * kDotSize + (kCount - 1) * kGap;
-  const int start_x = bounds.x + bounds.width - total_width;
-  const int y = bounds.y + bounds.height - kDotSize;
-  for (int index = 0; index < kCount; ++index) {
+void page_dots(lv_obj_t* parent, std::size_t page_index,
+               std::size_t page_count, Rect bounds) {
+  const PageDotsGeometry geometry =
+      page_dots_geometry(bounds, page_index, page_count);
+  for (std::size_t index = 0; index < geometry.count; ++index) {
     lv_obj_t* dot = lv_obj_create(parent);
     if (dot == nullptr) continue;
     apply_surface(dot);
-    lv_obj_set_pos(dot, start_x + index * (kDotSize + kGap), y);
-    lv_obj_set_size(dot, kDotSize, kDotSize);
+    lv_obj_set_pos(dot,
+                   geometry.start_x + static_cast<int>(
+                                          index * (kPageDotSize + kPageDotGap)),
+                   geometry.y);
+    lv_obj_set_size(dot, kPageDotSize, kPageDotSize);
     lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(dot, index == active_page ? lv_color_black()
-                                                         : lv_color_white(),
+    lv_obj_set_style_bg_color(dot, index == geometry.active_index
+                                      ? lv_color_black()
+                                      : lv_color_white(),
                               0);
-    lv_obj_set_style_border_width(dot, index == active_page ? 0 : 1, 0);
+    lv_obj_set_style_border_width(dot, index == geometry.active_index ? 0 : 1,
+                                  0);
     lv_obj_set_style_border_color(dot, lv_color_black(), 0);
   }
 }

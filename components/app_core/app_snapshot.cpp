@@ -35,13 +35,27 @@ WeatherData taipei_weather() {
   WeatherData weather;
   weather.current = {"Taipei", "Cloudy", 29.0, 40};
   weather.alert = true;
-  weather.seven_day = {{{"Sat", "Cloudy", 30.0, 25.0},
-                        {"Sun", "Rain", 28.0, 24.0},
-                        {"Mon", "Rain", 27.0, 23.0},
-                        {"Tue", "Cloudy", 29.0, 24.0},
-                        {"Wed", "Sunny", 31.0, 25.0},
-                        {"Thu", "Cloudy", 30.0, 25.0},
-                        {"Fri", "Sunny", 32.0, 26.0}}};
+  weather.seven_day = {{{"Sat", "Cloudy", 30.0, 25.0, 25},
+                        {"Sun", "Rain", 28.0, 24.0, 70},
+                        {"Mon", "Rain", 27.0, 23.0, 65},
+                        {"Tue", "Cloudy", 29.0, 24.0, 35},
+                        {"Wed", "Sunny", 31.0, 25.0, 10},
+                        {"Thu", "Cloudy", 30.0, 25.0, 30},
+                        {"Fri", "Sunny", 32.0, 26.0, 5}}};
+  return weather;
+}
+
+WeatherData new_york_weather() {
+  WeatherData weather;
+  weather.current = {"New York", "Sunny", 22.0, 15};
+  weather.alert = false;
+  weather.seven_day = {{{"Sat", "Sunny", 24.0, 18.0, 10},
+                        {"Sun", "Cloudy", 23.0, 17.0, 25},
+                        {"Mon", "Rain", 21.0, 16.0, 60},
+                        {"Tue", "Cloudy", 22.0, 17.0, 35},
+                        {"Wed", "Sunny", 25.0, 18.0, 10},
+                        {"Thu", "Sunny", 26.0, 19.0, 5},
+                        {"Fri", "Cloudy", 24.0, 18.0, 20}}};
   return weather;
 }
 
@@ -53,7 +67,9 @@ AppSnapshot make_mock_snapshot(DemoScenario scenario) {
   snapshot.taiwan_market = taiwan_market();
   snapshot.us_market = us_market();
   snapshot.weather = taipei_weather();
-  snapshot.indoor = {24.8, 57};
+  snapshot.new_york_weather = new_york_weather();
+  snapshot.indoor = {24.8, 57, {24.2, 24.3, 24.5, 24.6,
+                                 24.7, 24.8, 24.8, 24.8}};
   snapshot.availability = {};
 #ifdef APP_CORE_DEMO_MISSING_PAGE
   snapshot.availability.weather = false;
