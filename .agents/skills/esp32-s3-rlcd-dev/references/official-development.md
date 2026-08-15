@@ -45,6 +45,8 @@
 | BOOT | active-low button | GPIO0 | reset/power-on 時拉低進 ROM download mode；應用中也被當一般按鍵 |
 | KEY | active-low button | GPIO18 | 使用者按鍵 |
 | PWR | 電源管理按鍵 | 非一般 app GPIO | 短按開機、長按關機 |
+
+實體排列（本專案於 2026-08-16 在實機上量測確認，官方文件未記載）：**左 = PWR、中 = KEY、右 = BOOT**。分辨方法不需拆機也不需猜：韌體對 KEY/BOOT 短按會各印一行 `ui_app: button event=`，PWR 不是應用 GPIO 所以完全沒有輸出；板子已開機時短按 PWR 也不會有任何作用（短按是開機），所以逐顆短按並看序列輸出是安全且確定的辨識方式。
 | UART0 | console/header | TX 43、RX 44 | 原理圖亦保留 UART；一般開發優先用 USB Serial/JTAG |
 
 來源：[官方原理圖](https://files.waveshare.com/wiki/ESP32-S3-RLCD-4.2/ESP32-S3-RLCD-4.2-schematic.pdf)、[官方 pin-specific ESPHome 範例](https://docs.waveshare.com/ESP32-ESPHome-Tutorials/Example-RLCD-Voice)、[Factory `user_config.h`](https://github.com/waveshareteam/ESP32-S3-RLCD-4.2/blob/eb1f63427d735a22b9c30e22fa63ebddae1834d3/02_Example/ESP-IDF/10_FactoryProgram/main/user_config.h)、[Factory SD BSP](https://github.com/waveshareteam/ESP32-S3-RLCD-4.2/blob/eb1f63427d735a22b9c30e22fa63ebddae1834d3/02_Example/ESP-IDF/10_FactoryProgram/components/port_bsp/sdcard_bsp.h)、[Waveshare FAQ](https://docs.waveshare.com/ESP32-S3-RLCD-4.2/FAQ)。
