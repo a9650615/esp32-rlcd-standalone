@@ -103,6 +103,43 @@ idf.py -p "$PORT" flash monitor
 
 `flash` 會自動 build；`monitor` 預設 115200，離開用 `Ctrl+]`。也可合併成一行 `idf.py -p "$PORT" flash monitor`。[Espressif build/flash/monitor](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/get-started/linux-macos-start-project.html)；[`idf.py` reference](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/api-guides/tools/idf-py.html)
 
+### Flash mode handoff and serial gate
+
+ESP-IDF 5.5.x has an intentional boot-image handoff: when `CONFIG_ESPTOOLPY_FLASHMODE_QIO=y` (or the corresponding QOUT selection) is active, the generated esptool arguments for the first/second-stage boot path can contain `--flash_mode dio`; the bootloader then enables quad mode. Therefore **`sdkconfig` QIO plus `build/flash_args` DIO is not, by itself, a flashing blocker**. The authoritative local Kconfig source is the ESP-IDF 5.5.x checkout at `$IDF_PATH/components/bootloader/Kconfig.projbuild` (`CONFIG_ESPTOOLPY_FLASHMODE_QIO`); inspect that pinned checkout when tool behavior changes.
+
+After flashing, capture the serial log and require QIO handoff evidence such as `qio_mode: Enabling default flash chip QIO`, `SPI Mode : QIO`, or `spi_flash: flash io: qio`, together with a clean boot, no reset loop, and the expected 16 MB Flash / 8 MB PSRAM detection. Block the write or acceptance if QIO is not selected in the effective configuration, the device loops/resets, or boot/runtime evidence remains non-QIO. `--flash_mode dio` alone is not evidence of a bad image.
+
+### Worktree-safe factory-backup gate
+
+Gitignored and untracked files belong to a physical worktree; a linked worktree does not materialize a sibling checkout's ignored backup. Before any write, choose one setup and record it in the verification output:
+
+1. Keep the sensitive full dump at a canonical **absolute** path outside disposable worktree state, or explicitly copy/link it into an ignored backup path in the active worktree without tracking it.
+2. From the active worktree root, prefer the repository verifier when present:
+
+```bash
+cd "$(git rev-parse --show-toplevel)"
+./scripts/verify-factory-backup.sh
+```
+
+3. Fail closed if the verifier or backup is absent. Independently check the binary (not only its manifest):
+
+```bash
+test -f "$BACKUP" && test "$(wc -c < "$BACKUP")" -eq 16777216
+shasum -a 256 "$BACKUP"  # compare the digest with the expected project value
+```
+
+The expected digest must come from the project’s trusted verification gate or recorded device manifest and must be compared to the bytes that will be restored. A manifest does not imply that its `.bin` exists. Treat the dump and manifest as sensitive because NVS can contain credentials, device identity, and user data.
+
+### ESP-IDF component-graph acceptance gate
+
+A valid `components/ui/CMakeLists.txt`, a successful `idf.py build`, and unchanged binary size do **not** prove that UI sources compiled or linked. The staged compile gate requires:
+
+- an application dependency edge through `REQUIRES` or `PRIV_REQUIRES` (or an equivalent source-level dependency that makes the component reachable);
+- build output showing the UI source object lines and `Built target __idf_<name>` for the component; and
+- for final integration, an ELF/map symbol or an intentional call path proving retention, followed by the on-device display refresh and serial evidence.
+
+Keep compile proof separate from final link/retention/runtime proof. An unchanged binary size is a warning signal: investigate the graph and ELF/map before accepting the UI.
+
 ### Arduino
 
 Waveshare 要求 `arduino-esp32 >= 3.3.0`，官方 `Tools-Configuration.png` 的設定是：[官方設定圖](https://github.com/waveshareteam/ESP32-S3-RLCD-4.2/blob/eb1f63427d735a22b9c30e22fa63ebddae1834d3/Tools-Configuration.png)

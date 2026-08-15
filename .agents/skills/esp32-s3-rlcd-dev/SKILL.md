@@ -55,6 +55,12 @@ idf.py build
 idf.py -p "$PORT" flash monitor
 ```
 
+Build/flash gates:
+
+- With ESP-IDF 5.5.x, `CONFIG_ESPTOOLPY_FLASHMODE_QIO=y` may legitimately produce `--flash_mode dio` in generated `flash_args`; judge the post-flash serial handoff, not that argument alone. Require the QIO evidence and stop on missing QIO config, reset loops, or non-QIO boot/runtime behavior described in [references/official-development.md](references/official-development.md).
+- A full backup in a main checkout is not automatically present in a linked worktree. Make the ignored `.bin` available through a canonical absolute path or an explicitly copied/linked ignored path, then run the repository backup verifier from the active worktree. Check the binary itself for exactly 16,777,216 bytes and the expected SHA-256; a manifest alone is not proof that the binary exists.
+- A component directory and successful project build do not prove that its sources compiled or linked. Require a `REQUIRES`/`PRIV_REQUIRES` edge, component/object build evidence, and final ELF/map symbol or runtime-call evidence; unchanged binary size is a warning, not proof.
+
 For Arduino, configure `ESP32S3 Dev Module`, USB CDC enabled, Hardware CDC/JTAG, QIO 80 MHz, 16 MB Flash, OPI PSRAM, and the official 16 MB partition scheme. Start at 921600 upload baud only if stable; lower it after a reproducible serial error.
 
 ## Verify every hardware change
