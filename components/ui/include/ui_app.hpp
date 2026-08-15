@@ -79,12 +79,16 @@ void render_market_sidebar(lv_obj_t* parent,
                            const app_core::AppSnapshot& snapshot,
                            const app_core::MarketData& market,
                            Rect bounds, bool us_market);
-// Persistent system tray: time, network status, battery flush right.
-// Rendered once per page from render_page (render_shared.cpp) for every
-// page where page_shows_tray() is true. Home opts out so its Clock Hero
-// keeps the full canvas instead.
+// Persistent system tray: time, network status, page position, battery
+// flush right. Rendered once per page from render_page (render_shared.cpp)
+// for every page where page_shows_tray() is true. Home opts out so its
+// Clock Hero keeps the full canvas instead - see the render_home.cpp doc
+// comment for what Home does about page position instead. page_index/
+// page_count are passed straight through to the tray's own page_dots cell;
+// Setup calls this with (0, 0), which draws no dots at all.
 void render_tray(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
-                 Rect bounds, UiContext* context = nullptr);
+                 Rect bounds, std::size_t page_index, std::size_t page_count,
+                 UiContext* context = nullptr);
 void render_market(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
                    const app_core::MarketData& market, Rect bounds,
                    std::size_t page_index, std::size_t page_count,

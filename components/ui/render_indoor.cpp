@@ -50,6 +50,10 @@ void render_indoor(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
                    Rect bounds, std::size_t page_index,
                    std::size_t page_count, UiContext* context) {
   (void)context;
+  // Page position now lives in the system tray (see render_tray in
+  // render_shared.cpp), not a corner overlay on the page itself.
+  (void)page_index;
+  (void)page_count;
   apply_surface(parent);
   const MarketLayout layout = market_layout(bounds);
   const Rect primary = layout.primary;
@@ -99,7 +103,6 @@ void render_indoor(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
 
   render_market_sidebar(parent, snapshot, snapshot.taiwan_market, layout.side,
                         false);
-  page_dots(parent, page_index, page_count, bounds);
 }
 
 }  // namespace ui

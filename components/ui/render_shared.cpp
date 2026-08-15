@@ -106,14 +106,17 @@ void assert_tree_in_safe_canvas(lv_obj_t* object, int page) {
 #endif
 
 // `valid` gates the fabricated-number path once, here, for every caller
-// (Home's right tiles and the market-page/indoor-page sidebar tiles below)
-// instead of each call site inventing its own placeholder: an invalid tile
-// shows kNoDataLabel with a blank detail line and no leading icon (an icon
-// would itself imply data that is not there), never the caller's
-// possibly-default value/detail strings.
+// (Home's situational tile and the market-page/indoor-page sidebar tiles
+// below) instead of each call site inventing its own placeholder: an invalid
+// tile shows kNoDataLabel with a blank detail line and no leading icon (an
+// icon would itself imply data that is not there), never the caller's
+// possibly-default value/detail strings. `condition` selects which of the
+// four bold weather silhouettes to draw (see weather_icon_kind_for_condition
+// in ui_data.hpp); only consulted when weather is true, so callers that pass
+// weather=false can leave it null.
 void tile(lv_obj_t* parent, const char* title, const char* value,
           const char* detail, Rect bounds, bool weather, bool indoor,
-          bool valid = true) {
+          bool valid = true, const char* condition = nullptr) {
 #ifndef NDEBUG
   // Logged, not asserted: see the tree walk above - LVGL's assert handler
   // never returns, so a layout complaint would cost the whole display.
@@ -133,7 +136,9 @@ void tile(lv_obj_t* parent, const char* title, const char* value,
       tile_leading_visual_rect(bounds, has_leading_visual);
   if (has_leading_visual) {
     if (weather) {
-      weather_icon(parent, leading_visual, false);
+      weather_icon(parent, leading_visual,
+                  weather_icon_kind_for_condition(
+                      condition != nullptr ? condition : ""));
     } else if (indoor) {
       temperature_icon(parent, leading_visual);
     }
@@ -190,40 +195,57 @@ void reset_context(UiContext& context) {
   context.initialized = false;
 }
 
+// Home's single situational tile (see choose_home_tile in ui_data.hpp):
+// whichever candidate wins fills the entire right column instead of sharing
+// it with two others, so `bounds` is drawn on directly with no
+// right_tile_cells split and no internal dividers.
 void render_right_tiles(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
                         Rect bounds) {
-  const auto cells = right_tile_cells(bounds);
-  const Rect& weather = cells[0];
-  const Rect& indoor = cells[1];
-  const Rect& market = cells[2];
-  char weather_value[24];
-  char indoor_value[24];
-  char market_value[24];
-  char weather_detail[24];
-  char indoor_detail[24];
-  char market_detail[24];
-  std::snprintf(weather_value, sizeof(weather_value), "%.0f C",
-                snapshot.weather.current.temperature_c);
-  std::snprintf(weather_detail, sizeof(weather_detail), "%s %u%%%s",
-                snapshot.weather.current.condition.c_str(),
-                snapshot.weather.current.rain_probability_percent,
-                snapshot.weather.stale ? kStaleSuffix : "");
-  std::snprintf(indoor_value, sizeof(indoor_value), "%.1f C",
-                snapshot.indoor.temperature_c);
-  std::snprintf(indoor_detail, sizeof(indoor_detail), "RH %u%%",
-                snapshot.indoor.humidity_percent);
-  std::snprintf(market_value, sizeof(market_value), "%d",
-                snapshot.taiwan_market.primary_value);
-  std::snprintf(market_detail, sizeof(market_detail), "%+.2f%%",
-                snapshot.taiwan_market.primary_change_percent);
-  tile(parent, "WEATHER", weather_value, weather_detail, weather, true, false,
-       snapshot.weather.valid);
-  tile(parent, "INDOOR", indoor_value, indoor_detail, indoor, false, true,
-       snapshot.indoor.valid);
-  tile(parent, "MARKET", market_value, market_detail, market, false, false,
-       snapshot.taiwan_market.valid);
-  divider(parent, {bounds.x, weather.bottom(), bounds.width, kSeparatorWidth});
-  divider(parent, {bounds.x, indoor.bottom(), bounds.width, kSeparatorWidth});
+  const HomeTileKind kind = choose_home_tile(snapshot);
+  char value[24] = "";
+  char detail[24] = "";
+  const char* title = "STATUS";
+  const char* condition = nullptr;
+  bool weather = false;
+  bool indoor = false;
+  switch (kind) {
+    case HomeTileKind::Battery:
+      title = "BATTERY";
+      std::snprintf(value, sizeof(value), "%u%%", snapshot.battery.percent);
+      std::snprintf(detail, sizeof(detail), "%s",
+                    snapshot.battery.overvoltage_warning ? "OVERVOLTAGE"
+                                                          : "LOW BATTERY");
+      break;
+    case HomeTileKind::Weather:
+      title = "WEATHER";
+      std::snprintf(value, sizeof(value), "%.0f C",
+                    snapshot.weather.current.temperature_c);
+      std::snprintf(detail, sizeof(detail), "%s%s%s",
+                    snapshot.weather.alert ? "ALERT  " : "",
+                    snapshot.weather.current.condition.c_str(),
+                    snapshot.weather.stale ? kStaleSuffix : "");
+      condition = snapshot.weather.current.condition.c_str();
+      weather = true;
+      break;
+    case HomeTileKind::Market:
+      title = "MARKET";
+      std::snprintf(value, sizeof(value), "%d",
+                    snapshot.taiwan_market.primary_value);
+      std::snprintf(detail, sizeof(detail), "%+.2f%%",
+                    snapshot.taiwan_market.primary_change_percent);
+      break;
+    case HomeTileKind::Indoor:
+      title = "INDOOR";
+      std::snprintf(value, sizeof(value), "%.1f C", snapshot.indoor.temperature_c);
+      std::snprintf(detail, sizeof(detail), "RH %u%%",
+                    snapshot.indoor.humidity_percent);
+      indoor = true;
+      break;
+    case HomeTileKind::None:
+      break;
+  }
+  tile(parent, title, value, detail, bounds, weather, indoor,
+       kind != HomeTileKind::None, condition);
 }
 
 void render_market_sidebar(lv_obj_t* parent,
@@ -258,7 +280,8 @@ void render_market_sidebar(lv_obj_t* parent,
   tile(parent, market.secondary_label.c_str(), index_value, index_detail, index,
        false, false, market.valid);
   tile(parent, weather_snapshot.current.location.c_str(), weather_value,
-       weather_detail, weather, true, false, weather_snapshot.valid);
+       weather_detail, weather, true, false, weather_snapshot.valid,
+       weather_snapshot.current.condition.c_str());
   tile(parent, "INDOOR", indoor_value, indoor_detail, indoor, false, true,
        snapshot.indoor.valid);
   divider(parent, {bounds.x, index.bottom(), bounds.width, kSeparatorWidth});
@@ -266,7 +289,8 @@ void render_market_sidebar(lv_obj_t* parent,
 }
 
 void render_tray(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
-                 Rect bounds, UiContext* context) {
+                 Rect bounds, std::size_t page_index, std::size_t page_count,
+                 UiContext* context) {
   const SystemTrayLayout cells = system_tray_layout(bounds);
   const std::string clock = format_minute_clock(snapshot.clock.hero);
   lv_obj_t* clock_label =
@@ -288,6 +312,12 @@ void render_tray(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
   lv_obj_t* battery_label = label(parent, battery_text.c_str(), cells.battery,
                                   small_font(), LV_TEXT_ALIGN_RIGHT);
   if (context != nullptr) context->staging_battery_label = battery_label;
+
+  // The page-dot indicator moved here from the bottom-right corner of every
+  // data page (see render_weather.cpp/render_indoor.cpp/render_market.cpp).
+  // Setup calls render_page with (page_index, page_count) == (0, 0), which
+  // page_dots_geometry already renders as zero dots.
+  page_dots(parent, page_index, page_count, cells.dots);
 
   divider(parent, {bounds.x, bounds.y + kSystemTrayHeight, bounds.width,
                    kSeparatorWidth});
@@ -334,7 +364,8 @@ lv_obj_t* render_page(UiContext& context,
   // never hand-tunes its own top offset.
   if (page_shows_tray(page)) {
     render_tray(replacement, snapshot,
-               {0, 0, local_bounds.width, kSystemTrayHeight}, &context);
+               {0, 0, local_bounds.width, kSystemTrayHeight}, page_index,
+               page_count, &context);
   }
   const Rect content = content_bounds(local_bounds, page);
 

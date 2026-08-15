@@ -365,6 +365,16 @@ void timer_callback(lv_timer_t* timer) {
     runtime->carousel = transition.state;
     if (transition.page_changed) {
       if (wrapped) begin_cycle(*runtime, now_ms);
+      // Automatic dwell only: KEY/BOOT navigation above goes through
+      // carousel::next/previous, which never sees the snapshot and so cannot
+      // land anywhere but exactly where the button pointed. This only steers
+      // unattended auto-advance past a page with nothing to show right now
+      // (invalid data) or a market page on a Taipei-local weekend - see
+      // page_relevant_for_auto_rotation. A no-op when the landed page is
+      // already relevant, including every time begin_cycle just reset to
+      // Home above.
+      runtime->carousel.index = app_core::next_relevant_auto_index(
+          runtime->active_pages, runtime->carousel.index, runtime->snapshot);
       (void)render_current(*runtime,
                            wrapped ? "cycle" :
                                       (manual_timeout ? "manual-timeout" : "auto"),

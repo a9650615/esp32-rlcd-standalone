@@ -21,6 +21,7 @@ add_executable(host_tests
     test_i2c_shtc3.cpp
     test_weather.cpp
     test_market.cpp
+    test_net_log.cpp
     ../../components/app_core/app_snapshot.cpp
     ../../components/app_core/page_registry.cpp
     ../../components/app_core/carousel_controller.cpp
@@ -28,6 +29,7 @@ add_executable(host_tests
     ../../components/net_time/net_time_convert.cpp
     ../../components/weather/weather_parse.cpp
     ../../components/market/market_parse.cpp
+    ../../components/net_log/net_log_ring.cpp
     ../../.tools/esp-idf/components/json/cJSON/cJSON.c
 )
 target_include_directories(host_tests PRIVATE
@@ -38,6 +40,7 @@ target_include_directories(host_tests PRIVATE
     ../../components/net_time/include
     ../../components/weather/include
     ../../components/market/include
+    ../../components/net_log/include
     ../../.tools/esp-idf/components/json/cJSON
 )
 if(HOST_DEMO_MISSING_PAGE)

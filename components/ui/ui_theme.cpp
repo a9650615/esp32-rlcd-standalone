@@ -80,18 +80,97 @@ lv_obj_t* line_segment(lv_obj_t* parent, int x, int y, int width, int height,
   return object;
 }
 
-void weather_icon(lv_obj_t* parent, Rect bounds, bool rain, bool inverse) {
-  // A compact cloud made from a baseline and two risers, with optional rain.
-  const int mid_y = bounds.y + bounds.height / 2;
-  line_segment(parent, bounds.x + 4, mid_y + 4, bounds.width - 8, 2, inverse);
-  line_segment(parent, bounds.x + 9, mid_y - 3, 2, 9, inverse);
-  line_segment(parent, bounds.x + bounds.width / 2, mid_y - 7, 2, 13, inverse);
-  line_segment(parent, bounds.x + bounds.width - 11, mid_y - 1, 2, 7, inverse);
-  if (rain) {
-    line_segment(parent, bounds.x + 10, mid_y + 9, 1, 5, inverse);
-    line_segment(parent, bounds.x + bounds.width / 2, mid_y + 9, 1, 5, inverse);
-    line_segment(parent, bounds.x + bounds.width - 11, mid_y + 9, 1, 5,
-                 inverse);
+// A filled circle - the same primitive page_dots below already uses for a
+// bold round silhouette instead of a thin outline. On a reflective,
+// backlight-less panel a large filled area reads at a glance; a fine
+// outline does not.
+lv_obj_t* filled_circle(lv_obj_t* parent, int center_x, int center_y,
+                        int diameter, bool inverse) {
+  lv_obj_t* object = lv_obj_create(parent);
+  if (object == nullptr) return nullptr;
+  apply_surface(object);
+  lv_obj_set_pos(object, center_x - diameter / 2, center_y - diameter / 2);
+  lv_obj_set_size(object, std::max(1, diameter), std::max(1, diameter));
+  lv_obj_set_style_radius(object, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_bg_color(object, ink(inverse), 0);
+  return object;
+}
+
+// A wide base bar plus two overlapping lobes - one bold, continuous
+// silhouette instead of the old baseline-and-risers outline, which was
+// exactly the thin, small-enclosed-shape style that fails on this display.
+void draw_cloud(lv_obj_t* parent, Rect bounds, bool inverse) {
+  const int base_height = std::max(2, bounds.height * 2 / 5);
+  const int base_y = bounds.bottom() - base_height;
+  line_segment(parent, bounds.x, base_y, bounds.width, base_height, inverse);
+  const int lobe_diameter = std::max(2, bounds.height * 3 / 5);
+  filled_circle(parent, bounds.x + bounds.width * 3 / 10, base_y,
+               lobe_diameter, inverse);
+  filled_circle(parent, bounds.x + bounds.width * 7 / 10, base_y,
+               lobe_diameter, inverse);
+}
+
+void draw_sun(lv_obj_t* parent, Rect bounds, bool inverse) {
+  const int center_x = bounds.x + bounds.width / 2;
+  const int center_y = bounds.y + bounds.height / 2;
+  const int body_diameter = std::max(2, std::min(bounds.width, bounds.height) * 3 / 5);
+  filled_circle(parent, center_x, center_y, body_diameter, inverse);
+  const int ray_width = std::max(2, body_diameter / 6);
+  const int vertical_reach = std::max(0, (bounds.height - body_diameter) / 2);
+  const int horizontal_reach = std::max(0, (bounds.width - body_diameter) / 2);
+  line_segment(parent, center_x - ray_width / 2, bounds.y, ray_width,
+              vertical_reach, inverse);
+  line_segment(parent, center_x - ray_width / 2, center_y + body_diameter / 2,
+              ray_width, vertical_reach, inverse);
+  line_segment(parent, bounds.x, center_y - ray_width / 2, horizontal_reach,
+              ray_width, inverse);
+  line_segment(parent, center_x + body_diameter / 2, center_y - ray_width / 2,
+              horizontal_reach, ray_width, inverse);
+}
+
+void draw_rain(lv_obj_t* parent, Rect bounds, bool inverse) {
+  const int cloud_height = bounds.height * 3 / 5;
+  draw_cloud(parent, {bounds.x, bounds.y, bounds.width, cloud_height}, inverse);
+  const int drop_width = std::max(2, bounds.width / 10);
+  const int drop_y = bounds.y + cloud_height + 2;
+  const int drop_height = std::max(2, bounds.bottom() - drop_y);
+  line_segment(parent, bounds.x + bounds.width * 2 / 10, drop_y, drop_width,
+              drop_height, inverse);
+  line_segment(parent, bounds.x + bounds.width * 5 / 10, drop_y, drop_width,
+              drop_height, inverse);
+  line_segment(parent, bounds.x + bounds.width * 8 / 10 - drop_width, drop_y,
+              drop_width, drop_height, inverse);
+}
+
+void draw_snow(lv_obj_t* parent, Rect bounds, bool inverse) {
+  const int cloud_height = bounds.height * 3 / 5;
+  draw_cloud(parent, {bounds.x, bounds.y, bounds.width, cloud_height}, inverse);
+  const int flake_diameter = std::max(2, bounds.width / 8);
+  const int flake_y = bounds.bottom() - flake_diameter;
+  filled_circle(parent, bounds.x + bounds.width * 2 / 10, flake_y,
+               flake_diameter, inverse);
+  filled_circle(parent, bounds.x + bounds.width * 5 / 10, flake_y,
+               flake_diameter, inverse);
+  filled_circle(parent, bounds.x + bounds.width * 8 / 10, flake_y,
+               flake_diameter, inverse);
+}
+
+void weather_icon(lv_obj_t* parent, Rect bounds, WeatherIconKind kind,
+                  bool inverse) {
+  switch (kind) {
+    case WeatherIconKind::Sun:
+      draw_sun(parent, bounds, inverse);
+      return;
+    case WeatherIconKind::Rain:
+      draw_rain(parent, bounds, inverse);
+      return;
+    case WeatherIconKind::Snow:
+      draw_snow(parent, bounds, inverse);
+      return;
+    case WeatherIconKind::Cloud:
+    default:
+      draw_cloud(parent, bounds, inverse);
+      return;
   }
 }
 

@@ -40,6 +40,13 @@ struct TileTextLayout {
   Rect detail;
 };
 
+// Collapsed from the WMO forecast codes' dozen-plus condition strings (see
+// weather_parse.cpp condition_for_wmo_code) down to the handful of shapes a
+// 1-bit, backlight-less panel can actually resolve at a glance - see
+// weather_icon_kind_for_condition in ui_data.hpp for the mapping and
+// weather_icon below for the bold silhouette each one draws.
+enum class WeatherIconKind { Sun, Cloud, Rain, Snow };
+
 constexpr Rect safe_canvas() {
   return {kSafeMargin, kSafeMargin, kCanvasWidth - 2 * kSafeMargin,
           kCanvasHeight - 2 * kSafeMargin};
@@ -142,7 +149,7 @@ lv_obj_t* label(lv_obj_t* parent, const char* text, Rect bounds,
 lv_obj_t* divider(lv_obj_t* parent, Rect bounds);
 lv_obj_t* line_segment(lv_obj_t* parent, int x, int y, int width, int height,
                        bool inverse = false);
-void weather_icon(lv_obj_t* parent, Rect bounds, bool rain,
+void weather_icon(lv_obj_t* parent, Rect bounds, WeatherIconKind kind,
                   bool inverse = false);
 void temperature_icon(lv_obj_t* parent, Rect bounds, bool inverse = false);
 void humidity_icon(lv_obj_t* parent, Rect bounds, bool inverse = false);

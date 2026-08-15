@@ -1,6 +1,7 @@
 #pragma once
 
 #include "app_snapshot.hpp"
+#include "carousel_controller.hpp"
 #include "ui_theme.hpp"
 
 #include <algorithm>
@@ -32,6 +33,33 @@ struct PageDotsGeometry {
 inline constexpr int kPageDotSize = 5;
 inline constexpr int kPageDotGap = 4;
 inline constexpr char kComfortBandLabel[] = "COMFORT BAND  40-60 RH";
+
+// Collapses weather_parse.cpp's WMO condition strings (Clear, Mostly Clear,
+// Partly Cloudy, Overcast, Fog, Drizzle/Icy Drizzle, Rain/Icy Rain, Showers,
+// Snow/Snow Grains/Snow Showers, Thunderstorm/Tstorm Hail, Unknown - plus the
+// mock fixture's Sunny/Cloudy/Storm) down to the four silhouettes
+// weather_icon (ui_theme.cpp) can draw boldly enough to read on this panel.
+// Substring matching, not an exhaustive switch, so it also covers whatever
+// exact wording a future WMO code addition uses without a matching update
+// here. Unmatched/empty text is treated as Cloud, the least specific claim.
+inline WeatherIconKind weather_icon_kind_for_condition(
+    const std::string& condition) {
+  if (condition.find("Snow") != std::string::npos) return WeatherIconKind::Snow;
+  if (condition.find("Rain") != std::string::npos ||
+      condition.find("Drizzle") != std::string::npos ||
+      condition.find("Shower") != std::string::npos ||
+      // "torm" (no leading S/s) is deliberate: it matches "Storm",
+      // "Thunderstorm" and WMO's "Tstorm Hail" regardless of whether the
+      // storm syllable happens to be capitalized in that particular string.
+      condition.find("torm") != std::string::npos) {
+    return WeatherIconKind::Rain;
+  }
+  if (condition.find("Clear") != std::string::npos ||
+      condition.find("Sunny") != std::string::npos) {
+    return WeatherIconKind::Sun;
+  }
+  return WeatherIconKind::Cloud;
+}
 
 struct SetupLayout {
   Rect qr;
@@ -216,6 +244,7 @@ inline std::string setup_password_text(const std::string& portal_password) {
 struct SystemTrayLayout {
   Rect time;
   Rect network;
+  Rect dots;
   Rect battery;
 };
 
@@ -232,22 +261,34 @@ inline constexpr int kSystemTrayCellY = 3;
 inline constexpr int kSystemTrayCellHeight = 18;
 inline constexpr int kSystemTrayCellGap = 4;
 inline constexpr int kSystemTrayBatteryWidth = 64;
+// The page-dot indicator used to sit in the bottom-right corner of every
+// data page; it now lives here instead (see render_tray in
+// render_shared.cpp). The network cell was oversized for the short strings
+// it actually carries ("SETUP"/"WIFI"/"NO WIFI"), so this width is carved
+// out of what used to be network's slack rather than growing the tray.
+// Sized for the widest cluster the carousel can show (kPageCount dots),
+// proven by the static_assert below.
+inline constexpr int kSystemTrayDotsWidth = 50;
 
-// Time flush left, battery flush right, network status filling the middle.
-// Pure arithmetic on bounds.x/y/width/height, so - like setup_layout - it
-// works for both the zero-offset local frame render_page builds pages with
-// and the absolute safe_canvas() frame the static_asserts below use.
+// Time flush left, battery flush right, page dots immediately left of
+// battery, network status filling whatever remains in the middle. Pure
+// arithmetic on bounds.x/y/width/height, so - like setup_layout - it works
+// for both the zero-offset local frame render_page builds pages with and
+// the absolute safe_canvas() frame the static_asserts below use.
 constexpr SystemTrayLayout system_tray_layout(const Rect bounds) {
   const Rect time{bounds.x, bounds.y, kSystemTrayTimeWidth,
                   kSystemTrayTimeHeight};
   const Rect battery{bounds.right() - kSystemTrayBatteryWidth,
                      bounds.y + kSystemTrayCellY, kSystemTrayBatteryWidth,
                      kSystemTrayCellHeight};
+  const Rect dots{battery.x - kSystemTrayCellGap - kSystemTrayDotsWidth,
+                  bounds.y + kSystemTrayCellY, kSystemTrayDotsWidth,
+                  kSystemTrayCellHeight};
   const int network_x = time.right() + kSystemTrayCellGap;
-  const int network_width = battery.x - kSystemTrayCellGap - network_x;
+  const int network_width = dots.x - kSystemTrayCellGap - network_x;
   const Rect network{network_x, bounds.y + kSystemTrayCellY, network_width,
                      kSystemTrayCellHeight};
-  return {time, network, battery};
+  return {time, network, dots, battery};
 }
 
 // One of the three fixed tray network strings.
@@ -284,15 +325,25 @@ static_assert(system_tray_layout(safe_canvas()).time.right() <=
                   system_tray_layout(safe_canvas()).network.x,
               "tray time and network cells do not overlap");
 static_assert(system_tray_layout(safe_canvas()).network.right() <=
+                  system_tray_layout(safe_canvas()).dots.x,
+              "tray network and dots cells do not overlap");
+static_assert(system_tray_layout(safe_canvas()).dots.right() <=
                   system_tray_layout(safe_canvas()).battery.x,
-              "tray network and battery cells do not overlap");
+              "tray dots and battery cells do not overlap");
 static_assert(system_tray_layout(safe_canvas()).network.width > 0,
               "tray network cell has positive width");
+static_assert(system_tray_layout(safe_canvas()).dots.width >=
+                  static_cast<int>(app_core::kPageCount) * kPageDotSize +
+                      (static_cast<int>(app_core::kPageCount) - 1) *
+                          kPageDotGap,
+              "tray dots cell fits the widest page-dot cluster the carousel "
+              "can show (kPageCount dots)");
 static_assert(system_tray_layout(safe_canvas()).battery.right() ==
                   safe_canvas().right(),
               "tray battery cell sits flush right");
 static_assert(within_safe_canvas(system_tray_layout(safe_canvas()).time) &&
                   within_safe_canvas(system_tray_layout(safe_canvas()).network) &&
+                  within_safe_canvas(system_tray_layout(safe_canvas()).dots) &&
                   within_safe_canvas(system_tray_layout(safe_canvas()).battery),
               "tray cells stay inside the safe canvas");
 
@@ -468,8 +519,14 @@ struct ForecastColumnLayout {
 inline constexpr int kForecastRowGap = kSetupTightLineGap;
 inline constexpr int kForecastRowHeight =
     safe_text_box_height(18, kSetupSmallFontLineHeight);
-inline constexpr int kForecastIconWidth = 26;
-inline constexpr int kForecastIconHeight = 27;
+// Grown from the original 26x27 - the old icon was too small and too fine
+// to read on this panel (see weather_icon in ui_theme.cpp). The forecast
+// column has ~43px of height headroom below its six stacked rows at the
+// original icon size (170px column height vs 127px of stacked content), and
+// this spends most of that on the one row that most needed it, proven by
+// forecast_columns_layout_all_fit below.
+inline constexpr int kForecastIconWidth = 40;
+inline constexpr int kForecastIconHeight = 60;
 
 constexpr ForecastColumnLayout forecast_column_layout(const Rect column) {
   const Rect day{column.x, column.y, column.width, kForecastRowHeight};
@@ -525,17 +582,6 @@ constexpr bool forecast_columns_layout_all_disjoint(const Rect forecast) {
   return true;
 }
 
-// The forecast row's stacked content must also stay clear of the page dots
-// anchored to the bottom-right of the same content bounds (page_dots_geometry
-// below) - the last forecast column's x-range sits directly under them.
-constexpr bool forecast_rows_clear_page_dots(const Rect content) {
-  const int dots_top = content.bottom() - kPageDotSize;
-  for (const Rect& column : forecast_columns(weather_forecast_rect(content))) {
-    if (forecast_column_layout(column).rain.bottom() > dots_top) return false;
-  }
-  return true;
-}
-
 static_assert(
     forecast_columns_layout_all_fit(
         weather_forecast_rect(content_bounds(safe_canvas(),
@@ -547,10 +593,10 @@ static_assert(
         weather_forecast_rect(content_bounds(safe_canvas(),
                                              app_core::PageId::Weather))),
     "no two rows within a forecast column overlap");
-static_assert(
-    forecast_rows_clear_page_dots(
-        content_bounds(safe_canvas(), app_core::PageId::Weather)),
-    "the stacked forecast rows never reach down into the page dots row");
+// Page dots have moved into the system tray (see SystemTrayLayout below), so
+// the forecast column no longer has anything to stay clear of at its own
+// bottom edge - forecast_rows_clear_page_dots and its static_assert were
+// removed along with that overlap concern.
 
 constexpr std::array<ChartPoint, 8> normalize_chart_samples(
     const std::array<int, 8>& samples, const Rect bounds) {
@@ -702,5 +748,119 @@ static_assert(
             kSetupSmallFontLineHeight))),
     "the no-intraday chart placeholder stays inside the chart region it "
     "replaces, not stretched to fill the whole primary column");
+
+// ---------------------------------------------------------------------------
+// Home page: Clock Hero plus one situational tile.
+//
+// "首頁現在擺的東西有點太多，看不到重點" - Home dropped from three stacked
+// right-hand tiles to one, chosen by priority below, and the left column's
+// TODAY/NEXT/WEATHER-ALERT rows are gone entirely rather than duplicating
+// whatever the one tile already says. The vertical space that freed up goes
+// to spacing the clock/date/sync block out instead of leaving it cramped at
+// the top - see home_layout below.
+enum class HomeTileKind { Battery, Weather, Market, Indoor, None };
+
+// Below this, a low reading is worth surfacing on Home even without an
+// over-voltage condition - deliberately generous so the warning appears
+// well before a shutdown, not right at the edge of one.
+inline constexpr uint8_t kHomeLowBatteryPercent = 20;
+
+constexpr bool home_battery_notable(const app_core::BatteryData& battery) {
+  return battery.valid && (battery.overvoltage_warning ||
+                           battery.percent <= kHomeLowBatteryPercent);
+}
+
+// Priority, highest first: a battery problem (over-voltage or low charge)
+// outranks a weather alert, which outranks a plain informative reading -
+// weather (even without an alert), then market, then indoor, then a plain
+// battery reading. Each tier is skipped when its backing data is not valid
+// rather than shown as NO DATA in the one slot meant to carry the important
+// thing; None only when nothing on the snapshot is valid at all.
+constexpr HomeTileKind choose_home_tile(const app_core::AppSnapshot& snapshot) {
+  if (home_battery_notable(snapshot.battery)) return HomeTileKind::Battery;
+  if (snapshot.weather.valid && snapshot.weather.alert) return HomeTileKind::Weather;
+  if (snapshot.weather.valid) return HomeTileKind::Weather;
+  if (snapshot.taiwan_market.valid) return HomeTileKind::Market;
+  if (snapshot.indoor.valid) return HomeTileKind::Indoor;
+  if (snapshot.battery.valid) return HomeTileKind::Battery;
+  return HomeTileKind::None;
+}
+
+struct HomeLayout {
+  Rect hero;
+  Rect date;
+  Rect sync;
+  Rect tile;
+};
+
+inline constexpr int kHomeRightWidth = 118;
+inline constexpr int kHomeSplitGap = 12;
+inline constexpr int kHomeBottomMargin = 12;
+inline constexpr int kHomeHeroFontLineHeight = 52;  // lv_font_montserrat_48
+inline constexpr int kHomeRowFontLineHeight =
+    kSetupMediumFontLineHeight;  // 22, lv_font_montserrat_20
+inline constexpr int kHomeHeroHeight =
+    safe_text_box_height(64, kHomeHeroFontLineHeight);
+inline constexpr int kHomeRowHeight =
+    safe_text_box_height(26, kHomeRowFontLineHeight);
+inline constexpr int kHomeBlockGap = 10;
+
+// Clock Hero, date and sync rows stacked and vertically centered in the left
+// column - the height freed by dropping Home's TODAY/NEXT/WEATHER-ALERT rows
+// (see choose_home_tile above) becomes breathing room here instead of a dead
+// gap, and date/sync move up to the medium font (20px, was 14px) now that
+// there is room. `bounds` is Home's own content area (page_shows_tray(Home)
+// is false, so this is the untouched safe canvas at render time); pure
+// arithmetic on bounds.x/y/width/height, so it works for both that
+// zero-offset-in-practice frame and the absolute safe_canvas() frame the
+// static_asserts below use, the same convention setup_layout follows.
+constexpr HomeLayout home_layout(const Rect bounds) {
+  const Rect tile{bounds.right() - kHomeRightWidth, bounds.y, kHomeRightWidth,
+                  bounds.height - kHomeBottomMargin};
+  const int left_width = bounds.width - kHomeRightWidth - kHomeSplitGap;
+  const int left_height = bounds.height - kHomeBottomMargin;
+  const int block_height = kHomeHeroHeight + kHomeBlockGap + kHomeRowHeight +
+                           kHomeBlockGap + kHomeRowHeight;
+  const int top = bounds.y + (left_height > block_height
+                                  ? (left_height - block_height) / 2
+                                  : 0);
+  const Rect hero{bounds.x + 2, top, left_width - 4, kHomeHeroHeight};
+  const Rect date{bounds.x + 3, hero.bottom() + kHomeBlockGap, left_width - 6,
+                  kHomeRowHeight};
+  const Rect sync{bounds.x + 3, date.bottom() + kHomeBlockGap, left_width - 6,
+                  kHomeRowHeight};
+  return {hero, date, sync, tile};
+}
+
+// Every rect home_layout produces fits entirely inside `content`.
+constexpr bool home_layout_fits(const Rect content) {
+  const HomeLayout layout = home_layout(content);
+  return rect_within(content, layout.hero) && rect_within(content, layout.date) &&
+        rect_within(content, layout.sync) && rect_within(content, layout.tile);
+}
+
+// No two rects in the layout overlap.
+constexpr bool home_layout_disjoint(const Rect content) {
+  const HomeLayout layout = home_layout(content);
+  const std::array<Rect, 4> rects{layout.hero, layout.date, layout.sync,
+                                  layout.tile};
+  for (std::size_t i = 0; i < rects.size(); ++i) {
+    for (std::size_t j = i + 1; j < rects.size(); ++j) {
+      if (rects_intersect(rects[i], rects[j])) return false;
+    }
+  }
+  return true;
+}
+
+static_assert(
+    home_layout_fits(content_bounds(safe_canvas(), app_core::PageId::Home)),
+    "every home rect fits entirely inside home's content bounds");
+static_assert(
+    home_layout_disjoint(content_bounds(safe_canvas(), app_core::PageId::Home)),
+    "no two home rects overlap");
+static_assert(
+    home_layout(content_bounds(safe_canvas(), app_core::PageId::Home))
+            .hero.height >= kHomeHeroFontLineHeight,
+    "the clock hero box is at least as tall as the hero font's line height");
 
 }  // namespace ui

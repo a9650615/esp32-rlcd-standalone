@@ -1,0 +1,9 @@
+idf_component_register(
+    SRCS
+        "net_log_ring.cpp"
+        "net_log.cpp"
+    INCLUDE_DIRS
+        "include"
+    PRIV_REQUIRES
+        esp_netif
+)

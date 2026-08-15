@@ -9,16 +9,16 @@ const lv_font_t* hero_font() { return &lv_font_montserrat_28; }
 const lv_font_t* medium_font() { return &lv_font_montserrat_20; }
 const lv_font_t* small_font() { return &lv_font_montserrat_14; }
 
-bool rainy(const std::string& condition) {
-  return condition == "Rain" || condition == "Storm";
-}
-
 }  // namespace
 
 void render_weather(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
                     Rect bounds, std::size_t page_index,
                     std::size_t page_count, UiContext* context) {
   (void)context;
+  // Page position now lives in the system tray (see render_tray in
+  // render_shared.cpp), not a corner overlay on the page itself.
+  (void)page_index;
+  (void)page_count;
   apply_surface(parent);
   const auto& weather = snapshot.weather;
 
@@ -32,17 +32,18 @@ void render_weather(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
           small_font());
     label(parent, kNoDataLabel, no_data_rect(bounds), medium_font(),
           LV_TEXT_ALIGN_CENTER);
-    page_dots(parent, page_index, page_count, bounds);
     return;
   }
 
   const auto& current = weather.current;
-  weather_icon(parent, {bounds.x + 8, bounds.y + 8, 34, 31},
-              rainy(current.condition));
+  // Grown from the original 34x31 - too small and too fine to read on this
+  // panel. Still clears the divider at bounds.y+70 with room to spare.
+  weather_icon(parent, {bounds.x + 8, bounds.y + 8, 48, 46},
+              weather_icon_kind_for_condition(current.condition));
   label(parent, current.condition.c_str(),
-        {bounds.x + 52, bounds.y + 4, 170, 35}, hero_font());
+        {bounds.x + 66, bounds.y + 4, 156, 35}, hero_font());
   label(parent, current.location.c_str(),
-        {bounds.x + 54, bounds.y + 41, 145, 20}, medium_font());
+        {bounds.x + 68, bounds.y + 41, 131, 20}, medium_font());
   char current_line[48];
   std::snprintf(current_line, sizeof(current_line), "%.1f C   RAIN %u%%%s",
                 current.temperature_c, current.rain_probability_percent,
@@ -61,7 +62,8 @@ void render_weather(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
     const ForecastColumnLayout layout = forecast_column_layout(column);
     label(parent, day.day.c_str(), layout.day, small_font(),
           LV_TEXT_ALIGN_CENTER);
-    weather_icon(parent, layout.icon, rainy(day.condition));
+    weather_icon(parent, layout.icon,
+                weather_icon_kind_for_condition(day.condition));
     label(parent, day.condition.c_str(),
           {layout.condition.x + 1, layout.condition.y,
            layout.condition.width - 2, layout.condition.height},
@@ -88,7 +90,6 @@ void render_weather(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
            layout.rain.height},
           small_font(), LV_TEXT_ALIGN_CENTER);
   }
-  page_dots(parent, page_index, page_count, bounds);
 }
 
 }  // namespace ui

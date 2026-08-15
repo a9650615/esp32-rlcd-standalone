@@ -128,6 +128,124 @@ HOST_TEST(indoor_fixture_has_non_flat_temperature_history) {
   EXPECT_TRUE(points.front().y != points.back().y);
 }
 
+HOST_TEST(weather_icon_kind_collapses_wmo_conditions_into_four_shapes) {
+  using ui::WeatherIconKind;
+  EXPECT_TRUE(ui::weather_icon_kind_for_condition("Clear") == WeatherIconKind::Sun);
+  EXPECT_TRUE(ui::weather_icon_kind_for_condition("Mostly Clear") ==
+              WeatherIconKind::Sun);
+  EXPECT_TRUE(ui::weather_icon_kind_for_condition("Sunny") == WeatherIconKind::Sun);
+  EXPECT_TRUE(ui::weather_icon_kind_for_condition("Partly Cloudy") ==
+              WeatherIconKind::Cloud);
+  EXPECT_TRUE(ui::weather_icon_kind_for_condition("Overcast") ==
+              WeatherIconKind::Cloud);
+  EXPECT_TRUE(ui::weather_icon_kind_for_condition("Fog") == WeatherIconKind::Cloud);
+  EXPECT_TRUE(ui::weather_icon_kind_for_condition("Unknown") ==
+              WeatherIconKind::Cloud);
+  EXPECT_TRUE(ui::weather_icon_kind_for_condition("") == WeatherIconKind::Cloud);
+  EXPECT_TRUE(ui::weather_icon_kind_for_condition("Rain") == WeatherIconKind::Rain);
+  EXPECT_TRUE(ui::weather_icon_kind_for_condition("Icy Rain") ==
+              WeatherIconKind::Rain);
+  EXPECT_TRUE(ui::weather_icon_kind_for_condition("Drizzle") ==
+              WeatherIconKind::Rain);
+  EXPECT_TRUE(ui::weather_icon_kind_for_condition("Showers") ==
+              WeatherIconKind::Rain);
+  EXPECT_TRUE(ui::weather_icon_kind_for_condition("Thunderstorm") ==
+              WeatherIconKind::Rain);
+  EXPECT_TRUE(ui::weather_icon_kind_for_condition("Tstorm Hail") ==
+              WeatherIconKind::Rain);
+  EXPECT_TRUE(ui::weather_icon_kind_for_condition("Storm") == WeatherIconKind::Rain);
+  EXPECT_TRUE(ui::weather_icon_kind_for_condition("Snow") == WeatherIconKind::Snow);
+  EXPECT_TRUE(ui::weather_icon_kind_for_condition("Snow Grains") ==
+              WeatherIconKind::Snow);
+  EXPECT_TRUE(ui::weather_icon_kind_for_condition("Snow Showers") ==
+              WeatherIconKind::Snow);
+}
+
+HOST_TEST(home_tile_battery_overvoltage_outranks_a_weather_alert) {
+  app_core::AppSnapshot snapshot =
+      app_core::make_mock_snapshot(app_core::DemoScenario::TaiwanSession);
+  snapshot.battery.valid = true;
+  snapshot.battery.percent = 90;
+  snapshot.battery.overvoltage_warning = true;
+  snapshot.weather.valid = true;
+  snapshot.weather.alert = true;
+  EXPECT_TRUE(ui::choose_home_tile(snapshot) == ui::HomeTileKind::Battery);
+}
+
+HOST_TEST(home_tile_low_battery_also_outranks_a_weather_alert) {
+  app_core::AppSnapshot snapshot =
+      app_core::make_mock_snapshot(app_core::DemoScenario::TaiwanSession);
+  snapshot.battery.valid = true;
+  snapshot.battery.percent = ui::kHomeLowBatteryPercent;
+  snapshot.battery.overvoltage_warning = false;
+  snapshot.weather.valid = true;
+  snapshot.weather.alert = true;
+  EXPECT_TRUE(ui::choose_home_tile(snapshot) == ui::HomeTileKind::Battery);
+}
+
+HOST_TEST(home_tile_weather_alert_outranks_a_quiet_default) {
+  app_core::AppSnapshot snapshot =
+      app_core::make_mock_snapshot(app_core::DemoScenario::TaiwanSession);
+  snapshot.battery.valid = true;
+  snapshot.battery.percent = 90;
+  snapshot.battery.overvoltage_warning = false;
+  snapshot.weather.valid = true;
+  snapshot.weather.alert = true;
+  snapshot.taiwan_market.valid = true;
+  EXPECT_TRUE(ui::choose_home_tile(snapshot) == ui::HomeTileKind::Weather);
+}
+
+HOST_TEST(home_tile_falls_back_to_weather_market_indoor_in_order_when_quiet) {
+  app_core::AppSnapshot snapshot =
+      app_core::make_mock_snapshot(app_core::DemoScenario::TaiwanSession);
+  snapshot.battery.valid = false;
+  snapshot.weather.valid = true;
+  snapshot.weather.alert = false;
+  snapshot.taiwan_market.valid = true;
+  snapshot.indoor.valid = true;
+  EXPECT_TRUE(ui::choose_home_tile(snapshot) == ui::HomeTileKind::Weather);
+
+  snapshot.weather.valid = false;
+  EXPECT_TRUE(ui::choose_home_tile(snapshot) == ui::HomeTileKind::Market);
+
+  snapshot.taiwan_market.valid = false;
+  EXPECT_TRUE(ui::choose_home_tile(snapshot) == ui::HomeTileKind::Indoor);
+
+  snapshot.indoor.valid = false;
+  snapshot.battery.valid = true;
+  snapshot.battery.percent = 90;
+  EXPECT_TRUE(ui::choose_home_tile(snapshot) == ui::HomeTileKind::Battery);
+}
+
+HOST_TEST(home_tile_skips_an_invalid_candidate_instead_of_showing_no_data) {
+  app_core::AppSnapshot snapshot =
+      app_core::make_mock_snapshot(app_core::DemoScenario::TaiwanSession);
+  snapshot.battery.valid = false;
+  snapshot.weather.valid = false;
+  snapshot.weather.alert = true;  // alert flag on invalid data must not count
+  snapshot.taiwan_market.valid = true;
+  snapshot.indoor.valid = true;
+  EXPECT_TRUE(ui::choose_home_tile(snapshot) == ui::HomeTileKind::Market);
+}
+
+HOST_TEST(home_tile_is_none_when_nothing_at_all_is_valid) {
+  app_core::AppSnapshot snapshot =
+      app_core::make_mock_snapshot(app_core::DemoScenario::TaiwanSession);
+  snapshot.battery.valid = false;
+  snapshot.weather.valid = false;
+  snapshot.taiwan_market.valid = false;
+  snapshot.indoor.valid = false;
+  EXPECT_TRUE(ui::choose_home_tile(snapshot) == ui::HomeTileKind::None);
+}
+
+HOST_TEST(tray_dots_cell_sits_between_network_and_battery) {
+  const auto cells = ui::system_tray_layout(ui::safe_canvas());
+  EXPECT_TRUE(cells.network.right() <= cells.dots.x);
+  EXPECT_TRUE(cells.dots.right() <= cells.battery.x);
+  EXPECT_TRUE(cells.dots.width >=
+              5 * ui::kPageDotSize + 4 * ui::kPageDotGap);
+}
+
 HOST_TEST(forecast_fixture_contains_rain_probability_for_every_day) {
   const app_core::AppSnapshot snapshot =
       app_core::make_mock_snapshot(app_core::DemoScenario::TaiwanSession);

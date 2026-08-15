@@ -6,6 +6,7 @@
 #include "display_port.hpp"
 #include "lvgl_port.hpp"
 #include "market.hpp"
+#include "net_log.hpp"
 #include "net_time.hpp"
 #include "shtc3.hpp"
 #include "ui_app.hpp"
@@ -288,6 +289,22 @@ void format_clock(const app_core::RtcDateTime& clock, app_core::ClockData& out) 
   }
 }
 
+// One-shot, not [[noreturn]] like the monitor tasks above: net_log::start()
+// installs its own log sink and sender task internally, so once that call
+// returns this task's job is done and it deletes itself rather than
+// looping forever for no reason.
+void net_log_startup_task(void*) {
+  wait_for_station_ip();
+  const esp_err_t result = net_log::start();
+  if (result == ESP_ERR_NOT_SUPPORTED) {
+    ESP_LOGI(kTag, "net_log disabled (set CONFIG_NET_LOG_ENABLE=y to enable)");
+  } else if (result != ESP_OK) {
+    // Non-fatal: serial logging is unaffected either way.
+    ESP_LOGE(kTag, "net_log startup failed: %s", esp_err_to_name(result));
+  }
+  vTaskDelete(nullptr);
+}
+
 }  // namespace
 
 extern "C" void app_main() {
@@ -378,5 +395,12 @@ extern "C" void app_main() {
   if (xTaskCreate(&market_monitor_task, "market_monitor", 8192, nullptr,
                   tskIDLE_PRIORITY + 1, nullptr) != pdPASS) {
     ESP_LOGE(kTag, "market monitor task creation failed");
+  }
+
+  // 4096 B: waits, then makes a handful of esp_netif/socket/task-creation
+  // calls and deletes itself - no TLS, no JSON, no large buffers.
+  if (xTaskCreate(&net_log_startup_task, "net_log_startup", 4096, nullptr,
+                  tskIDLE_PRIORITY + 1, nullptr) != pdPASS) {
+    ESP_LOGE(kTag, "net_log startup task creation failed");
   }
 }

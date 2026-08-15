@@ -1,0 +1,27 @@
+config NET_LOG_ENABLE
+    bool "Mirror logs to a LAN TCP port (net_log, diagnostic only)"
+    default n
+    help
+        Streams every ESP_LOG line (in addition to serial, never instead
+        of it) to a plaintext, unauthenticated TCP port on the LAN. This
+        is a debugging aid for reaching the same information a USB serial
+        capture would show, without a cable. Leave disabled unless
+        actively diagnosing a problem: it widens who can see firmware log
+        output from "someone with physical USB access" to "anyone on the
+        LAN who connects to the port while it is running".
+
+config NET_LOG_PORT
+    int "net_log TCP port"
+    default 3334
+    depends on NET_LOG_ENABLE
+    help
+        Operators connect with: nc <device-ip> <port>
+
+config NET_LOG_RING_BYTES
+    int "net_log retained ring buffer size (bytes)"
+    default 32768
+    depends on NET_LOG_ENABLE
+    help
+        Recent log lines retained (allocated from PSRAM, not internal RAM)
+        so an operator who connects after a failure still sees the lines
+        that led up to it, not just whatever is logged from that point on.

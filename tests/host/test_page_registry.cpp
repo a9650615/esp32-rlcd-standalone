@@ -189,6 +189,104 @@ HOST_TEST(pcf85063_decode_rejects_invalid_bcd_and_ranges) {
                                          invalid_calendar.size(), decoded));
 }
 
+HOST_TEST(auto_rotation_skips_a_weekday_market_page_only_when_data_invalid) {
+  AppSnapshot snapshot = make_mock_snapshot(DemoScenario::TaiwanSession);
+  snapshot.clock.source = "SNTP";
+  snapshot.clock.date = "Wed, 12 Aug 2026";
+  snapshot.taiwan_market.valid = true;
+  EXPECT_TRUE(app_core::page_relevant_for_auto_rotation(PageId::TaiwanMarket,
+                                                        snapshot));
+  snapshot.taiwan_market.valid = false;
+  EXPECT_TRUE(!app_core::page_relevant_for_auto_rotation(PageId::TaiwanMarket,
+                                                         snapshot));
+}
+
+HOST_TEST(auto_rotation_skips_market_pages_on_a_taipei_weekend) {
+  AppSnapshot snapshot = make_mock_snapshot(DemoScenario::TaiwanSession);
+  snapshot.taiwan_market.valid = true;
+  snapshot.us_market.valid = true;
+  snapshot.clock.source = "SNTP";
+
+  snapshot.clock.date = "Sat, 15 Aug 2026";
+  EXPECT_TRUE(!app_core::page_relevant_for_auto_rotation(PageId::TaiwanMarket,
+                                                         snapshot));
+  EXPECT_TRUE(!app_core::page_relevant_for_auto_rotation(PageId::UsMarket,
+                                                         snapshot));
+
+  snapshot.clock.date = "Sun, 16 Aug 2026";
+  EXPECT_TRUE(!app_core::page_relevant_for_auto_rotation(PageId::TaiwanMarket,
+                                                         snapshot));
+
+  // A non-market page is unaffected by the weekend signal.
+  snapshot.weather.valid = true;
+  EXPECT_TRUE(
+      app_core::page_relevant_for_auto_rotation(PageId::Weather, snapshot));
+}
+
+HOST_TEST(auto_rotation_weekend_signal_requires_a_real_synced_clock) {
+  AppSnapshot snapshot = make_mock_snapshot(DemoScenario::TaiwanSession);
+  snapshot.taiwan_market.valid = true;
+  snapshot.clock.date = "Sat, 15 Aug 2026";
+  snapshot.clock.source = "RTC fallback";
+  EXPECT_TRUE(
+      app_core::page_relevant_for_auto_rotation(PageId::TaiwanMarket, snapshot));
+}
+
+HOST_TEST(auto_rotation_invalid_data_is_skipped_on_any_page_kind) {
+  AppSnapshot snapshot = make_mock_snapshot(DemoScenario::TaiwanSession);
+  snapshot.weather.valid = false;
+  snapshot.indoor.valid = false;
+  EXPECT_TRUE(
+      !app_core::page_relevant_for_auto_rotation(PageId::Weather, snapshot));
+  EXPECT_TRUE(
+      !app_core::page_relevant_for_auto_rotation(PageId::Indoor, snapshot));
+  EXPECT_TRUE(
+      app_core::page_relevant_for_auto_rotation(PageId::Home, snapshot));
+}
+
+HOST_TEST(next_relevant_auto_index_skips_forward_past_irrelevant_pages) {
+  AppSnapshot snapshot = make_mock_snapshot(DemoScenario::TaiwanSession);
+  snapshot.clock.source = "SNTP";
+  snapshot.clock.date = "Sat, 15 Aug 2026";
+  snapshot.taiwan_market.valid = true;
+  snapshot.us_market.valid = true;
+  snapshot.weather.valid = false;
+  snapshot.indoor.valid = true;
+  const std::vector<PageId> pages{PageId::Home, PageId::TaiwanMarket,
+                                  PageId::UsMarket, PageId::Weather,
+                                  PageId::Indoor};
+  // Landing on TaiwanMarket (closed weekend) should skip to Indoor, past the
+  // also-closed UsMarket and the invalid Weather page.
+  EXPECT_TRUE(app_core::next_relevant_auto_index(pages, 1, snapshot) ==
+              static_cast<std::size_t>(4));
+  // Landing on an already-relevant page is a no-op.
+  EXPECT_TRUE(app_core::next_relevant_auto_index(pages, 4, snapshot) ==
+              static_cast<std::size_t>(4));
+}
+
+HOST_TEST(next_relevant_auto_index_never_ends_up_with_nothing_to_show) {
+  AppSnapshot snapshot = make_mock_snapshot(DemoScenario::TaiwanSession);
+  snapshot.clock.source = "SNTP";
+  snapshot.clock.date = "Sat, 15 Aug 2026";
+  snapshot.taiwan_market.valid = true;
+  snapshot.us_market.valid = true;
+  // Every page in this rotation is either a closed-weekend market or
+  // invalid data - nothing qualifies, so the fallback must return the
+  // landed-on index unchanged rather than searching forever.
+  const std::vector<PageId> pages{PageId::TaiwanMarket, PageId::UsMarket};
+  EXPECT_TRUE(app_core::next_relevant_auto_index(pages, 0, snapshot) ==
+              static_cast<std::size_t>(0));
+  EXPECT_TRUE(app_core::next_relevant_auto_index(pages, 1, snapshot) ==
+              static_cast<std::size_t>(1));
+}
+
+HOST_TEST(next_relevant_auto_index_empty_pages_is_a_safe_noop) {
+  AppSnapshot snapshot = make_mock_snapshot(DemoScenario::TaiwanSession);
+  const std::vector<PageId> pages{};
+  EXPECT_TRUE(app_core::next_relevant_auto_index(pages, 0, snapshot) ==
+              static_cast<std::size_t>(0));
+}
+
 HOST_TEST(fallback_clock_advances_across_midnight_and_leap_day) {
   const app_core::RtcDateTime start{2024, 2, 28, 23, 59, 50};
   const app_core::RtcDateTime next =
