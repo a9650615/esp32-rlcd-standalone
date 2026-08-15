@@ -94,6 +94,10 @@ For a carousel UI, observe every registered page once and the wrap back to Home.
 
 Do not claim completion from a successful compile alone. Preserve the first failing log when diagnosing USB, PSRAM, LVGL, or peripheral issues.
 
+`sdkconfig.defaults` is applied only when `sdkconfig` is first generated. Adding an option to the defaults file does nothing to an existing `sdkconfig`, and the build still succeeds, so a feature guarded by `#if CONFIG_...` is silently compiled out. This bit `CONFIG_LV_USE_QRCODE`: the build passed, the binary flashed, and the QR simply never existed. After adding any `sdkconfig.defaults` entry, grep the generated `sdkconfig` to confirm the value actually landed; `sdkconfig` is gitignored and regenerating it (delete, rebuild) is safe, but diff the regenerated file against the old one to prove the flash/PSRAM/partition/stack settings survived.
+
+A feature that can fail at runtime and fall back silently needs a log line saying which branch it took. The same session lost a cycle to a QR that was compiled out and to a battery reading that was sampled correctly but never printed, so the documented multimeter calibration procedure had no number to compare against.
+
 ## Recover without making damage worse
 
 If the serial port disappears, do not erase Flash. Long-press PWR to turn off, hold BOOT, press PWR to turn on, keep BOOT held for about one second, then enumerate ports again.

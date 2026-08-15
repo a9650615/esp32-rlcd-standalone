@@ -93,14 +93,27 @@ struct SetupData {
   std::string portal_url;
   std::string qr_payload;
   std::string status;
+  // True only for a genuine failure status (wrong password, network not
+  // found, generic connect failure) so the UI can render it more
+  // prominently than neutral progress without sniffing the status string.
+  bool error = false;
 };
 
 // Sampled from the GPIO4 / ADC1 channel 3 divider. valid stays false until a
 // plausible reading lands so the tray degrades to a blank cell instead of 0%.
+//
+// overvoltage_warning is detection only, never prevention: this board's
+// battery connection is a read-only sense divider with no charger-enable
+// GPIO exposed to the app (see the pin table in
+// .agents/skills/esp32-s3-rlcd-dev/references/official-development.md), so
+// firmware cannot stop or limit charging. Overcharge protection is the
+// charge IC's and the cell's own protection board's job; this field just
+// lets the UI flag a reading that looks wrong.
 struct BatteryData {
   bool valid = false;
   int millivolts = 0;
   uint8_t percent = 0;
+  bool overvoltage_warning = false;
 };
 
 // Applies the board's 3x sense divider and a calibration_permille trim
@@ -124,6 +137,22 @@ bool battery_reading_valid(int millivolts);
 // discharge-curve table (a naive linear 3000-4200 mV map is badly wrong
 // mid-curve). Clamped to 0..100 at both ends.
 uint8_t battery_percent(int millivolts);
+
+// Overvoltage thresholds for a single-cell Li-ion pack, above a normal
+// 4200 mV CC/CV termination plus typical charger/ADC tolerance. These are
+// meaningless before CONFIG_BATTERY_CALIBRATION_PERMILLE has been tuned per
+// the calibration note on battery_millivolts() above: at the untuned
+// default of 1000, the reported millivolts can be several percent off the
+// true cell voltage, so calibration is a prerequisite for this warning to
+// mean anything, not an optional refinement.
+inline constexpr int kBatteryOvervoltageWarningMillivolts = 4250;
+inline constexpr int kBatteryOvervoltageDangerMillivolts = 4300;
+
+// True at or above kBatteryOvervoltageWarningMillivolts (and therefore also
+// true in the danger range below). False for a genuinely full 4200 mV cell.
+bool battery_overvoltage_warning(int millivolts);
+// True at or above kBatteryOvervoltageDangerMillivolts.
+bool battery_overvoltage_danger(int millivolts);
 
 struct AppSnapshot {
   ClockData clock;

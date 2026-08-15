@@ -193,6 +193,14 @@ uint8_t battery_percent(int millivolts) {
   return 0;  // unreachable: breakpoints cover [3000, 4200] contiguously.
 }
 
+bool battery_overvoltage_warning(int millivolts) {
+  return millivolts >= kBatteryOvervoltageWarningMillivolts;
+}
+
+bool battery_overvoltage_danger(int millivolts) {
+  return millivolts >= kBatteryOvervoltageDangerMillivolts;
+}
+
 AppSnapshot make_mock_snapshot(DemoScenario scenario) {
   AppSnapshot snapshot;
   snapshot.clock = {"09:41", "Sat, 15 Aug 2026", "Clock Hero"};

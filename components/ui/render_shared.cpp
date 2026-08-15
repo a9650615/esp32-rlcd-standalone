@@ -37,9 +37,32 @@ void set_label_text_if_changed(lv_obj_t* label_obj, const char* text) {
   lv_label_set_text(label_obj, text);
 }
 
+// Same skip-when-unchanged discipline as set_label_text_if_changed above,
+// but for the Setup status label specifically: a text change also needs its
+// error styling (the inverted bar) re-evaluated, since a status-only publish
+// - not a full page rebuild - is what carries a neutral status flipping to a
+// failure (or back) while Setup stays on screen. `error` comes straight from
+// app_core::SetupData::error; the status wording and its failure/neutral
+// classification are published together by wifi_provision on every state
+// change, so gating both on the text comparison is sufficient in practice.
+void set_setup_status_if_changed(lv_obj_t* label_obj,
+                                 const std::string& status_text, bool error) {
+  if (label_obj == nullptr) return;
+  const char* current = lv_label_get_text(label_obj);
+  if (current != nullptr && status_text == current) return;
+  lv_label_set_text(label_obj, status_text.c_str());
+  apply_setup_status_style(label_obj, error);
+}
+
 #ifndef NDEBUG
-void assert_tree_in_safe_canvas(lv_obj_t* object) {
-  lv_obj_update_layout(object);
+// Walks the tree reading already-computed coordinates only - the one layout
+// pass that makes those coordinates valid happens once, before the walk
+// starts (see assert_tree_in_safe_canvas below). Calling lv_obj_update_layout
+// per node here would re-run a full-tree layout recalculation at every node,
+// turning an N-object page into N full layout passes; that O(N^2) cost is
+// what stalled the LVGL task long enough to starve IDLE0 and trip the task
+// watchdog once the Setup page's QR widget pushed the object count up.
+void assert_tree_in_safe_canvas_walk(lv_obj_t* object) {
   lv_area_t area{};
   lv_obj_get_coords(object, &area);
   const Rect safe = safe_canvas();
@@ -48,8 +71,13 @@ void assert_tree_in_safe_canvas(lv_obj_t* object) {
                 "page object outside 6px safe canvas");
   const uint32_t child_count = lv_obj_get_child_count(object);
   for (uint32_t index = 0; index < child_count; ++index) {
-    assert_tree_in_safe_canvas(lv_obj_get_child(object, index));
+    assert_tree_in_safe_canvas_walk(lv_obj_get_child(object, index));
   }
+}
+
+void assert_tree_in_safe_canvas(lv_obj_t* object) {
+  lv_obj_update_layout(object);
+  assert_tree_in_safe_canvas_walk(object);
 }
 #endif
 
@@ -327,8 +355,9 @@ bool update_visible_fields(UiContext& context,
                             tray_network_text(snapshot.setup).c_str());
   set_label_text_if_changed(context.battery_label,
                             tray_battery_text(snapshot.battery).c_str());
-  set_label_text_if_changed(context.setup_status_label,
-                            setup_status_text(snapshot.setup.status).c_str());
+  set_setup_status_if_changed(context.setup_status_label,
+                              setup_status_text(snapshot.setup.status),
+                              snapshot.setup.error);
   return true;
 }
 

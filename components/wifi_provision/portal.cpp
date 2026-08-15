@@ -11,7 +11,7 @@
 namespace wifi_provision {
 namespace {
 
-constexpr char kTag[] = "wifi_provision_portal";
+constexpr char kTag[] = "portal";
 constexpr size_t kMaxFormBody = 512;
 
 httpd_handle_t server_ = nullptr;
@@ -49,9 +49,18 @@ std::string render_form_page(const std::string& error) {
   return html;
 }
 
+// Laziest thing that works: no JS, no polling endpoint, just a timed
+// redirect back to "/". If the credentials were good, the board tears the
+// AP down before this fires and the phone simply drops off the network -
+// the text below sets that expectation. If they were bad, "/" is still
+// being served and will render the real failure reason plus the form again.
 std::string render_connecting_page() {
-  return "<!DOCTYPE html><html><head><title>RLCD Setup</title></head><body>"
-         "<p>Connecting to your network...</p></body></html>";
+  return "<!DOCTYPE html><html><head><title>RLCD Setup</title>"
+         "<meta http-equiv=\"refresh\" content=\"5;url=/\"></head><body>"
+         "<p>Connecting to your network...</p>"
+         "<p>This page will check again in a few seconds. If the network "
+         "was found, this page will stop responding and the display on "
+         "the device will show the result.</p></body></html>";
 }
 
 void send_html(httpd_req_t* req, const std::string& html) {
@@ -60,16 +69,19 @@ void send_html(httpd_req_t* req, const std::string& html) {
 }
 
 esp_err_t root_get_handler(httpd_req_t* req) {
+  ESP_LOGI(kTag, "GET %s -> form shown", req->uri);
   send_html(req, render_form_page({}));
   return ESP_OK;
 }
 
 esp_err_t root_post_handler(httpd_req_t* req) {
   if (req->content_len == 0) {
+    ESP_LOGW(kTag, "POST %s -> validation error: empty body", req->uri);
     send_html(req, render_form_page("Please enter a network name."));
     return ESP_OK;
   }
   if (req->content_len >= kMaxFormBody) {
+    ESP_LOGW(kTag, "POST %s -> validation error: body too large", req->uri);
     send_html(req, render_form_page("Form submission is too large."));
     return ESP_OK;
   }
@@ -87,16 +99,23 @@ esp_err_t root_post_handler(httpd_req_t* req) {
 
   wifi_config::Credentials creds;
   if (!wifi_config::parse_form(std::string_view(buffer, received), creds)) {
+    ESP_LOGW(kTag, "POST %s -> validation error: malformed form", req->uri);
     send_html(req, render_form_page("Malformed form submission."));
     return ESP_OK;
   }
 
   const wifi_config::CredentialError error = wifi_config::validate(creds);
   if (error != wifi_config::CredentialError::None) {
+    // creds.ssid is public (broadcast in the clear); the password itself is
+    // never logged, only whether it passed validation.
+    ESP_LOGW(kTag, "POST %s -> validation error: %s", req->uri,
+            error_text(error).c_str());
     send_html(req, render_form_page(error_text(error)));
     return ESP_OK;
   }
 
+  ESP_LOGI(kTag, "POST %s -> credentials accepted, ssid=%s", req->uri,
+          creds.ssid.c_str());
   handle_credentials_saved(creds);
   send_html(req, render_connecting_page());
   return ESP_OK;
@@ -105,6 +124,9 @@ esp_err_t root_post_handler(httpd_req_t* req) {
 // iOS's captive-portal webview requires response content to recognize a
 // redirect; an empty 30x is not sufficient.
 esp_err_t redirect_404_handler(httpd_req_t* req, httpd_err_code_t) {
+  // Captive-portal probing hits this constantly (every associated client,
+  // repeatedly); debug level keeps it out of the way while still available.
+  ESP_LOGD(kTag, "GET %s -> 404, redirecting to /", req->uri);
   httpd_resp_set_status(req, "303 See Other");
   httpd_resp_set_hdr(req, "Location", "/");
   httpd_resp_send(req, "Redirecting to setup", HTTPD_RESP_USE_STRLEN);

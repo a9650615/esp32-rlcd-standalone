@@ -55,6 +55,13 @@ void render_setup(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
   label(parent, kSetupInstructions, layout.instructions, small_font());
   const std::string status = setup_status_text(snapshot.setup.status);
   lv_obj_t* status_label = label(parent, status.c_str(), layout.status, small_font());
+  if (status_label != nullptr) {
+    // The status rect is sized for several wrapped lines (a failure message
+    // plus a next-step hint) rather than the single short line a neutral
+    // status needs - always allow wrapping so long text never gets clipped.
+    lv_label_set_long_mode(status_label, LV_LABEL_LONG_WRAP);
+    apply_setup_status_style(status_label, snapshot.setup.error);
+  }
   // Registered the same way render_tray registers its labels: render_page
   // swaps this into context->setup_status_label once the atomic replacement
   // completes, so ui_app.cpp's label-only repaint path can update just this

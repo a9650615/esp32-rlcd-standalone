@@ -1,6 +1,7 @@
 #include "internal.hpp"
 
 #include <esp_event.h>
+#include <esp_log.h>
 #include <esp_netif.h>
 #include <esp_wifi.h>
 #include <esp_wifi_default.h>
@@ -11,9 +12,14 @@
 namespace wifi_provision {
 namespace {
 
+constexpr char kTag[] = "wifi_manager";
+
 bool wifi_started_ = false;
 bool ap_active_ = false;
 bool sta_configured_ = false;
+// Only kept for the stop-AP log line below; the SSID itself lives in
+// wifi_provision.cpp.
+std::string ap_ssid_for_log_;
 
 DisconnectReason classify_reason(uint8_t reason) {
   switch (reason) {
@@ -46,12 +52,23 @@ void wifi_event_handler(void*, esp_event_base_t, int32_t event_id,
   if (event_id == WIFI_EVENT_STA_DISCONNECTED) {
     const auto* event =
         static_cast<wifi_event_sta_disconnected_t*>(event_data);
-    handle_wifi_disconnected(classify_reason(event->reason));
+    const DisconnectReason reason = classify_reason(event->reason);
+    // Raw code is what makes the diagnosis defensible; classify_reason()
+    // alone can't be checked against the ESP-IDF reason table after the
+    // fact.
+    ESP_LOGW(kTag, "sta disconnected: raw_reason=%u classified=%s",
+             event->reason, to_string(reason));
+    handle_wifi_disconnected(reason);
   }
 }
 
-void ip_event_handler(void*, esp_event_base_t, int32_t event_id, void*) {
-  if (event_id == IP_EVENT_STA_GOT_IP) handle_wifi_connected();
+void ip_event_handler(void*, esp_event_base_t, int32_t event_id,
+                      void* event_data) {
+  if (event_id == IP_EVENT_STA_GOT_IP) {
+    const auto* event = static_cast<ip_event_got_ip_t*>(event_data);
+    ESP_LOGI(kTag, "sta got ip: " IPSTR, IP2STR(&event->ip_info.ip));
+    handle_wifi_connected();
+  }
 }
 
 }  // namespace
@@ -87,6 +104,10 @@ void wifi_manager_start_ap(const std::string& ssid, const std::string& password)
   ap_cfg.ap.max_connection = 4;
   ap_cfg.ap.channel = 1;
 
+  // Passphrase is per-session and never logged; the SSID is public anyway
+  // (broadcast in the clear), so it is safe and useful to log.
+  ESP_LOGI(kTag, "setup AP starting: ssid=%s", ssid.c_str());
+  ap_ssid_for_log_ = ssid;
   ap_active_ = true;
   esp_wifi_set_mode(sta_configured_ ? WIFI_MODE_APSTA : WIFI_MODE_AP);
   esp_wifi_set_config(WIFI_IF_AP, &ap_cfg);
@@ -94,6 +115,7 @@ void wifi_manager_start_ap(const std::string& ssid, const std::string& password)
 }
 
 void wifi_manager_stop_ap() {
+  ESP_LOGI(kTag, "setup AP stopping: ssid=%s", ap_ssid_for_log_.c_str());
   ap_active_ = false;
   // Wi-Fi is already started by the time an AP is ever torn down.
   esp_wifi_set_mode(WIFI_MODE_STA);

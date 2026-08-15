@@ -149,6 +149,12 @@ void humidity_icon(lv_obj_t* parent, Rect bounds, bool inverse = false);
 void page_dots(lv_obj_t* parent, std::size_t page_index,
                std::size_t page_count, Rect bounds);
 lv_obj_t* navigation_overlay(lv_obj_t* parent, Rect bounds);
+// Inverts a label to a black-filled bar with white text when is_error is
+// true, or restores the normal black-on-white look otherwise. Shared by the
+// initial Setup page render and the label-only status repaint path so a
+// status that flips from neutral to a failure (or back) while Setup stays
+// on screen is restyled the same way a full page rebuild would style it.
+void apply_setup_status_style(lv_obj_t* label_obj, bool is_error);
 
 #endif
 

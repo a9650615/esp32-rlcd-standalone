@@ -64,3 +64,7 @@ HOST_TEST(setup_page_strings_are_ascii_only) {
   EXPECT_TRUE(is_printable_ascii(ui::kSetupDefaultStatus));
   EXPECT_TRUE(is_printable_ascii(ui::kSetupQrUnavailableLabel));
 }
+
+HOST_TEST(setup_status_height_fits_several_wrapped_lines_not_just_one) {
+  EXPECT_TRUE(ui::kSetupStatusHeight >= 3 * ui::kSetupLineHeight);
+}

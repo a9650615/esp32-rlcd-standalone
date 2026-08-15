@@ -108,9 +108,43 @@ constexpr uint32_t kBatterySamplePeriodMs = 30'000;
 // Samples the battery divider roughly every 30 s and publishes it through
 // wifi_provision's existing snapshot owner; never touches lv_* directly.
 [[noreturn]] void battery_monitor_task(void*) {
+  // Edge-triggered so a persisting condition logs once, not every 30 s.
+  bool was_warning = false;
+  bool was_danger = false;
   for (;;) {
     app_core::BatteryData battery;
     if (board::battery_read(battery)) {
+      // The screen shows percent only, but CONFIG_BATTERY_CALIBRATION_PERMILLE
+      // is tuned by comparing millivolts against a multimeter, so the raw
+      // figure has to be reachable somewhere.
+      ESP_LOGI(kTag, "battery valid=%d mV=%d percent=%u", battery.valid,
+               battery.millivolts, battery.percent);
+
+      battery.overvoltage_warning =
+          app_core::battery_overvoltage_warning(battery.millivolts);
+      const bool danger = app_core::battery_overvoltage_danger(battery.millivolts);
+
+      // Detection only: this board has no charger-enable GPIO, so firmware
+      // cannot stop or limit charging - these are warnings, not protection.
+      if (danger && !was_danger) {
+        ESP_LOGE(kTag,
+                 "battery overvoltage danger: %d mV (limit %d mV); firmware "
+                 "cannot stop charging on this board",
+                 battery.millivolts, app_core::kBatteryOvervoltageDangerMillivolts);
+      } else if (!danger && was_danger) {
+        ESP_LOGI(kTag, "battery overvoltage danger cleared: %d mV",
+                 battery.millivolts);
+      }
+      if (battery.overvoltage_warning && !was_warning) {
+        ESP_LOGW(kTag, "battery overvoltage warning: %d mV (limit %d mV)",
+                 battery.millivolts, app_core::kBatteryOvervoltageWarningMillivolts);
+      } else if (!battery.overvoltage_warning && was_warning) {
+        ESP_LOGI(kTag, "battery overvoltage warning cleared: %d mV",
+                 battery.millivolts);
+      }
+      was_warning = battery.overvoltage_warning;
+      was_danger = danger;
+
       wifi_provision::set_battery(battery);
     } else {
       ESP_LOGW(kTag, "battery ADC read failed");

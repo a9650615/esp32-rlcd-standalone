@@ -61,3 +61,26 @@ HOST_TEST(battery_millivolts_scales_with_calibration_permille_both_ways) {
   // Divider reads high versus a multimeter: trim downward past nominal.
   EXPECT_EQ(app_core::battery_millivolts_scaled(1000, 900), 2700);
 }
+
+HOST_TEST(battery_overvoltage_warning_is_false_below_and_true_at_and_above_threshold) {
+  EXPECT_TRUE(!app_core::battery_overvoltage_warning(4249));
+  EXPECT_TRUE(app_core::battery_overvoltage_warning(4250));
+  EXPECT_TRUE(app_core::battery_overvoltage_warning(4300));
+  EXPECT_TRUE(app_core::battery_overvoltage_warning(5000));
+}
+
+HOST_TEST(battery_overvoltage_danger_is_false_below_and_true_at_and_above_threshold) {
+  EXPECT_TRUE(!app_core::battery_overvoltage_danger(4299));
+  EXPECT_TRUE(app_core::battery_overvoltage_danger(4300));
+  EXPECT_TRUE(app_core::battery_overvoltage_danger(5000));
+}
+
+HOST_TEST(battery_overvoltage_does_not_fire_on_a_genuinely_full_cell_or_real_hardware_readings) {
+  // A full 4200 mV cell is normal, not an overvoltage condition.
+  EXPECT_TRUE(!app_core::battery_overvoltage_warning(4200));
+  EXPECT_TRUE(!app_core::battery_overvoltage_danger(4200));
+  // Real board readings on USB plateaued at 4056-4071 mV; neither threshold
+  // should ever fire on values in that range.
+  EXPECT_TRUE(!app_core::battery_overvoltage_warning(4071));
+  EXPECT_TRUE(!app_core::battery_overvoltage_danger(4071));
+}

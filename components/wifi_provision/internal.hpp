@@ -16,6 +16,18 @@ namespace wifi_provision {
 // Why the STA link dropped, so the status text can be specific.
 enum class DisconnectReason { None, AuthFailure, NotFound, Other };
 
+// Log-friendly name; shared by wifi_manager.cpp (raw event) and
+// wifi_provision.cpp (state-machine trail) so both sides agree on wording.
+inline const char* to_string(DisconnectReason reason) {
+  switch (reason) {
+    case DisconnectReason::None: return "None";
+    case DisconnectReason::AuthFailure: return "AuthFailure";
+    case DisconnectReason::NotFound: return "NotFound";
+    case DisconnectReason::Other: return "Other";
+  }
+  return "Unknown";
+}
+
 // --- nvs_store.cpp ---
 // Handles nvs_flash_init() once, tolerating a full/stale partition by
 // erasing and re-initializing only the NVS partition. Call before load/save.

@@ -11,6 +11,18 @@ lv_color_t ink(bool inverse) { return inverse ? lv_color_white() : lv_color_blac
 
 }  // namespace
 
+void apply_setup_status_style(lv_obj_t* label_obj, bool is_error) {
+  if (label_obj == nullptr) return;
+  // A 1-bit reflective panel has no colour to flag an error with, so invert
+  // the block instead - black bar behind white text, the same convention
+  // navigation_overlay uses for its own always-visible banner - rather than
+  // the plain black-on-white every other label on the page uses.
+  lv_obj_set_style_bg_color(label_obj, ink(!is_error), 0);
+  lv_obj_set_style_bg_opa(label_obj, LV_OPA_COVER, 0);
+  lv_obj_set_style_text_color(label_obj, ink(is_error), 0);
+  lv_obj_set_style_text_outline_stroke_color(label_obj, ink(is_error), 0);
+}
+
 void apply_surface(lv_obj_t* object) {
   lv_obj_set_style_bg_color(object, lv_color_white(), 0);
   lv_obj_set_style_bg_opa(object, LV_OPA_COVER, 0);

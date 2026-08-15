@@ -57,6 +57,13 @@ inline constexpr int kSetupLineGap = 4;
 inline constexpr int kSetupTightLineGap = 2;
 inline constexpr int kSetupBlockGap = 10;
 inline constexpr int kSetupStatusGap = 6;
+// A neutral status ("Connecting...", "Not yet connected") is one short line,
+// but a failure status - a wrong-password message plus a next-step hint -
+// needs to wrap. Sized for up to four wrapped small-font lines; the column
+// has plenty of unused height below the instructions row (see
+// setup_layout_fits below), so this only needs to be generously large, not
+// an exact font-metric calculation.
+inline constexpr int kSetupStatusHeight = 4 * kSetupLineHeight;
 inline constexpr char kSetupTitle[] = "Setup";
 inline constexpr char kSetupNoSsidLabel[] = "AP SSID unavailable";
 inline constexpr char kSetupOpenPassword[] = "OPEN";
@@ -88,7 +95,7 @@ constexpr SetupLayout setup_layout(const Rect bounds) {
   const Rect instructions{bounds.x, portal.bottom() + kSetupBlockGap,
                           text_width, kSetupLineHeight};
   const Rect status{bounds.x, instructions.bottom() + kSetupStatusGap,
-                    text_width, kSetupLineHeight};
+                    text_width, kSetupStatusHeight};
   return {qr, title, ssid, password, portal, instructions, status};
 }
 
@@ -278,6 +285,11 @@ static_assert(
             .qr.width == kSetupQrSize &&
         kSetupQrSize > 132,
     "setup QR is enlarged well beyond the original 132px size");
+static_assert(
+    setup_layout(content_bounds(safe_canvas(), app_core::PageId::Setup))
+            .status.height >= 3 * kSetupLineHeight,
+    "setup status has room for a multi-line error message, not just one "
+    "short line");
 
 constexpr PageDotsGeometry page_dots_geometry(const Rect bounds,
                                               std::size_t page_index,
