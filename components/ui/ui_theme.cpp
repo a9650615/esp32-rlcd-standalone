@@ -1,6 +1,7 @@
 #include "ui_theme.hpp"
 
 #include <algorithm>
+#include <new>
 
 namespace ui {
 namespace {
@@ -113,11 +114,40 @@ void page_dots(lv_obj_t* parent, uint8_t active_page, Rect bounds) {
 }
 
 namespace {
+
+struct OverlayTimerState {
+  lv_obj_t* overlay = nullptr;
+  lv_timer_t* timer = nullptr;
+};
+
+void overlay_deleted(lv_event_t* event) {
+  auto* state =
+      static_cast<OverlayTimerState*>(lv_event_get_user_data(event));
+  if (state == nullptr) return;
+  state->overlay = nullptr;
+  if (state->timer != nullptr) {
+    lv_timer_t* timer = state->timer;
+    state->timer = nullptr;
+    lv_timer_delete(timer);
+  }
+  delete state;
+}
+
 void delete_overlay_timer(lv_timer_t* timer) {
-  lv_obj_t* overlay = static_cast<lv_obj_t*>(lv_timer_get_user_data(timer));
+  auto* state =
+      static_cast<OverlayTimerState*>(lv_timer_get_user_data(timer));
+  if (state == nullptr) {
+    lv_timer_delete(timer);
+    return;
+  }
+  state->timer = nullptr;
+  lv_obj_t* overlay = state->overlay;
   if (overlay != nullptr) lv_obj_delete(overlay);
+  // overlay_deleted owns state lifetime and has already cleared the object
+  // pointer. The timer itself is still valid until this callback returns.
   lv_timer_delete(timer);
 }
+
 }  // namespace
 
 lv_obj_t* navigation_overlay(lv_obj_t* parent, Rect bounds) {
@@ -128,6 +158,14 @@ lv_obj_t* navigation_overlay(lv_obj_t* parent, Rect bounds) {
   lv_obj_set_size(overlay, bounds.width, 24);
   lv_obj_set_style_bg_color(overlay, lv_color_black(), 0);
   lv_obj_set_style_text_color(overlay, lv_color_white(), 0);
+  auto* state = new (std::nothrow) OverlayTimerState;
+  if (state == nullptr) {
+    lv_obj_delete(overlay);
+    return nullptr;
+  }
+  state->overlay = overlay;
+  lv_obj_set_user_data(overlay, state);
+  lv_obj_add_event_cb(overlay, overlay_deleted, LV_EVENT_DELETE, state);
   lv_obj_t* overlay_text =
       label(overlay, "BOOT  ‹   AUTO   ›  KEY", {0, 0, bounds.width, 24},
             &lv_font_montserrat_14, LV_TEXT_ALIGN_CENTER);
@@ -136,8 +174,13 @@ lv_obj_t* navigation_overlay(lv_obj_t* parent, Rect bounds) {
     lv_obj_set_style_text_color(overlay_text, lv_color_white(), 0);
   }
   lv_timer_t* timer = lv_timer_create(delete_overlay_timer,
-                                      kNavigationOverlayDurationMs, overlay);
-  if (timer != nullptr) lv_timer_set_repeat_count(timer, 1);
+                                      kNavigationOverlayDurationMs, state);
+  if (timer == nullptr) {
+    lv_obj_delete(overlay);
+    return nullptr;
+  }
+  state->timer = timer;
+  lv_timer_set_repeat_count(timer, 1);
   return overlay;
 }
 

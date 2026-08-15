@@ -1,6 +1,7 @@
 #include "ui_app.hpp"
 
 #include <cstdio>
+#include <new>
 
 namespace ui {
 namespace {
@@ -8,23 +9,80 @@ namespace {
 const lv_font_t* small_font() { return &lv_font_montserrat_14; }
 const lv_font_t* medium_font() { return &lv_font_montserrat_20; }
 
+constexpr uint32_t kOwnerMagic = 0x5549524Fu;
+
+struct RenderOwner {
+  uint32_t magic = kOwnerMagic;
+  lv_obj_t* root = nullptr;
+};
+
+void owner_host_deleted(lv_event_t* event) {
+  auto* owner = static_cast<RenderOwner*>(lv_event_get_user_data(event));
+  if (owner != nullptr && owner->magic == kOwnerMagic) {
+    owner->root = nullptr;
+    owner->magic = 0;
+    lv_obj_set_user_data(static_cast<lv_obj_t*>(lv_event_get_current_target(event)),
+                         nullptr);
+    delete owner;
+  }
+}
+
+RenderOwner* render_owner(lv_obj_t* host) {
+  // The stable host reserves its LVGL user-data slot for this owner. Refuse
+  // to guess if a caller already owns that slot rather than dereferencing an
+  // unknown pointer or silently overwriting another subsystem's state.
+  if (lv_obj_get_user_data(host) != nullptr) {
+    auto* existing =
+        static_cast<RenderOwner*>(lv_obj_get_user_data(host));
+    return existing->magic == kOwnerMagic ? existing : nullptr;
+  }
+  auto* owner = new (std::nothrow) RenderOwner;
+  if (owner == nullptr) return nullptr;
+  lv_obj_set_user_data(host, owner);
+  lv_obj_add_event_cb(host, owner_host_deleted, LV_EVENT_DELETE, owner);
+  return owner;
+}
+
+#ifndef NDEBUG
+void assert_tree_in_safe_canvas(lv_obj_t* object) {
+  lv_obj_update_layout(object);
+  lv_area_t area{};
+  lv_obj_get_coords(object, &area);
+  const Rect safe = safe_canvas();
+  LV_ASSERT_MSG(area.x1 >= safe.x && area.y1 >= safe.y &&
+                    area.x2 < safe.right() && area.y2 < safe.bottom(),
+                "page object outside 6px safe canvas");
+  const uint32_t child_count = lv_obj_get_child_count(object);
+  for (uint32_t index = 0; index < child_count; ++index) {
+    assert_tree_in_safe_canvas(lv_obj_get_child(object, index));
+  }
+}
+#endif
+
 void tile(lv_obj_t* parent, const char* title, const char* value,
           const char* detail, Rect bounds, bool weather, bool indoor) {
+#ifndef NDEBUG
+  LV_ASSERT_MSG(tile_content_is_centered(bounds),
+                "right tile content is not vertically centered");
+  LV_ASSERT_MSG(tile_content_has_no_reserved_footer(bounds),
+                "right tile has a reserved footer band");
+#endif
+  const Rect content = tile_content_rect(bounds);
   label(parent, title, {bounds.x + 6, bounds.y + 8, bounds.width - 12, 18},
         small_font(), LV_TEXT_ALIGN_LEFT);
   if (weather) {
-    weather_icon(parent, {bounds.x + 8, bounds.y + 32, 30, 30}, false);
+    weather_icon(parent, {bounds.x + 8, content.y + 2, 30, 30}, false);
   } else if (indoor) {
-    temperature_icon(parent, {bounds.x + 8, bounds.y + 32, 30, 30});
+    temperature_icon(parent, {bounds.x + 8, content.y + 2, 30, 30});
   } else {
-    line_segment(parent, bounds.x + 8, bounds.y + 61, bounds.width - 16, 1);
-    line_segment(parent, bounds.x + 10, bounds.y + 58, bounds.width / 3, 1);
+    line_segment(parent, bounds.x + 8, content.y + 31, bounds.width - 16, 1);
+    line_segment(parent, bounds.x + 10, content.y + 28, bounds.width / 3, 1);
   }
   const int value_x = bounds.x + (weather || indoor ? 43 : 6);
   const int value_w = bounds.width - (weather || indoor ? 49 : 12);
-  label(parent, value, {value_x, bounds.y + 31, value_w, 28}, medium_font(),
+  label(parent, value, {value_x, content.y, value_w, 28}, medium_font(),
         LV_TEXT_ALIGN_CENTER);
-  label(parent, detail, {bounds.x + 6, bounds.y + bounds.height - 24,
+  label(parent, detail, {bounds.x + 6, content.y + 28,
                          bounds.width - 12, 16},
         small_font(), LV_TEXT_ALIGN_CENTER);
 }
@@ -33,13 +91,10 @@ void tile(lv_obj_t* parent, const char* title, const char* value,
 
 void render_right_tiles(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
                         Rect bounds) {
-  const int cell_height = (bounds.height - 2 * kSeparatorWidth) / 3;
-  const Rect weather{bounds.x, bounds.y, bounds.width, cell_height};
-  const Rect indoor{bounds.x, bounds.y + cell_height + kSeparatorWidth,
-                    bounds.width, cell_height};
-  const Rect market{bounds.x,
-                    bounds.y + 2 * (cell_height + kSeparatorWidth),
-                    bounds.width, bounds.height - 2 * (cell_height + kSeparatorWidth)};
+  const auto cells = right_tile_cells(bounds);
+  const Rect& weather = cells[0];
+  const Rect& indoor = cells[1];
+  const Rect& market = cells[2];
   char weather_value[24];
   char indoor_value[24];
   char market_value[24];
@@ -79,9 +134,19 @@ lv_obj_t* render_page(lv_obj_t* host, const app_core::AppSnapshot& snapshot,
                       uint8_t active_page) {
   if (host == nullptr || !within_safe_canvas(bounds)) return nullptr;
 
-  static lv_obj_t* active_root = nullptr;
-  lv_obj_t* replacement = lv_obj_create(host);
-  if (replacement == nullptr) return nullptr;
+  RenderOwner* owner = render_owner(host);
+  if (owner == nullptr) return nullptr;
+
+  // LVGL screens are parentless and therefore form a genuinely detached
+  // staging surface. The page root is moved to the host only after rendering.
+  lv_obj_t* staging_screen = lv_obj_create(nullptr);
+  if (staging_screen == nullptr) return nullptr;
+  lv_obj_set_size(staging_screen, kCanvasWidth, kCanvasHeight);
+  lv_obj_t* replacement = lv_obj_create(staging_screen);
+  if (replacement == nullptr) {
+    lv_obj_delete(staging_screen);
+    return nullptr;
+  }
   lv_obj_add_flag(replacement, LV_OBJ_FLAG_HIDDEN);
   apply_surface(replacement);
   lv_obj_set_pos(replacement, bounds.x, bounds.y);
@@ -102,11 +167,16 @@ lv_obj_t* render_page(lv_obj_t* host, const app_core::AppSnapshot& snapshot,
       render_home(replacement, snapshot, local_bounds, active_page);
       break;
   }
-  if (active_root != nullptr && active_root != replacement) {
-    lv_obj_delete(active_root);
+  lv_obj_set_parent(replacement, host);
+  lv_obj_delete(staging_screen);
+  if (owner->root != nullptr && owner->root != replacement) {
+    lv_obj_delete(owner->root);
   }
-  active_root = replacement;
+  owner->root = replacement;
   lv_obj_clear_flag(replacement, LV_OBJ_FLAG_HIDDEN);
+#ifndef NDEBUG
+  assert_tree_in_safe_canvas(replacement);
+#endif
   return replacement;
 }
 

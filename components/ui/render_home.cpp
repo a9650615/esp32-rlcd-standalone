@@ -19,6 +19,23 @@ std::string minute_clock(std::string clock) {
   return clock;
 }
 
+std::string sync_status(const app_core::AppSnapshot& snapshot) {
+  const std::string source = snapshot.clock.source.empty()
+                                 ? "SOURCE UNKNOWN"
+                                 : snapshot.clock.source;
+  return "SYNCED  " + source + "  AGE --";
+}
+
+std::string next_event(const app_core::AppSnapshot& snapshot) {
+  const std::string market = snapshot.taiwan_market.display_name.empty()
+                                 ? "MARKET"
+                                 : snapshot.taiwan_market.display_name;
+  const std::string index = snapshot.taiwan_market.primary_label.empty()
+                                ? "INDEX"
+                                : snapshot.taiwan_market.primary_label;
+  return "NEXT  " + market + "  " + index;
+}
+
 }  // namespace
 
 void render_home(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
@@ -44,16 +61,22 @@ void render_home(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
         hero_font(), LV_TEXT_ALIGN_LEFT);
   label(parent, snapshot.clock.date.c_str(),
         {left.x + 3, left.y + 64, left.width - 6, 22}, small_font());
-  label(parent, "SYNCED  0m     Wi-Fi OFF",
+  const std::string sync = sync_status(snapshot);
+  label(parent, sync.c_str(),
         {left.x + 3, left.y + 87, left.width - 6, 18}, small_font());
   divider(parent, {left.x, left.y + 111, left.width, kSeparatorWidth});
 
   label(parent, "TODAY", {left.x + 3, left.y + 121, 52, 18}, small_font());
-  label(parent, "OPEN 09:00", {left.x + 65, left.y + 121, 86, 18}, small_font());
-  label(parent, "NEXT 10:00  TAIEX CHECK", {left.x + 3, left.y + 146,
-                                             left.width - 6, 23}, medium_font());
-  label(parent, snapshot.weather.alert ? "WEATHER ALERT  RAIN 40%"
-                                       : "WEATHER CLEAR",
+  label(parent, snapshot.taiwan_market.display_name.c_str(),
+        {left.x + 65, left.y + 121, left.width - 6 - 65, 18}, small_font());
+  const std::string event = next_event(snapshot);
+  label(parent, event.c_str(), {left.x + 3, left.y + 146, left.width - 6, 23},
+        medium_font());
+  char weather_status[56];
+  std::snprintf(weather_status, sizeof(weather_status), "%s %u%%",
+                snapshot.weather.alert ? "WEATHER ALERT" : "WEATHER",
+                snapshot.weather.current.rain_probability_percent);
+  label(parent, weather_status,
         {left.x + 3, left.y + 178, left.width - 6, 19}, small_font());
   weather_icon(parent, {left.x + 3, left.y + 207, 31, 29},
                snapshot.weather.current.condition == "Rain");
@@ -64,9 +87,8 @@ void render_home(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
                 snapshot.weather.seven_day[0].high_c);
   label(parent, weather_line, {left.x + 40, left.y + 209, left.width - 43, 22},
         small_font());
-  label(parent, "REFLECTIVE MONO  /  UPDATE AGE 0m", {left.x + 3, left.y + 243,
-                                                       left.width - 6, 18},
-        small_font());
+  label(parent, "REFLECTIVE MONO  /  SNAPSHOT ONLY",
+        {left.x + 3, left.y + 243, left.width - 6, 18}, small_font());
 
   render_right_tiles(parent, snapshot, right);
   page_dots(parent, active_page, bounds);
