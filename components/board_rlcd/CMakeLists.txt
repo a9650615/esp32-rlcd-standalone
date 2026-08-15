@@ -1,0 +1,16 @@
+idf_component_register(
+    SRCS
+        "display_port.cpp"
+        "lvgl_port.cpp"
+    INCLUDE_DIRS
+        "include"
+    PRIV_REQUIRES
+        driver
+        esp_lcd
+        esp_timer
+        esp_hw_support
+        heap
+        spi_flash
+    REQUIRES
+        lvgl__lvgl
+)
