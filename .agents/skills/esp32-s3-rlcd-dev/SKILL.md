@@ -102,6 +102,52 @@ Never build or flash while an agent or editor may be mid-edit on `partitions.csv
 
 A feature that can fail at runtime and fall back silently needs a log line saying which branch it took. The same session lost a cycle to a QR that was compiled out and to a battery reading that was sampled correctly but never printed, so the documented multimeter calibration procedure had no number to compare against.
 
+## Never burn eFuses
+
+**Do not run `espefuse` in write mode, and do not enable Secure Boot or Flash
+Encryption on this board.** eFuses are one-time-programmable: nothing in
+software, and no amount of reflashing, can undo a burned bit.
+
+This matters because it is the only line between "recoverable" and "bricked."
+The ESP32-S3 ROM bootloader lives in silicon, not in Flash, and this board uses
+the chip's native USB Serial/JTAG rather than an external USB-serial bridge. So
+a corrupt partition table, a half-written application, or an entirely blank
+Flash still enumerates over USB and still accepts esptool — recovery is always
+a `write-flash` away. Burning `DIS_DOWNLOAD_MODE`, `DIS_USB_SERIAL_JTAG`,
+`DIS_USB_SERIAL_JTAG_DOWNLOAD_MODE`, or `DIS_PAD_JTAG` closes that door
+permanently, and Secure Boot or Flash Encryption locks the device to keys that
+must then never be lost.
+
+Measured on this unit on 2026-08-16, all unburned and all still writable, which
+is the state to preserve:
+
+```text
+DIS_DOWNLOAD_MODE                  False (0b0)
+DIS_USB_SERIAL_JTAG                False (0b0)
+DIS_USB_SERIAL_JTAG_DOWNLOAD_MODE  False (0b0)
+DIS_PAD_JTAG                       False (0b0)
+SECURE_BOOT_EN                     False (0b0)
+SPI_BOOT_CRYPT_CNT                 0b000 (disabled)
+```
+
+`espefuse summary` is read-only and safe; use it to confirm the above before
+and after any risky work. Any `espefuse burn-*` subcommand is off limits unless
+the user asks for it in those words, understands it cannot be reversed, and has
+a reason that outweighs losing recovery on a development board. Production
+security hardening is not that reason on a board still under development.
+
+Because of this, treat "bricked" claims sceptically and work the recovery
+ladder in order rather than escalating straight to an erase:
+
+1. `otadata` corrupt: the ROM bootloader falls back to the `factory` partition
+   on its own, with no host involvement.
+2. Application broken but USB enumerating: reflash from the host. A reset loop
+   caused by a partition-table mismatch was recovered this way, with no button
+   pressed.
+3. USB not enumerating: long-press PWR off, then press PWR on while holding
+   BOOT for about a second to reach the ROM downloader.
+4. Everything else: restore the full verified backup from offset `0x0`.
+
 ## Recover without making damage worse
 
 If the serial port disappears, do not erase Flash. Long-press PWR to turn off, hold BOOT, press PWR to turn on, keep BOOT held for about one second, then enumerate ports again.
