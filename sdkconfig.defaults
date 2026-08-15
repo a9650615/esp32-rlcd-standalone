@@ -20,3 +20,9 @@ CONFIG_LV_USE_QRCODE=y
 # bodies expected, but LWIP's default socket count is tight once the DNS
 # responder's UDP socket and the setup AP's client join the HTTP listener.
 CONFIG_LWIP_MAX_SOCKETS=16
+
+# Providers fetch over HTTPS. The bundled root store avoids pinning a cert per
+# host, which would break every time an upstream rotates.
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+CONFIG_ESP_TLS_INSECURE=n
