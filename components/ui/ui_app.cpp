@@ -280,6 +280,12 @@ void timer_callback(lv_timer_t* timer) {
     board::ButtonEvent event;
     while (xQueueReceive(queue, &event, 0) == pdTRUE) {
       if (event == board::ButtonEvent::EnterSetup) {
+        // Logged because this gesture was previously invisible: a KEY long
+        // press that never armed and one whose handler was unregistered
+        // looked identical from a serial capture, which is the whole
+        // difference between a button problem and a wiring problem.
+        ESP_LOGI(kTag, "button event=KEY-LONG handler=%s",
+                 g_setup_gesture_handler != nullptr ? "registered" : "MISSING");
         if (g_setup_gesture_handler != nullptr) g_setup_gesture_handler();
         continue;
       }

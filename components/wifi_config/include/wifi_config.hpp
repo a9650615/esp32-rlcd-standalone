@@ -35,24 +35,37 @@ std::string url_decode(std::string_view text);
 // an empty password. Returns false only if the "ssid" key is absent.
 bool parse_form(std::string_view body, Credentials& out);
 
+// Extracts and url-decodes the value for `key` from an
+// application/x-www-form-urlencoded string - a POST body or a URL query
+// string (without the leading '?'), same syntax either way. Returns false
+// and leaves `out` untouched if `key` is absent.
+bool find_form_value(std::string_view body, std::string_view key, std::string& out);
+
 // Builds the setup-mode access point SSID, e.g. "RLCD-A1B2C3", from the last
 // three bytes of the given MAC address.
 std::string setup_ap_ssid(const std::array<uint8_t, 6>& mac);
 
-// Builds the WIFI: QR payload, escaping '\', ';', ',', ':' and '"' in both
-// the SSID and passphrase. An empty passphrase yields the open-network form
-// (WIFI:T:nopass;S:<ssid>;;); a non-empty one yields WPA2
-// (WIFI:T:WPA;S:<ssid>;P:<passphrase>;;).
-std::string wifi_qr_payload(std::string_view ssid, std::string_view passphrase);
+// Builds the setup-portal QR payload: the bare portal URL with the
+// per-session page password appended as a query parameter, e.g.
+// "http://192.168.4.1/?pw=aB3dEfGh". Returns portal_url unchanged if
+// password is empty. The password alphabet (format_passphrase) is
+// alnum-only and therefore already URL-safe; that is asserted rather than
+// implemented as a percent-encoder nothing exercises.
+std::string portal_qr_payload(std::string_view portal_url, std::string_view password);
 
-// Length of a generated setup-AP passphrase. WPA2-PSK requires >= 8 chars.
+// Length of a generated setup-portal page password.
 inline constexpr std::size_t kPassphraseLength = 8;
 
-// Formats an 8-character setup-AP passphrase from caller-supplied random
-// bytes (one byte consumed per character), drawn from an alphabet that
-// excludes 0/O/1/l/I so it can be retyped from the screen. Returns an empty
-// string if fewer than kPassphraseLength bytes are supplied.
+// Formats an 8-character setup-portal page password from caller-supplied
+// random bytes (one byte consumed per character), drawn from an alphabet
+// that excludes 0/O/1/l/I so it can be retyped from the screen. Returns an
+// empty string if fewer than kPassphraseLength bytes are supplied.
 std::string format_passphrase(const uint8_t* bytes, std::size_t length);
+
+// Constant-time comparison for the portal page password: never early-returns
+// on the first differing byte, so a network attacker cannot time their way
+// to the password one character at a time.
+bool constant_time_equal(std::string_view a, std::string_view b);
 
 // Provisioning lifecycle. Owns no timers or threads; callers drive it with
 // events observed elsewhere.

@@ -20,8 +20,9 @@ constexpr char kPortalUrl[] = "http://192.168.4.1/";
 app_core::AppSnapshot snapshot_;
 std::optional<wifi_config::StateMachine> state_machine_;
 std::string ap_ssid_;
-// Regenerated fresh on every entry into SetupAp; never written to NVS.
-std::string ap_password_;
+// Regenerated fresh on every entry into SetupAp; never written to NVS or
+// logged. Gates the setup HTTP portal - the AP itself is open.
+std::string portal_password_;
 // Set only when retries are exhausted and SetupAp is (re-)entered because of
 // a real failure; cleared on every other transition. Drives both the status
 // text and SetupData::error.
@@ -98,9 +99,9 @@ void apply_state_and_publish() {
       }
       uint8_t random_bytes[wifi_config::kPassphraseLength];
       esp_fill_random(random_bytes, sizeof(random_bytes));
-      ap_password_ =
+      portal_password_ =
           wifi_config::format_passphrase(random_bytes, sizeof(random_bytes));
-      wifi_manager_start_ap(ap_ssid_, ap_password_);
+      wifi_manager_start_ap(ap_ssid_);
       portal_start();
       portal_active_ = true;
     }
@@ -110,17 +111,24 @@ void apply_state_and_publish() {
       wifi_manager_stop_ap();
       portal_active_ = false;
     }
-    ap_password_.clear();
+    portal_password_.clear();
   }
 
   snapshot_.setup.active = (state == State::SetupAp);
   snapshot_.setup.connected = (state == State::Connected);
   snapshot_.setup.ap_ssid = ap_ssid_;
-  snapshot_.setup.ap_password = ap_password_;
+  snapshot_.setup.portal_password = portal_password_;
   snapshot_.setup.portal_url = ap_ssid_.empty() ? std::string{} : kPortalUrl;
+  // The password rides in the query string, so it lands in the phone's
+  // browser history and any on-path log for the LAN hop between the phone
+  // and the board. Acceptable here only because it is per-session, never
+  // persisted, and dead the moment setup mode exits; the page password (not
+  // network isolation - the AP is open and the portal is LAN-reachable by
+  // design) is the only thing protecting the portal.
   snapshot_.setup.qr_payload =
-      ap_ssid_.empty() ? std::string{}
-                        : wifi_config::wifi_qr_payload(ap_ssid_, ap_password_);
+      ap_ssid_.empty()
+          ? std::string{}
+          : wifi_config::portal_qr_payload(kPortalUrl, portal_password_);
   snapshot_.setup.status = status_for_state();
   snapshot_.setup.error = error_for_state();
   ui::publish_snapshot(snapshot_);
@@ -211,6 +219,13 @@ std::string current_ap_ssid() {
 std::string current_status_text() {
   lock();
   std::string result = status_for_state();
+  unlock();
+  return result;
+}
+
+std::string current_portal_password() {
+  lock();
+  std::string result = portal_password_;
   unlock();
   return result;
 }

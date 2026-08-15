@@ -92,21 +92,20 @@ esp_err_t wifi_manager_init() {
                                     &ip_event_handler, nullptr);
 }
 
-void wifi_manager_start_ap(const std::string& ssid, const std::string& password) {
+void wifi_manager_start_ap(const std::string& ssid) {
   wifi_config_t ap_cfg{};
   const size_t len = std::min(ssid.size(), sizeof(ap_cfg.ap.ssid));
   std::memcpy(ap_cfg.ap.ssid, ssid.data(), len);
   ap_cfg.ap.ssid_len = static_cast<uint8_t>(len);
-  const size_t pass_len =
-      std::min(password.size(), sizeof(ap_cfg.ap.password));
-  std::memcpy(ap_cfg.ap.password, password.data(), pass_len);
-  ap_cfg.ap.authmode = WIFI_AUTH_WPA2_PSK;
+  ap_cfg.ap.authmode = WIFI_AUTH_OPEN;
   ap_cfg.ap.max_connection = 4;
   ap_cfg.ap.channel = 1;
 
-  // Passphrase is per-session and never logged; the SSID is public anyway
-  // (broadcast in the clear), so it is safe and useful to log.
-  ESP_LOGI(kTag, "setup AP starting: ssid=%s", ssid.c_str());
+  // Open on purpose: WPA2 here only ever guarded the AP hop, and the setup
+  // HTTP server is reachable from the whole LAN regardless (APSTA binds
+  // esp_http_server to all interfaces). The page password gates the portal
+  // instead - see current_portal_password() in wifi_provision.cpp.
+  ESP_LOGI(kTag, "setup AP starting (open): ssid=%s", ssid.c_str());
   ap_ssid_for_log_ = ssid;
   ap_active_ = true;
   esp_wifi_set_mode(sta_configured_ ? WIFI_MODE_APSTA : WIFI_MODE_AP);

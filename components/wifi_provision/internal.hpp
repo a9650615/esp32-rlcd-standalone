@@ -41,9 +41,10 @@ esp_err_t nvs_save(const wifi_config::Credentials& creds);
 // esp_netif/esp_event/esp_wifi init plus the Wi-Fi/IP event handlers, which
 // call handle_wifi_connected()/handle_wifi_disconnected() below.
 esp_err_t wifi_manager_init();
-// WPA2-PSK AP named ssid, secured with password; leaves STA alone if it is
-// already connecting.
-void wifi_manager_start_ap(const std::string& ssid, const std::string& password);
+// Open (unauthenticated) AP named ssid; leaves STA alone if it is already
+// connecting. Joining is a single tap - the setup portal itself is what's
+// password-gated, see current_portal_password() below.
+void wifi_manager_start_ap(const std::string& ssid);
 // Drops the AP interface; STA (already connected) is unaffected.
 void wifi_manager_stop_ap();
 // Configures and (re)starts the STA connection attempt.
@@ -59,6 +60,9 @@ void handle_wifi_disconnected(DisconnectReason reason);
 // --- wifi_provision.cpp, read/called by portal.cpp ---
 std::string current_ap_ssid();
 std::string current_status_text();
+// Per-session page password gating the setup portal; empty only when setup
+// mode isn't active. Never logged.
+std::string current_portal_password();
 // Called from the POST handler on a valid submission.
 void handle_credentials_saved(const wifi_config::Credentials& creds);
 

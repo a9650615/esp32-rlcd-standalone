@@ -88,8 +88,9 @@ struct SetupData {
   bool connected = false;
   std::string ap_ssid;
   // Regenerated on every entry into setup mode and never persisted, so the
-  // screen is the only place it exists. Empty means the AP is open.
-  std::string ap_password;
+  // screen is the only place it exists. This is not a Wi-Fi credential - the
+  // setup AP is open - it gates the setup web portal itself.
+  std::string portal_password;
   std::string portal_url;
   std::string qr_payload;
   std::string status;

@@ -17,13 +17,18 @@ void render_setup(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
   const SetupLayout layout = setup_layout(bounds);
 
   label(parent, kSetupTitle, layout.title, medium_font());
-  const char* ssid =
-      snapshot.setup.ap_ssid.empty() ? kSetupNoSsidLabel : snapshot.setup.ap_ssid.c_str();
-  label(parent, ssid, layout.ssid, small_font());
-  const char* password = snapshot.setup.ap_password.empty()
-                             ? kSetupOpenPassword
-                             : snapshot.setup.ap_password.c_str();
-  label(parent, password, layout.password, small_font());
+  const std::string ssid_text = setup_ssid_text(snapshot.setup.ap_ssid);
+  label(parent, ssid_text.c_str(), layout.ssid, small_font());
+  // Rendered larger than the surrounding rows and, below, allowed to wrap:
+  // this is the one string on the page someone types into a browser by
+  // hand, so it must never be silently clipped.
+  const std::string password_text =
+      setup_password_text(snapshot.setup.portal_password);
+  lv_obj_t* password_label =
+      label(parent, password_text.c_str(), layout.password, medium_font());
+  if (password_label != nullptr) {
+    lv_label_set_long_mode(password_label, LV_LABEL_LONG_WRAP);
+  }
   label(parent, snapshot.setup.portal_url.c_str(), layout.portal, small_font());
 
   bool qr_ready = false;
@@ -47,7 +52,10 @@ void render_setup(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
 #endif
   if (!qr_ready) {
     // Allocation failure or the widget being unavailable must never block
-    // setup mode: fall back to the SSID text already shown above.
+    // setup mode. Unlike the old WPA2-AP model, this is now a fully usable
+    // fallback, not just an apology: the AP is open (no Wi-Fi password to
+    // relay), and both portal_url and the page password are already on
+    // screen for manual entry.
     label(parent, kSetupQrUnavailableLabel, layout.qr, small_font(),
          LV_TEXT_ALIGN_CENTER);
   }

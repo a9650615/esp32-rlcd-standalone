@@ -99,24 +99,40 @@ HOST_TEST(setup_ap_ssid_uses_last_three_mac_bytes_uppercase) {
   EXPECT_EQ(wifi_config::setup_ap_ssid(mac), std::string("RLCD-A1B2C3"));
 }
 
-HOST_TEST(wifi_qr_payload_formats_open_network) {
-  EXPECT_EQ(wifi_config::wifi_qr_payload("OpenNet", ""),
-            std::string("WIFI:T:nopass;S:OpenNet;;"));
+HOST_TEST(portal_qr_payload_appends_password_as_query_param) {
+  EXPECT_EQ(wifi_config::portal_qr_payload("http://192.168.4.1/", "aB3dEfGh"),
+            std::string("http://192.168.4.1/?pw=aB3dEfGh"));
 }
 
-HOST_TEST(wifi_qr_payload_escapes_special_characters_in_ssid) {
-  EXPECT_EQ(wifi_config::wifi_qr_payload("a;b,c:d\"e\\f", ""),
-            std::string("WIFI:T:nopass;S:a\\;b\\,c\\:d\\\"e\\\\f;;"));
+HOST_TEST(portal_qr_payload_returns_bare_url_when_password_empty) {
+  EXPECT_EQ(wifi_config::portal_qr_payload("http://192.168.4.1/", ""),
+            std::string("http://192.168.4.1/"));
 }
 
-HOST_TEST(wifi_qr_payload_formats_wpa_network) {
-  EXPECT_EQ(wifi_config::wifi_qr_payload("RLCD-A1B2C3", "aB3dEfGh"),
-            std::string("WIFI:T:WPA;S:RLCD-A1B2C3;P:aB3dEfGh;;"));
+HOST_TEST(find_form_value_extracts_named_key_from_query_or_body_syntax) {
+  std::string value;
+  EXPECT_TRUE(wifi_config::find_form_value("pw=aB3dEfGh", "pw", value));
+  EXPECT_EQ(value, std::string("aB3dEfGh"));
+  EXPECT_TRUE(wifi_config::find_form_value("ssid=My+Net&pw=hunter2%21", "pw", value));
+  EXPECT_EQ(value, std::string("hunter2!"));
 }
 
-HOST_TEST(wifi_qr_payload_escapes_special_characters_in_passphrase) {
-  EXPECT_EQ(wifi_config::wifi_qr_payload("Net", "a;b,c:d\"e\\f"),
-            std::string("WIFI:T:WPA;S:Net;P:a\\;b\\,c\\:d\\\"e\\\\f;;"));
+HOST_TEST(find_form_value_returns_false_when_key_is_absent) {
+  std::string value;
+  EXPECT_TRUE(!wifi_config::find_form_value("ssid=Net", "pw", value));
+}
+
+HOST_TEST(constant_time_equal_matches_identical_strings) {
+  EXPECT_TRUE(wifi_config::constant_time_equal("aB3dEfGh", "aB3dEfGh"));
+}
+
+HOST_TEST(constant_time_equal_rejects_different_strings_same_length) {
+  EXPECT_TRUE(!wifi_config::constant_time_equal("aB3dEfGh", "aB3dEfGx"));
+}
+
+HOST_TEST(constant_time_equal_rejects_different_lengths) {
+  EXPECT_TRUE(!wifi_config::constant_time_equal("short", "muchlonger"));
+  EXPECT_TRUE(!wifi_config::constant_time_equal("", "aB3dEfGh"));
 }
 
 HOST_TEST(format_passphrase_has_pinned_length) {

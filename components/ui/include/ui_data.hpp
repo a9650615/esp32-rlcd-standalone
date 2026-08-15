@@ -51,8 +51,42 @@ struct SetupLayout {
 inline constexpr int kSetupQrSize = 200;
 inline constexpr int kSetupQrGap = 18;
 inline constexpr int kSetupQrQuietMargin = 8;
-inline constexpr int kSetupTitleHeight = 26;
-inline constexpr int kSetupLineHeight = 18;
+// Line heights for the two fonts render_setup.cpp uses, duplicated here as
+// literals (see lv_font_montserrat_{14,20}.c) because this header is also
+// compiled LVGL-free for host tests (UI_THEME_GEOMETRY_ONLY) and so cannot
+// read font->line_height directly. Feeding these into safe_text_box_height
+// below - the same helper label() applies at render time - is what keeps
+// every reserved row height in sync with what LVGL will actually draw; see
+// the runtime-growth defect fixed by commit b52ff70.
+inline constexpr int kSetupSmallFontLineHeight = 16;   // lv_font_montserrat_14
+inline constexpr int kSetupMediumFontLineHeight = 22;  // lv_font_montserrat_20
+inline constexpr int kSetupTitleHeight =
+    safe_text_box_height(26, kSetupMediumFontLineHeight);
+inline constexpr int kSetupLineHeight =
+    safe_text_box_height(18, kSetupSmallFontLineHeight);
+// The page password is the one string on this page a person transcribes by
+// hand, so it renders larger (medium font) than the other text rows and
+// wraps (LV_LABEL_LONG_WRAP in render_setup.cpp) instead of clipping - the
+// passphrase alphabet (wifi_config::kPassphraseAlphabet) can be wide enough
+// in the worst case that a fixed single line cannot be proven to always fit.
+// Two medium-font lines is a generous, not exact, upper bound - the same
+// "generously sized" approach kSetupStatusHeight below already uses.
+inline constexpr int kSetupPasswordLineHeight =
+    safe_text_box_height(2 * kSetupMediumFontLineHeight,
+                         kSetupMediumFontLineHeight);
+// The SSID line is on the critical path now: the QR encodes portal_url, not
+// a Wi-Fi join payload, so the panel is the only place this network name
+// exists and it must never clip. Its format is fixed
+// (wifi_config::setup_ap_ssid: "RLCD-" + 6 uppercase hex digits), so rather
+// than a general text-metrics table this proves just the one bound that
+// matters: literal prefix width (measured from lv_font_montserrat_14.c) plus
+// 6 digits at the widest hex glyph ('D') can never exceed the row's width -
+// see setup_ssid_row_width_ok below.
+inline constexpr int kSetupSsidPrefixWidthPx = 85;   // "WIFI: RLCD-" at font14
+inline constexpr int kSetupHexDigitMaxWidthPx = 12;  // widest of 0-9A-F ('D')
+inline constexpr int kSetupSsidHexDigits = 6;
+inline constexpr int kSetupSsidWorstCaseWidthPx =
+    kSetupSsidPrefixWidthPx + kSetupSsidHexDigits * kSetupHexDigitMaxWidthPx;
 inline constexpr int kSetupLineGap = 4;
 inline constexpr int kSetupTightLineGap = 2;
 inline constexpr int kSetupBlockGap = 10;
@@ -66,10 +100,13 @@ inline constexpr int kSetupStatusGap = 6;
 inline constexpr int kSetupStatusHeight = 4 * kSetupLineHeight;
 inline constexpr char kSetupTitle[] = "Setup";
 inline constexpr char kSetupNoSsidLabel[] = "AP SSID unavailable";
-inline constexpr char kSetupOpenPassword[] = "OPEN";
+inline constexpr char kSetupNoPortalPasswordLabel[] = "PAGE PW: unavailable";
 inline constexpr char kSetupInstructions[] =
-    "Scan QR, join Wi-Fi, then open the setup page";
+    "Join the open Wi-Fi, then scan QR or open URL and enter PAGE PW";
 inline constexpr char kSetupDefaultStatus[] = "Not yet connected";
+// A QR failure never blocks setup mode: the AP is open and both portal_url
+// and the page password are already on screen, so this fallback is a fully
+// usable manual path, not just an apology.
 inline constexpr char kSetupQrUnavailableLabel[] =
     "QR unavailable - use SSID at left";
 
@@ -89,7 +126,7 @@ constexpr SetupLayout setup_layout(const Rect bounds) {
   const Rect ssid{bounds.x, title.bottom() + kSetupLineGap, text_width,
                   kSetupLineHeight};
   const Rect password{bounds.x, ssid.bottom() + kSetupTightLineGap,
-                      text_width, kSetupLineHeight};
+                      text_width, kSetupPasswordLineHeight};
   const Rect portal{bounds.x, password.bottom() + kSetupTightLineGap,
                     text_width, kSetupLineHeight};
   const Rect instructions{bounds.x, portal.bottom() + kSetupBlockGap,
@@ -141,12 +178,38 @@ constexpr bool setup_qr_quiet_zone_ok(const Rect content) {
   return vertical_margin_ok && text_gap_ok;
 }
 
+// The SSID row's worst-case rendered width (see kSetupSsidWorstCaseWidthPx)
+// never exceeds the row's actual width, so setup_ssid_text can never clip
+// regardless of which 6 hex digits the device's MAC happens to produce.
+constexpr bool setup_ssid_row_width_ok(const Rect content) {
+  return kSetupSsidWorstCaseWidthPx <= setup_layout(content).ssid.width;
+}
+
 // Formats the SSID/passphrase/portal text block and the tray's live fields.
 // Small, pure string helpers kept alongside the layout constants they pair
 // with so renderers and the label-only repaint path (ui_app.cpp) share one
 // source of truth instead of formatting the same text twice.
 inline std::string setup_status_text(const std::string& status) {
   return status.empty() ? std::string(kSetupDefaultStatus) : status;
+}
+
+// The AP is always open now (no Wi-Fi password), so this line's job is
+// naming the network, not printing a passphrase that no longer exists.
+// "open" is stated once, on the instructions line, instead of appended
+// here as " (OPEN)" - that suffix is exactly what setup_ssid_row_width_ok
+// proves would risk clipping the one thing on this row that cannot clip:
+// the SSID itself.
+inline std::string setup_ssid_text(const std::string& ap_ssid) {
+  if (ap_ssid.empty()) return kSetupNoSsidLabel;
+  return "WIFI: " + ap_ssid;
+}
+
+// portal_password gates the setup page itself, not the network - labelled
+// distinctly from the SSID line above so it is not mistaken for a Wi-Fi
+// passphrase.
+inline std::string setup_password_text(const std::string& portal_password) {
+  if (portal_password.empty()) return kSetupNoPortalPasswordLabel;
+  return "PAGE PW: " + portal_password;
 }
 
 struct SystemTrayLayout {
@@ -290,6 +353,12 @@ static_assert(
             .status.height >= 3 * kSetupLineHeight,
     "setup status has room for a multi-line error message, not just one "
     "short line");
+static_assert(
+    setup_ssid_row_width_ok(
+        content_bounds(safe_canvas(), app_core::PageId::Setup)),
+    "the SSID row can hold the widest possible \"WIFI: RLCD-XXXXXX\" text "
+    "without clipping - the QR encodes portal_url, not a Wi-Fi join "
+    "payload, so this is the only place the network name is readable");
 
 constexpr PageDotsGeometry page_dots_geometry(const Rect bounds,
                                               std::size_t page_index,

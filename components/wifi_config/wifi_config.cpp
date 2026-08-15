@@ -1,5 +1,7 @@
 #include "wifi_config.hpp"
 
+#include <cassert>
+#include <cctype>
 #include <cstdio>
 
 namespace wifi_config {
@@ -10,18 +12,6 @@ namespace {
 constexpr char kPassphraseAlphabet[] =
     "23456789abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ";
 constexpr std::size_t kPassphraseAlphabetSize = sizeof(kPassphraseAlphabet) - 1;
-
-std::string escape_wifi_qr_field(std::string_view field) {
-  std::string escaped;
-  escaped.reserve(field.size());
-  for (const char c : field) {
-    if (c == '\\' || c == ';' || c == ',' || c == ':' || c == '"') {
-      escaped.push_back('\\');
-    }
-    escaped.push_back(c);
-  }
-  return escaped;
-}
 
 bool hex_digit(char c, int& value) {
   if (c >= '0' && c <= '9') {
@@ -97,6 +87,26 @@ bool parse_form(std::string_view body, Credentials& out) {
   return found_ssid;
 }
 
+bool find_form_value(std::string_view body, std::string_view key, std::string& out) {
+  std::size_t start = 0;
+  while (start <= body.size()) {
+    const std::size_t amp = body.find('&', start);
+    const std::string_view pair = body.substr(
+        start, amp == std::string_view::npos ? amp : amp - start);
+    const std::size_t eq = pair.find('=');
+    const std::string_view pair_key = pair.substr(0, eq);
+    if (pair_key == key) {
+      const std::string_view value =
+          eq == std::string_view::npos ? std::string_view{} : pair.substr(eq + 1);
+      out = url_decode(value);
+      return true;
+    }
+    if (amp == std::string_view::npos) break;
+    start = amp + 1;
+  }
+  return false;
+}
+
 std::string setup_ap_ssid(const std::array<uint8_t, 6>& mac) {
   char buffer[16];
   std::snprintf(buffer, sizeof(buffer), "RLCD-%02X%02X%02X", mac[3], mac[4],
@@ -104,13 +114,15 @@ std::string setup_ap_ssid(const std::array<uint8_t, 6>& mac) {
   return std::string(buffer);
 }
 
-std::string wifi_qr_payload(std::string_view ssid, std::string_view passphrase) {
-  const std::string escaped_ssid = escape_wifi_qr_field(ssid);
-  if (passphrase.empty()) {
-    return "WIFI:T:nopass;S:" + escaped_ssid + ";;";
+std::string portal_qr_payload(std::string_view portal_url, std::string_view password) {
+  std::string payload(portal_url);
+  if (password.empty()) return payload;
+  for (const char c : password) {
+    assert(std::isalnum(static_cast<unsigned char>(c)));
   }
-  return "WIFI:T:WPA;S:" + escaped_ssid + ";P:" +
-         escape_wifi_qr_field(passphrase) + ";;";
+  payload += "?pw=";
+  payload += password;
+  return payload;
 }
 
 std::string format_passphrase(const uint8_t* bytes, std::size_t length) {
@@ -121,6 +133,15 @@ std::string format_passphrase(const uint8_t* bytes, std::size_t length) {
     out.push_back(kPassphraseAlphabet[bytes[i] % kPassphraseAlphabetSize]);
   }
   return out;
+}
+
+bool constant_time_equal(std::string_view a, std::string_view b) {
+  if (a.size() != b.size()) return false;
+  unsigned char diff = 0;
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    diff |= static_cast<unsigned char>(a[i]) ^ static_cast<unsigned char>(b[i]);
+  }
+  return diff == 0;
 }
 
 StateMachine::StateMachine(bool has_saved_credentials)
