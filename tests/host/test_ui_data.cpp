@@ -6,6 +6,19 @@
 
 #include <array>
 
+namespace {
+
+bool is_printable_ascii(const char* text) {
+  for (const unsigned char* cursor =
+           reinterpret_cast<const unsigned char*>(text);
+       *cursor != '\0'; ++cursor) {
+    if (*cursor < 0x20 || *cursor > 0x7e) return false;
+  }
+  return true;
+}
+
+}  // namespace
+
 HOST_TEST(chart_points_are_normalized_and_clamped_to_bounds) {
   const ui::Rect chart{100, 32, 260, 180};
   const auto points = ui::normalize_chart_samples(
@@ -72,6 +85,20 @@ HOST_TEST(minute_formatter_keeps_only_hours_and_minutes) {
   EXPECT_EQ(ui::format_minute_clock("09:41:59"), std::string("09:41"));
   EXPECT_EQ(ui::format_minute_clock("09:41"), std::string("09:41"));
   EXPECT_EQ(ui::format_minute_clock("unknown"), std::string("unknown"));
+}
+
+HOST_TEST(mast_clock_source_is_compact_and_truthful) {
+  EXPECT_EQ(ui::compact_clock_source("RTC fallback"),
+            std::string("DEMO / FALLBACK"));
+  EXPECT_EQ(ui::compact_clock_source("PCF85063"),
+            std::string("DEMO / RTC"));
+  EXPECT_EQ(ui::compact_clock_source(""), std::string("DEMO / UNKNOWN"));
+}
+
+HOST_TEST(comfort_band_label_uses_supported_ascii_glyphs) {
+  EXPECT_TRUE(is_printable_ascii(ui::kComfortBandLabel));
+  EXPECT_EQ(std::string(ui::kComfortBandLabel),
+            std::string("COMFORT BAND  40-60 RH"));
 }
 
 HOST_TEST(new_york_fixture_is_distinct_from_taipei_weather) {

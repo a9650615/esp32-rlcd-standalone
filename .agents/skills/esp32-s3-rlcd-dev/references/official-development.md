@@ -254,6 +254,32 @@ Waveshare 要求 `arduino-esp32 >= 3.3.0`，官方 `Tools-Configuration.png` 的
 - U8g2 適合文字、圖示與單色 dashboard。Waveshare 的一般 RLCD 教程指出原生 ST7305 300×400 支援從 U8g2 2.36.19 起可用；板級官方包也提供專用 U8g2 範例。[Waveshare RLCD/U8g2 tutorial](https://docs.waveshare.net/ESP32-Peripheral-Tutorials/Display/RLCD/)；[官方 U8g2 example](https://github.com/waveshareteam/ESP32-S3-RLCD-4.2/tree/eb1f63427d735a22b9c30e22fa63ebddae1834d3/02_Example/Arduino/10_U8G2_Test)
 - 由於沒有觸控層，LVGL 只註冊 display driver/flush callback；若需要互動，以 BOOT/KEY 或外接 GPIO input 實作。
 
+### RLCD 像素 UI 與按鍵驗收規則
+
+2026-08-15 的 400 x 300 真機照片暴露出模擬器不明顯的四類問題：小字筆畫在 1-bit 轉換後割裂、文字框高度不足造成上下裁切、右欄 title/value paint order 互相覆蓋，以及 Montserrat bitmap 未打包 `–`/`‹`/`›` 時顯示缺字方塊。這些是本板已觀察到的限制，不可用一般彩色 TFT 或瀏覽器字型經驗取代。
+
+固定版面契約：
+
+| 項目 | 專案契約 | 驗收方式 |
+| --- | --- | --- |
+| 畫布 | 400 x 300 landscape，四周 safe margin 6 px，所有座標與尺寸為整數 | Host geometry test；真機四邊無裁切 |
+| 文字框 | 內距 1 px；高度至少 `font.line_height + 2 px` | Host test 16 -> 18、22 -> 24；照片檢查上下筆畫 |
+| 字重 | 14 px small tier 可請求 1 px outline；22 px 以上不加 outline | Host font-tier test；真機確認 bitmap font 是否實際吃 outline |
+| 線條 | 資料折線與 history 至少 2 px；separator/dotted grid 可為 1 px | Host constant test；真機檢查斜線不中斷 |
+| 右欄 tile | 91 px cell 內使用 64 px 置中群組：title 18 px、value 28 px、detail 18 px；列與列不可相交 | Host rectangle test；照片檢查 title/value/detail |
+| 字元 | 非 ASCII 必須存在於實際編譯字型；未驗證時改 ASCII | `40-60`、`KEY < AUTO > BOOT` 不得出現 tofu 方塊 |
+| 繪製 | 圖表與 decoration 不得進入文字 rectangle；不可依賴後畫的白底 label 遮錯 | Geometry contract；照片檢查穿字與殘影 |
+
+Montserrat 在這個專案是預先 rasterized bitmap font；LVGL 的 outline style 能成功編譯不等於真機一定會加粗 glyph。若 14 px 小字仍割裂，下一步是打包較粗的 1-bit 字型或自訂 glyph，而不是繼續把 outline 套到大字。每次顯示變更至少拍攝 Home、台股、美股、天氣、室內五頁並觀察一次回到 Home；檢查缺字方塊、筆畫完整、上下裁切、斜線連續、文字互蓋與上一頁殘留。
+
+本專案的實體翻頁方向是：
+
+- `KEY / GPIO18`：Previous，穩定 release 後只發一次，第一頁向前循環至最後頁。
+- `BOOT / GPIO0`：Next，穩定 release 後只發一次，最後頁向後循環至第一頁。
+- Debounce 基準為 10 ms sample、30 ms stable threshold；不啟用 hold repeat。
+- GPIO0 必須維持 input + pull-up，應用層不可 drive GPIO0；按住 BOOT 再上電仍必須能進 ROM downloader。
+- 畫面提示與序列 log 必須使用實體鍵名，不能只根據舊方向推測：`KEY < AUTO > BOOT`。
+
 ## 官方韌體備份與恢復
 
 ### 1. 開發前先做整顆 Flash 備份

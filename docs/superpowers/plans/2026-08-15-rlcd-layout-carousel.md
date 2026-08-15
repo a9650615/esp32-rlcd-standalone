@@ -10,6 +10,8 @@
 
 **Global Constraints:** Use Waveshare BSP logic pinned to commit `eb1f63427d735a22b9c30e22fa63ebddae1834d3`. Target 400×300 landscape, QIO 16 MB Flash, octal 8 MB PSRAM. Never erase Flash. Never drive or reconfigure PWR. Keep GPIO0 as an input with its normal pull-up; assign only a debounced short-release event after application startup. Verify the existing 16 MB factory backup before the first write. Do not add Wi-Fi, API access, captive portal, NVS, OTA, SD, audio, or live sensor acquisition in this slice. Do not initialize a Git repository or create commits unless the user explicitly approves it.
 
+**Execution snapshot (2026-08-15):** Tasks 1–7 are implemented. Task 8 has a verified app-only flash, clean boot, four automatic cycles, and 4,188 bytes of main-task stack headroom. Final post-fix photos, physical KEY/BOOT direction, ten-cycle duration, and ROM-downloader entry remain open and are tracked in `docs/hardware/first-layout-checklist.md`.
+
 ---
 
 ## File Structure
@@ -265,7 +267,7 @@ Transition previous(CarouselState, uint64_t now_ms);
 ```
 
 - [ ] Write failing registry tests first: all five pages present, unavailable page omitted, morning alert ordering, Taiwan-session ordering, night-session ordering, and no mid-cycle reorder.
-- [ ] Write failing carousel tests first: Home advances at 30,000 ms; data advances at 12,000 ms; KEY goes next; BOOT wraps previous; manual action sets 60,000 ms pause; timeout returns Home and resumes auto.
+- [ ] Write failing carousel tests first: Home advances at 30,000 ms; data advances at 12,000 ms; KEY goes previous; BOOT goes next; manual action sets 60,000 ms pause; timeout returns Home and resumes auto.
 - [ ] Use a dependency-free test runner that reports each named case and returns non-zero on failure.
 - [ ] Run tests:
 
@@ -324,7 +326,7 @@ rg -n 'GPIO_NUM_(0|18)|kBoot|kKey' components main
 
 - [ ] Define the visual constants in one place: 400×300 canvas, 6 px outer safe margin, 1 px separators, black/white only, no shadows, no rounded card backgrounds, no animation.
 - [ ] Create reusable helpers for labels, thin dividers, simple line-based weather/temperature/humidity icons, five bottom-right page dots, and the inverse navigation overlay.
-- [ ] Make the overlay self-delete after 2,000 ms and display `BOOT  ‹   AUTO   ›  KEY`; it must not reserve layout height when hidden.
+- [ ] Make the overlay self-delete after 2,000 ms and display `KEY  <   AUTO   >  BOOT`; it must not reserve layout height when hidden.
 - [ ] Implement Clock Hero as the default page: time is the largest type using Montserrat 48, no seconds, top-left dominant area; date/status remains adjacent; right-hand Weather, Indoor, and Market tiles fill their cells and vertically center their content.
 - [ ] Fill the main area with useful date/day, update-age, and concise next-event information instead of a persistent footer.
 - [ ] Add debug-only geometry assertions that every top-level object stays within `[6, 6, 394, 294]` and no right tile has empty reserved footer space.
@@ -350,7 +352,7 @@ Expected: no LVGL API errors; firmware size fits the 3 MB factory partition.
 
 - [ ] Implement a 28 px-high persistent top mast: large `HH:MM` at upper-left, context/update state beside it, a fixed `Wi-Fi OFF` indicator for this offline slice, and indoor summary at upper-right.
 - [ ] Give market primary content 72% width. Put index name/value/change in a compact block, then give the polyline chart all remaining vertical height; show 09:00/start, midpoint, and NOW/end labels.
-- [ ] Render chart polylines from normalized integer samples with a one-pixel stroke and three sparse dotted grid lines; clamp all coordinates to the chart bounds.
+- [ ] Render chart polylines from normalized integer samples with a two-pixel stroke and three sparse one-pixel dotted grid lines; clamp all coordinates to the chart bounds.
 - [ ] Fill and vertically center each right-side tile. Taiwan page side tiles: TW50, Taipei weather, Indoor. US page: secondary US index, New York weather fixture, Indoor.
 - [ ] Implement Weather with a large current condition and seven equal forecast columns; use line icons and high/low/rain labels that remain legible at native resolution.
 - [ ] Implement Indoor with the large `24.8°` reading, humidity `57%`, comfort band, and mini history line; reuse the right column for weather and market summaries.
@@ -381,7 +383,7 @@ Expected: build succeeds and serial diagnostics later report four registered pag
 - [ ] Add a minimal read-only I2C PCF85063 probe on SDA13/SCL14. If the RTC is absent or invalid, use firmware compile date/time plus monotonic elapsed seconds and show `RTC fallback` in serial diagnostics; do not write RTC registers.
 - [ ] Create one LVGL timer firing every 100 ms. It drains button events, advances the pure carousel controller, rebuilds the page only on transitions, and refreshes visible clock text once per minute.
 - [ ] Enforce dwell values from the registry: Home 30 seconds, every data page 12 seconds.
-- [ ] On KEY short release, go next and show the 2-second overlay. On BOOT short release, go previous and show the overlay. Either event pauses auto mode for 60 seconds; expiry returns directly to Home and restarts the cycle.
+- [ ] On KEY short release, go previous and show the 2-second overlay. On BOOT short release, go next and show the overlay. Either event pauses auto mode for 60 seconds; expiry returns directly to Home and restarts the cycle.
 - [ ] Recompute availability/priority only when wrapping from the last page into a new cycle. Log `cycle`, `page`, `reason`, `dwell_s`, and `manual_until_ms` on each transition.
 - [ ] If a renderer reports failure, log its page ID and skip it for the current cycle; if all data pages fail, return Home.
 - [ ] Run all automated checks:
@@ -420,13 +422,14 @@ Expected: exactly one intended ESP32-S3 port. Stop if ambiguous.
 - [ ] Flash through the normal ESP-IDF target—never use `erase-flash` and never write a full-chip image:
 
 ```bash
-./scripts/idf.sh -p /dev/cu.usbmodem1101 flash monitor
+./scripts/idf.sh -p /dev/cu.usbmodem1101 app-flash
+./scripts/idf.sh -p /dev/cu.usbmodem1101 monitor
 ```
 
 Expected serial evidence: correct chip/Flash/PSRAM, display initialized, five registered pages, `page=Home`, no allocation failure or reset loop. Exit monitor with `Ctrl-]`.
 
 - [ ] Observe at least ten complete carousel cycles / ten minutes and record: all five pages appear; Home is visibly clock-first; the clock mast remains visible on data pages; charts use the available height; right tiles are vertically centered; no clipping/ghost corruption; dwell timing is 30/12 seconds.
-- [ ] Press KEY ten times slowly and verify one next transition per release. Press BOOT ten times slowly and verify one previous transition per release. Confirm the 2-second overlay and 60-second manual timeout to Home.
+- [ ] Press KEY ten times slowly and verify one previous transition per release. Press BOOT ten times slowly and verify one next transition per release. Confirm the 2-second overlay and 60-second manual timeout to Home.
 - [ ] Power-cycle normally and confirm firmware returns to Clock Hero.
 - [ ] Verify ROM download recovery without erasing or writing: hold BOOT, tap RESET/reattach as appropriate, then run:
 
@@ -452,5 +455,5 @@ python3 -m esptool --chip esp32s3 --port /dev/cu.usbmodem1101 write-flash 0x0 fi
 - The factory backup hash gate passes before every Flash write.
 - Five mock-data pages render at 400×300 with Home clock-first, persistent time on data pages, tall market charts, filled/centered side tiles, no fixed footer, tiny page dots, and a temporary navigation overlay.
 - Auto/manual timing and availability/priority behavior pass portable host tests.
-- KEY and BOOT each generate one short-release navigation event; GPIO0 still enters ROM download mode.
+- KEY generates one Previous event and BOOT one Next event per short release; GPIO0 still enters ROM download mode.
 - The physical unit completes the ten-minute/ten-cycle checklist without clipping, reset loops, corrupt refreshes, or loss of recovery access.

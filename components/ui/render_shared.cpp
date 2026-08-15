@@ -43,24 +43,19 @@ void tile(lv_obj_t* parent, const char* title, const char* value,
   LV_ASSERT_MSG(tile_content_has_no_reserved_footer(bounds),
                 "right tile has a reserved footer band");
 #endif
-  const Rect content = tile_content_rect(bounds);
-  label(parent, title, {bounds.x + 6, bounds.y + 8, bounds.width - 12, 18},
-        small_font(), LV_TEXT_ALIGN_LEFT);
+  const TileTextLayout rows = tile_text_layout(bounds);
+  label(parent, title, rows.title, small_font(), LV_TEXT_ALIGN_LEFT);
+  const bool has_leading_visual = weather || indoor;
+  const Rect leading_visual =
+      tile_leading_visual_rect(bounds, has_leading_visual);
   if (weather) {
-    weather_icon(parent, {bounds.x + 8, content.y + 2, 30, 30}, false);
+    weather_icon(parent, leading_visual, false);
   } else if (indoor) {
-    temperature_icon(parent, {bounds.x + 8, content.y + 2, 30, 30});
-  } else {
-    line_segment(parent, bounds.x + 8, content.y + 31, bounds.width - 16, 1);
-    line_segment(parent, bounds.x + 10, content.y + 28, bounds.width / 3, 1);
+    temperature_icon(parent, leading_visual);
   }
-  const int value_x = bounds.x + (weather || indoor ? 43 : 6);
-  const int value_w = bounds.width - (weather || indoor ? 49 : 12);
-  label(parent, value, {value_x, content.y, value_w, 28}, medium_font(),
+  label(parent, value, tile_value_rect(bounds, has_leading_visual), medium_font(),
         LV_TEXT_ALIGN_CENTER);
-  label(parent, detail, {bounds.x + 6, content.y + 28,
-                         bounds.width - 12, 16},
-        small_font(), LV_TEXT_ALIGN_CENTER);
+  label(parent, detail, rows.detail, small_font(), LV_TEXT_ALIGN_CENTER);
 }
 
 }  // namespace
@@ -165,9 +160,7 @@ void render_market_sidebar(lv_obj_t* parent,
 void render_mast(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
                  Rect bounds, UiContext* context) {
   const std::string clock = format_minute_clock(snapshot.clock.hero);
-  const std::string source = snapshot.clock.source.empty()
-                                 ? "SOURCE UNKNOWN"
-                                 : snapshot.clock.source;
+  const std::string source = compact_clock_source(snapshot.clock.source);
   char indoor_summary[32];
   std::snprintf(indoor_summary, sizeof(indoor_summary), "%.1f  %u%%",
                 snapshot.indoor.temperature_c,
@@ -176,9 +169,7 @@ void render_mast(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
       label(parent, clock.c_str(), {bounds.x, bounds.y, 60, 25}, medium_font(),
             LV_TEXT_ALIGN_LEFT);
   if (context != nullptr) context->staging_clock_label = clock_label;
-  std::string context_text = "SNAPSHOT / " + source;
-  label(parent, context_text.c_str(),
-        {bounds.x + 64, bounds.y + 3, 155, 18},
+  label(parent, source.c_str(), {bounds.x + 64, bounds.y + 3, 155, 18},
         small_font());
   label(parent, "Wi-Fi OFF", {bounds.x + 221, bounds.y + 3, 70, 18},
         small_font());

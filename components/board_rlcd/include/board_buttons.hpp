@@ -33,8 +33,8 @@ class ButtonFilter {
   // key_active_low and boot_active_low are true while their pins read low.
   Events sample(bool key_active_low, bool boot_active_low) {
     Events events;
-    update(key_, key_active_low, ButtonEvent::Next, events);
-    update(boot_, boot_active_low, ButtonEvent::Previous, events);
+    update(key_, key_active_low, ButtonEvent::Previous, events);
+    update(boot_, boot_active_low, ButtonEvent::Next, events);
     return events;
   }
 

@@ -41,7 +41,7 @@ void polyline(lv_obj_t* parent, const std::array<ChartPoint, 8>& source,
   lv_obj_set_pos(line, chart.x, chart.y);
   lv_obj_set_size(line, chart.width, chart.height);
   lv_obj_set_style_line_color(line, lv_color_black(), 0);
-  lv_obj_set_style_line_width(line, 1, 0);
+  lv_obj_set_style_line_width(line, kDataLineWidth, 0);
   lv_obj_set_style_line_rounded(line, false, 0);
   lv_line_set_points(line, points, source.size());
   lv_obj_add_event_cb(line, release_chart_points, LV_EVENT_DELETE, points);

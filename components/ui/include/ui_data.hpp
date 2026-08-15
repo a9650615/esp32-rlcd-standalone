@@ -28,6 +28,7 @@ struct PageDotsGeometry {
 
 inline constexpr int kPageDotSize = 5;
 inline constexpr int kPageDotGap = 4;
+inline constexpr char kComfortBandLabel[] = "COMFORT BAND  40-60 RH";
 
 constexpr PageDotsGeometry page_dots_geometry(const Rect bounds,
                                               std::size_t page_index,
@@ -50,6 +51,12 @@ inline std::string format_minute_clock(std::string clock) {
     if (second != std::string::npos) clock.resize(second);
   }
   return clock;
+}
+
+inline std::string compact_clock_source(const std::string& source) {
+  if (source == "RTC fallback") return "DEMO / FALLBACK";
+  if (source == "PCF85063") return "DEMO / RTC";
+  return "DEMO / UNKNOWN";
 }
 
 constexpr MarketLayout market_layout(const Rect bounds) {

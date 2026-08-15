@@ -21,7 +21,7 @@ void expect_events(const ButtonFilter::Events& actual,
 
 }  // namespace
 
-HOST_TEST(button_bounce_emits_one_next_on_stable_key_release) {
+HOST_TEST(button_bounce_emits_one_previous_on_stable_key_release) {
   ButtonFilter filter;
 
   // The active-low KEY input bounces before settling pressed and released.
@@ -35,7 +35,7 @@ HOST_TEST(button_bounce_emits_one_next_on_stable_key_release) {
   expect_events(filter.sample(true, false), {});
   expect_events(filter.sample(false, false), {});
   expect_events(filter.sample(false, false), {});
-  expect_events(filter.sample(false, false), {ButtonEvent::Next});
+  expect_events(filter.sample(false, false), {ButtonEvent::Previous});
   expect_events(filter.sample(false, false), {});
 }
 
@@ -51,11 +51,11 @@ HOST_TEST(button_hold_emits_no_repeat_and_one_event_after_release) {
   for (int sample = 0; sample < 2; ++sample) {
     expect_events(filter.sample(false, false), {});
   }
-  expect_events(filter.sample(false, false), {ButtonEvent::Next});
+  expect_events(filter.sample(false, false), {ButtonEvent::Previous});
   expect_events(filter.sample(false, false), {});
 }
 
-HOST_TEST(button_boot_release_emits_previous) {
+HOST_TEST(button_boot_release_emits_next) {
   ButtonFilter filter;
 
   for (int sample = 0; sample < 3; ++sample) {
@@ -64,7 +64,7 @@ HOST_TEST(button_boot_release_emits_previous) {
   for (int sample = 0; sample < 2; ++sample) {
     expect_events(filter.sample(false, false), {});
   }
-  expect_events(filter.sample(false, false), {ButtonEvent::Previous});
+  expect_events(filter.sample(false, false), {ButtonEvent::Next});
   expect_events(filter.sample(false, false), {});
 }
 
@@ -78,6 +78,6 @@ HOST_TEST(button_simultaneous_release_reports_both_once_in_pin_order) {
     expect_events(filter.sample(false, false), {});
   }
   expect_events(filter.sample(false, false),
-                {ButtonEvent::Next, ButtonEvent::Previous});
+                {ButtonEvent::Previous, ButtonEvent::Next});
   expect_events(filter.sample(false, false), {});
 }

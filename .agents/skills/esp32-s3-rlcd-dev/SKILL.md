@@ -64,6 +64,20 @@ Build/flash gates:
 
 For Arduino, configure `ESP32S3 Dev Module`, USB CDC enabled, Hardware CDC/JTAG, QIO 80 MHz, 16 MB Flash, OPI PSRAM, and the official 16 MB partition scheme. Start at 921600 upload baud only if stable; lower it after a reproducible serial error.
 
+## Design for RLCD pixels
+
+Treat the ST7305 output as a 1-bit pixel surface, not a scaled web mockup. Use integer coordinates on the 400 x 300 landscape canvas and keep every object inside the 6 px safe margin.
+
+- For the bundled Montserrat bitmap fonts, give each label 1 px internal padding and a height of at least `font.line_height + 2 px`. A 1 px LVGL text outline may be requested only for the 14 px small-text tier; bitmap glyphs may ignore outline styling, so the real fix for an insufficient stroke is a verified heavier 1-bit font. Do not outline medium, large, or hero numerals.
+- Data polylines and mini-history lines are at least 2 px wide. Hairline separators and dotted grids may remain 1 px. Keep data strokes outside every text rectangle.
+- Give each right-side tile three non-overlapping rows: title, value, detail. Derive and host-test the rectangles; do not repair overlap by relying on opaque labels or paint order.
+- Every non-ASCII character must exist in the compiled font. If it has not been verified, use an ASCII fallback; for example use `40-60`, `<`, and `>` instead of `40–60`, `‹`, and `›`. Keep `°` only while its bundled glyph is confirmed on hardware.
+- Accept display changes from a real-board photo of every page, not the simulator alone. Check full glyph strokes, top/bottom clipping, diagonal continuity, title/value overlap, missing-glyph boxes, stale pixels, and a complete carousel wrap.
+
+For this project, KEY/GPIO18 means previous page and BOOT/GPIO0 means next page. Both are active-low and emit once after a debounced release. GPIO0 must stay input-only with a pull-up; never drive it or initialize it early in a way that can block ROM download recovery. The transient overlay must use the same physical mapping: `KEY < AUTO > BOOT`.
+
+The measured layout values, photo-derived failure modes, and acceptance checklist are in [references/official-development.md](references/official-development.md).
+
 ## Verify every hardware change
 
 After flashing, capture evidence for:

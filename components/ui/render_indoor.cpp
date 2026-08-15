@@ -38,7 +38,7 @@ void mini_history(lv_obj_t* parent, const Rect bounds,
   lv_obj_set_pos(line, bounds.x, bounds.y);
   lv_obj_set_size(line, bounds.width, bounds.height);
   lv_obj_set_style_line_color(line, lv_color_black(), 0);
-  lv_obj_set_style_line_width(line, 1, 0);
+  lv_obj_set_style_line_width(line, kDataLineWidth, 0);
   lv_obj_set_style_line_rounded(line, false, 0);
   lv_line_set_points(line, points, normalized.size());
   lv_obj_add_event_cb(line, release_points, LV_EVENT_DELETE, points);
@@ -67,7 +67,7 @@ void render_indoor(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
   label(parent, humidity, {primary.x + 211, primary.y + 44,
                            primary.width - 219, 28}, medium_font(),
         LV_TEXT_ALIGN_RIGHT);
-  label(parent, "COMFORT BAND  40–60 RH",
+  label(parent, kComfortBandLabel,
         {primary.x + 8, primary.y + 98, primary.width - 16, 18}, small_font());
   const int band_x = primary.x + 14;
   const int band_y = primary.y + 129;

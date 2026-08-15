@@ -220,10 +220,10 @@ void timer_callback(lv_timer_t* timer) {
   if (queue != nullptr) {
     board::ButtonEvent event;
     while (xQueueReceive(queue, &event, 0) == pdTRUE) {
-      const bool key = event == board::ButtonEvent::Next;
-      const char* reason = key ? "manual-key" : "manual-boot";
-      ESP_LOGI(kTag, "button event=%s", key ? "KEY" : "BOOT");
-      const auto transition = key
+      const bool next = event == board::ButtonEvent::Next;
+      const char* reason = next ? "manual-boot" : "manual-key";
+      ESP_LOGI(kTag, "button event=%s", next ? "BOOT" : "KEY");
+      const auto transition = next
                                   ? app_core::carousel::next(
                                         runtime->carousel, now_ms,
                                         runtime->active_pages.size())

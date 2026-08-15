@@ -18,8 +18,11 @@ inline constexpr int kCanvasHeight = 300;
 inline constexpr int kSafeMargin = 6;
 inline constexpr int kSeparatorWidth = 1;
 inline constexpr uint32_t kNavigationOverlayDurationMs = 2'000;
-inline constexpr int kTileContentHeight = 44;
+inline constexpr int kTileContentHeight = 64;
 inline constexpr int kTileInset = 6;
+inline constexpr int kTextStrokeWidth = 1;
+inline constexpr int kTextInset = 1;
+inline constexpr int kDataLineWidth = 2;
 
 struct Rect {
   int x = 0;
@@ -29,6 +32,12 @@ struct Rect {
 
   constexpr int right() const { return x + width; }
   constexpr int bottom() const { return y + height; }
+};
+
+struct TileTextLayout {
+  Rect title;
+  Rect value;
+  Rect detail;
 };
 
 constexpr Rect safe_canvas() {
@@ -60,6 +69,29 @@ constexpr Rect tile_content_rect(const Rect cell) {
           cell.width - 2 * kTileInset, kTileContentHeight};
 }
 
+constexpr TileTextLayout tile_text_layout(const Rect cell) {
+  const Rect content = tile_content_rect(cell);
+  return {{cell.x + kTileInset, content.y, cell.width - 2 * kTileInset, 18},
+          {cell.x + kTileInset, content.y + 18,
+           cell.width - 2 * kTileInset, 28},
+          {cell.x + kTileInset, content.y + 46,
+           cell.width - 2 * kTileInset, 18}};
+}
+
+constexpr Rect tile_leading_visual_rect(const Rect cell,
+                                        const bool visible) {
+  const Rect value = tile_text_layout(cell).value;
+  return visible ? Rect{cell.x + 8, value.y, 28, 28}
+                 : Rect{value.x, value.y, 0, 0};
+}
+
+constexpr Rect tile_value_rect(const Rect cell, const bool with_leading_visual) {
+  const Rect value = tile_text_layout(cell).value;
+  return with_leading_visual
+             ? Rect{cell.x + 43, value.y, cell.width - 49, value.height}
+             : value;
+}
+
 constexpr bool tile_content_is_centered(const Rect cell) {
   const Rect content = tile_content_rect(cell);
   const int cell_center = cell.y * 2 + cell.height;
@@ -74,6 +106,17 @@ constexpr bool tile_content_has_no_reserved_footer(const Rect cell) {
   const Rect content = tile_content_rect(cell);
   return content.y >= cell.y && content.bottom() <= cell.bottom() &&
          cell.bottom() - content.bottom() < cell.height / 3;
+}
+
+constexpr int safe_text_box_height(const int requested_height,
+                                   const int font_line_height) {
+  const int stroke_safe_height = font_line_height + 2 * kTextInset;
+  return requested_height > stroke_safe_height ? requested_height
+                                                : stroke_safe_height;
+}
+
+constexpr int text_outline_width(const int font_line_height) {
+  return font_line_height <= 16 ? kTextStrokeWidth : 0;
 }
 
 #ifndef UI_THEME_GEOMETRY_ONLY

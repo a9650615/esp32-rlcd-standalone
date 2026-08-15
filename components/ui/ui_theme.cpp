@@ -27,12 +27,22 @@ lv_obj_t* label(lv_obj_t* parent, const char* text, Rect bounds,
   lv_obj_t* object = lv_label_create(parent);
   if (object == nullptr) return nullptr;
   apply_surface(object);
+  const lv_font_t* effective_font =
+      font == nullptr ? LV_FONT_DEFAULT : font;
+  const int font_line_height = effective_font->line_height;
   lv_obj_set_pos(object, bounds.x, bounds.y);
-  lv_obj_set_size(object, bounds.width, bounds.height);
+  lv_obj_set_size(object, bounds.width,
+                  safe_text_box_height(bounds.height, font_line_height));
   lv_label_set_text(object, text == nullptr ? "" : text);
   if (font != nullptr) lv_obj_set_style_text_font(object, font, 0);
+  lv_obj_set_style_pad_all(object, kTextInset, 0);
   lv_obj_set_style_text_align(object, align, 0);
   lv_obj_set_style_text_line_space(object, 0, 0);
+  const int outline_width = text_outline_width(font_line_height);
+  lv_obj_set_style_text_outline_stroke_color(object, lv_color_black(), 0);
+  lv_obj_set_style_text_outline_stroke_width(object, outline_width, 0);
+  lv_obj_set_style_text_outline_stroke_opa(
+      object, outline_width > 0 ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
   lv_label_set_long_mode(object, LV_LABEL_LONG_CLIP);
   return object;
 }
@@ -170,11 +180,13 @@ lv_obj_t* navigation_overlay(lv_obj_t* parent, Rect bounds) {
   lv_obj_set_user_data(overlay, state);
   lv_obj_add_event_cb(overlay, overlay_deleted, LV_EVENT_DELETE, state);
   lv_obj_t* overlay_text =
-      label(overlay, "BOOT  ‹   AUTO   ›  KEY", {0, 0, bounds.width, 24},
+      label(overlay, "KEY  <   AUTO   >  BOOT", {0, 0, bounds.width, 24},
             &lv_font_montserrat_14, LV_TEXT_ALIGN_CENTER);
   if (overlay_text != nullptr) {
     lv_obj_set_style_bg_color(overlay_text, lv_color_black(), 0);
     lv_obj_set_style_text_color(overlay_text, lv_color_white(), 0);
+    lv_obj_set_style_text_outline_stroke_color(overlay_text, lv_color_white(),
+                                               0);
   }
   lv_timer_t* timer = lv_timer_create(delete_overlay_timer,
                                       kNavigationOverlayDurationMs, state);

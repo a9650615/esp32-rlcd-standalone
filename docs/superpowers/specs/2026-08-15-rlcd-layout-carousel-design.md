@@ -2,7 +2,7 @@
 
 Date: 2026-08-15  
 Target: Waveshare ESP32-S3-RLCD-4.2  
-Status: Awaiting user review
+Status: Implemented and flashed; final button/photo acceptance pending
 
 ## Goal
 
@@ -52,12 +52,16 @@ These remain later slices so UI/BSP failures are not confused with networking or
 
 ### Shared rules
 
-- Use 6–8 px safe margins and one-pixel separators.
+- Use a 6 px safe margin and one-pixel separators.
 - Do not render a persistent footer.
 - Show page position as small bottom-right dots.
 - Show navigation help as a temporary inverse overlay for two seconds after a button action.
 - Vertically center content inside secondary tiles and scale its primary value to use the available height.
 - Avoid animation. Replace a page atomically, then let the display settle.
+- Treat the ST7305 result as a 1-bit pixel surface: use integer geometry, reserve 1 px label padding, and make each label at least `font.line_height + 2 px` high.
+- Use 2 px strokes for data polylines and mini-history; one-pixel strokes are reserved for separators and dotted grids.
+- Keep title, value, detail, icons, and data strokes in non-overlapping tested rectangles.
+- Use only glyphs present in the compiled bitmap font. Prefer `40-60` and `< >` over unverified Unicode punctuation.
 
 ### Clock Hero home
 
@@ -98,8 +102,8 @@ The registry shall omit unavailable pages instead of showing empty cards. This b
 - Dwell on Clock Hero for 30 seconds.
 - Dwell on each data page for 12 seconds.
 - Advance pages using an LVGL timer so all widget creation and deletion stays on the LVGL thread.
-- KEY short press: next page.
-- BOOT short press: previous page.
+- KEY short press: previous page.
+- BOOT short press: next page.
 - A manual button action pauses automatic advance for 60 seconds, then returns to Clock Hero and resumes automatic mode.
 - Debounce both buttons and accept one event per deliberate press.
 - Do not assign a BOOT long-press action.
@@ -167,13 +171,22 @@ Run the board for at least ten minutes and capture evidence that:
 4. Clock Hero is readable at desk distance and does not leave excessive unused space;
 5. market charts use the available height and secondary tiles are vertically centered;
 6. automatic dwell timing follows 30/12 seconds;
-7. KEY moves forward and BOOT moves backward exactly once per press;
+7. KEY moves backward and BOOT moves forward exactly once per press;
 8. manual navigation pauses auto mode for 60 seconds and returns to Clock Hero;
 9. the display remains stable for ten complete carousel cycles;
 10. holding BOOT during power-on still exposes the ROM downloader.
 
 No completion claim is based on compilation alone. Visual findings from the physical panel become explicit adjustments for the next slice.
 
+### Evidence recorded for the flashed revision
+
+- The application-only image was written at `0x10000`; bootloader and partition table were not rewritten. Esptool verified the post-write hash.
+- Boot logs confirmed QIO, 16 MiB Flash, 8 MiB Octal PSRAM, successful PSRAM memory test, and GPIO0 input/pull-up.
+- Main-task stack high-water mark was 4,188 bytes after first render, above the 2 KiB gate.
+- Four complete automatic Home → Taiwan → US → Weather → Indoor → Home cycles were observed without reset.
+- Host tests, firmware build, skill validation, and Luna code review passed.
+- Physical KEY/BOOT direction, the final post-fix five-page photos, ten-cycle duration, and a manual ROM-downloader entry remain explicit acceptance gaps; they are not claimed complete.
+
 ## First implementation boundary
 
-The first implementation ends after the layout/carousel firmware is built, flashed, and observed on the connected board. It does not proceed into Wi-Fi provisioning or live data without a separate reviewed slice.
+The first implementation ends after the layout/carousel firmware is built, flashed, and observed on the connected board. Wi-Fi provisioning and live data proceed as a separate slice after the remaining manual acceptance gaps are recorded.
