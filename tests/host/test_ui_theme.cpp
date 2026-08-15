@@ -4,6 +4,13 @@
 
 #include "test_support.hpp"
 
+#include <type_traits>
+
+static_assert(!std::is_copy_constructible_v<ui::UiContext>);
+static_assert(!std::is_copy_assignable_v<ui::UiContext>);
+static_assert(!std::is_move_constructible_v<ui::UiContext>);
+static_assert(!std::is_move_assignable_v<ui::UiContext>);
+
 HOST_TEST(ui_geometry_contract) {
   EXPECT_EQ(ui::kCanvasWidth, 400);
   EXPECT_EQ(ui::kCanvasHeight, 300);

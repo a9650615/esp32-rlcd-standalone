@@ -93,4 +93,26 @@ GREEN: git diff --check
   `0x309d0` bytes and 94% factory-partition headroom. The UI component target
   was also present in the forced target invocation; no UI source was linked to
   `app_main` and no hardware was accessed.
+
+## Review fixes 3
+
+- Made `UiContext` explicitly non-copyable and non-movable while preserving
+  default construction. Its header now documents that LVGL stores the exact
+  instance address in the host delete callback and that callers must retain it
+  in place for the host lifetime.
+- Captured RED with four compile-time host assertions failing for the former
+  copyable/movable context. GREEN then passed the same assertions, host build,
+  and ctest.
+
+Final hardening verification:
+
+```text
+RED: static_assert checks for UiContext copy/move traits failed
+GREEN: cmake --build build-host --clean-first
+GREEN: ctest --test-dir build-host --output-on-failure
+       100% tests passed, 0 tests failed out of 1
+GREEN: ./scripts/idf.sh build; Built target __idf_ui; Project build complete
+       layout_carousel.bin 0x309d0; 94% free
+GREEN: git diff --check
+```
 ```

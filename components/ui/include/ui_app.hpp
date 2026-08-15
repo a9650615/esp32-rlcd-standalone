@@ -9,7 +9,16 @@
 
 namespace ui {
 
+// Address-sensitive owner retained by the caller for the host's entire LVGL
+// lifetime. LVGL stores a pointer to this exact instance in the host delete
+// callback; initialize/reset it in place and never copy or move it.
 struct UiContext {
+  UiContext() = default;
+  UiContext(const UiContext&) = delete;
+  UiContext& operator=(const UiContext&) = delete;
+  UiContext(UiContext&&) = delete;
+  UiContext& operator=(UiContext&&) = delete;
+
   lv_obj_t* host = nullptr;
   lv_obj_t* root = nullptr;
   bool initialized = false;
