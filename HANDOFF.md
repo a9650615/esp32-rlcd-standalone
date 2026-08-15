@@ -71,6 +71,23 @@ This is the part to read before touching anything.
 - Never `erase-flash` for connection trouble.
 - GPIO0/BOOT stays input plus pull-up. Never drive it, never take it early.
 - PWR is hardware power management, not an application GPIO.
+- **Never burn eFuses.** No Secure Boot, no Flash Encryption, no `espefuse
+  burn-*`. This is the only line between recoverable and bricked: the ROM
+  bootloader is in silicon and the board uses native USB Serial/JTAG, so a
+  corrupt partition table, a half-written application, or entirely blank flash
+  all still enumerate and still accept esptool. The reset loop this session was
+  recovered from the host with no button pressed. Burning
+  `DIS_DOWNLOAD_MODE`, `DIS_USB_SERIAL_JTAG` or their siblings closes that
+  permanently and nothing undoes it. Measured unburned on 2026-08-16 and that
+  is the state to keep; `espefuse summary` is read-only and safe to check with.
+
+Recovery ladder, cheapest tier first — work it in order rather than escalating
+to an erase:
+
+1. `otadata` corrupt → the ROM bootloader falls back to `factory` unaided.
+2. App broken, USB enumerating → reflash from the host.
+3. USB not enumerating → PWR off, then PWR on while holding BOOT ~1 s.
+4. Everything else → restore the full verified backup from `0x0`.
 
 Physical buttons, measured this session and now recorded in the board skill
 (the official docs give the functions but never the positions):
