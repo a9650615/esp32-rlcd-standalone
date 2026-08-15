@@ -125,7 +125,7 @@ Also require a clean boot with no reset loop. Block the write or acceptance if Q
 Gitignored and untracked files belong to a physical worktree; a linked worktree does not materialize a sibling checkout's ignored backup. Before any write, choose one setup and record it in the verification output:
 
 1. Keep the sensitive full dump at a canonical **absolute** path outside disposable worktree state, or explicitly copy/link it into an ignored backup path in the active worktree without tracking it.
-2. The repository verifier applies only after the binary has been explicitly copied or linked into its documented expected **relative** path inside the active worktree. From that active worktree root, prefer the verifier when present:
+2. The repository verifier applies only after the binary has been explicitly copied or linked into its documented expected **relative** path inside the active worktree: `firmware/backups/waveshare-factory-full-flash-2026-08-15.bin`. From that active worktree root, prefer the verifier when present:
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"
@@ -160,21 +160,55 @@ The expected digest must be compared to the bytes that will be restored; a manif
 
 ### ESP-IDF component-graph acceptance gate
 
-A valid `components/ui/CMakeLists.txt`, a successful `idf.py build`, and unchanged binary size do **not** prove that UI sources compiled or linked. After a configured build, force the component target to compile from clean state and capture its output, for example:
+A valid `components/ui/CMakeLists.txt`, a successful `idf.py build`, and unchanged binary size do **not** prove that UI sources compiled or linked. After a configured build, force the component target to compile from clean state and capture its output. The target command's exit status is the gate; do not make a `Built target` literal the sole success test:
 
 ```bash
+set -euo pipefail
 idf.py reconfigure
 idf.py build
-cmake --build build --target __idf_ui --clean-first | tee /tmp/ui-component-build.log
+cmake --build build --target __idf_ui --clean-first --verbose 2>&1 | tee /tmp/ui-component-build.log
+
+source_count=0
+while IFS= read -r -d '' source; do
+  source_count=$((source_count + 1))
+  base="${source##*/}"
+  stem="${base%.*}"
+  object="$(find build/esp-idf/ui -type f \( -name "$base.o" -o -name "$base.obj" -o -name "$stem.o" -o -name "$stem.obj" \) -print -quit)"
+  test -n "$object" || { echo "missing UI object for $source" >&2; exit 1; }
+done < <(find components/ui -type f \( -name '*.c' -o -name '*.cc' -o -name '*.cpp' \) -print0)
+test "$source_count" -gt 0 || { echo "no UI sources found" >&2; exit 1; }
 ```
 
-The staged compile gate requires the log to contain UI source object compile lines and `Built target __idf_ui`, plus:
+The staged compile gate records the UI source compile lines in the log and requires an object file for every discovered UI source under `build/esp-idf/ui` as `.o` or `.obj`, plus:
 
-- an application dependency edge through `REQUIRES` or `PRIV_REQUIRES` (or an equivalent source-level dependency that makes the component reachable);
+- a real consuming-component metadata/CMake edge using `REQUIRES ui` or `PRIV_REQUIRES ui` (a source include is not sufficient); and
+- generated graph evidence from `build/project_description.json` proving `build_components` contains `ui` and the consuming component's `reqs` or `priv_reqs` contains `ui`:
+
+```bash
+CONSUMER_COMPONENT=main python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+data = json.loads(Path("build/project_description.json").read_text(encoding="utf-8"))
+components = data.get("build_components")
+if not isinstance(components, list):
+    raise SystemExit("missing build_components list")
+if not any(item.get("name") == "ui" for item in components):
+    raise SystemExit("ui is absent from build_components")
+consumer_name = os.environ["CONSUMER_COMPONENT"]
+consumer = next((item for item in components if item.get("name") == consumer_name), None)
+if consumer is None:
+    raise SystemExit(f"missing consuming component: {consumer_name}")
+deps = set(consumer.get("reqs", [])) | set(consumer.get("priv_reqs", []))
+if "ui" not in deps:
+    raise SystemExit(f"{consumer_name} has no REQUIRES/PRIV_REQUIRES edge to ui")
+PY
+```
 - a final full `idf.py build`; and
 - at final integration (Task 7), an ELF/map symbol or an intentional call path proving retention, followed by the on-device display refresh and serial evidence.
 
-Keep clean-target compile proof separate from dependency, final link/retention, and runtime proof. An unchanged binary size indicates likely dead-strip or unretained code: investigate the graph and ELF/map before accepting the UI.
+Keep clean-target compile proof separate from dependency-graph, final link/retention, and runtime proof. An unchanged binary size indicates likely dead-strip or unretained code: investigate the graph and ELF/map before accepting the UI.
 
 ### Arduino
 
