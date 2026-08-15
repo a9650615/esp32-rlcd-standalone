@@ -96,26 +96,39 @@ lv_obj_t* filled_circle(lv_obj_t* parent, int center_x, int center_y,
   return object;
 }
 
-// A wide base bar plus two overlapping lobes - one bold, continuous
-// silhouette instead of the old baseline-and-risers outline, which was
-// exactly the thin, small-enclosed-shape style that fails on this display.
+// A rounded base plus two lobes of different sizes: one bold, continuous
+// silhouette, still readable on a panel where thin outlines disappear.
+//
+// The base is a pill rather than a rectangle. A square-cornered bar under two
+// circles reads as a block with bumps, not a cloud, and at icon sizes those
+// two hard bottom corners are most of what the eye picks up. The lobes are
+// deliberately unequal and off-centre for the same reason: two identical
+// circles side by side read as symmetrical machinery.
 void draw_cloud(lv_obj_t* parent, Rect bounds, bool inverse) {
-  const int base_height = std::max(2, bounds.height * 2 / 5);
+  const int base_height = std::max(3, bounds.height * 2 / 5);
   const int base_y = bounds.bottom() - base_height;
-  line_segment(parent, bounds.x, base_y, bounds.width, base_height, inverse);
-  const int lobe_diameter = std::max(2, bounds.height * 3 / 5);
-  filled_circle(parent, bounds.x + bounds.width * 3 / 10, base_y,
-               lobe_diameter, inverse);
-  filled_circle(parent, bounds.x + bounds.width * 7 / 10, base_y,
-               lobe_diameter, inverse);
+  lv_obj_t* base =
+      line_segment(parent, bounds.x, base_y, bounds.width, base_height, inverse);
+  if (base != nullptr) lv_obj_set_style_radius(base, LV_RADIUS_CIRCLE, 0);
+  const int big = std::max(3, bounds.height * 7 / 10);
+  const int small = std::max(3, bounds.height * 1 / 2);
+  filled_circle(parent, bounds.x + bounds.width * 38 / 100, base_y + 1, big,
+                inverse);
+  filled_circle(parent, bounds.x + bounds.width * 68 / 100, base_y + 2, small,
+                inverse);
 }
 
 void draw_sun(lv_obj_t* parent, Rect bounds, bool inverse) {
   const int center_x = bounds.x + bounds.width / 2;
   const int center_y = bounds.y + bounds.height / 2;
-  const int body_diameter = std::max(2, std::min(bounds.width, bounds.height) * 3 / 5);
+  // Only axis-aligned rectangles are available, so the sun gets four rays
+  // rather than the usual eight. That makes the disc carry the recognition:
+  // it is sized generously and the rays read as short stubs around it, which
+  // holds together far better than a small disc with long thin spokes.
+  const int body_diameter =
+      std::max(2, std::min(bounds.width, bounds.height) * 7 / 10);
   filled_circle(parent, center_x, center_y, body_diameter, inverse);
-  const int ray_width = std::max(2, body_diameter / 6);
+  const int ray_width = std::max(2, body_diameter / 5);
   const int vertical_reach = std::max(0, (bounds.height - body_diameter) / 2);
   const int horizontal_reach = std::max(0, (bounds.width - body_diameter) / 2);
   line_segment(parent, center_x - ray_width / 2, bounds.y, ray_width,

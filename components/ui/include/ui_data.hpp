@@ -367,18 +367,17 @@ constexpr bool page_shows_dots(app_core::PageId page) {
   return page != app_core::PageId::Setup && page != app_core::PageId::Ota;
 }
 
-// Height reserved along the bottom for the page dots. The gap is smaller than
-// the tray's own kSystemTrayContentGap on purpose: that one separates content
-// from a separator rule and a row of text, whereas this separates it from five
-// pixels of dots with no rule above them.
+// Height reserved along the bottom for the page dots, matching the gap the
+// tray leaves below itself so content is inset by the same amount top and
+// bottom.
 //
-// It is also as much as the weather page can spare. Its forecast columns stack
-// to exactly 160 px inside a band of (170 - this) px, so anything above 10
-// here clips them - forecast_columns_layout_all_fit below is what catches
-// that, and it is load-bearing rather than decorative.
-inline constexpr int kPageDotsBottomGap = 3;
+// This was briefly forced down to 3px, because the weather forecast column
+// stacked to 160px inside a band of (170 - this). Shrinking the oversized
+// forecast icon gave that back with room to spare;
+// forecast_columns_layout_all_fit below is what proves it still fits, and it
+// is load-bearing rather than decorative.
 inline constexpr int kPageDotsReservedHeight =
-    kPageDotSize + kPageDotsBottomGap;
+    kPageDotSize + kSystemTrayContentGap;
 
 // Every page derives its content area through this single path, so nothing
 // draws into the tray band or under the dots by accident.
@@ -609,14 +608,14 @@ struct ForecastColumnLayout {
 inline constexpr int kForecastRowGap = kSetupTightLineGap;
 inline constexpr int kForecastRowHeight =
     safe_text_box_height(18, kSetupSmallFontLineHeight);
-// Grown from the original 26x27 - the old icon was too small and too fine
-// to read on this panel (see weather_icon in ui_theme.cpp). The forecast
-// column has ~43px of height headroom below its six stacked rows at the
-// original icon size (170px column height vs 127px of stacked content), and
-// this spends most of that on the one row that most needed it, proven by
-// forecast_columns_layout_all_fit below.
-inline constexpr int kForecastIconWidth = 40;
-inline constexpr int kForecastIconHeight = 60;
+// Slightly wider than tall, which is the shape a cloud and a sun actually
+// are. An earlier pass grew this to 40x60 chasing legibility and got a worse
+// icon rather than a bigger one: at 3:2 portrait the cloud stretched into a
+// tower and the sun's disc had to shrink to leave room for its rays. The
+// silhouettes were redrawn instead (see draw_cloud in ui_theme.cpp), which is
+// what the legibility problem actually needed.
+inline constexpr int kForecastIconWidth = 38;
+inline constexpr int kForecastIconHeight = 30;
 
 constexpr ForecastColumnLayout forecast_column_layout(const Rect column) {
   const Rect day{column.x, column.y, column.width, kForecastRowHeight};
