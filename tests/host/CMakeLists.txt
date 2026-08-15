@@ -9,11 +9,15 @@ add_executable(host_tests
     test_main.cpp
     test_page_registry.cpp
     test_carousel.cpp
+    test_button_filter.cpp
     ../../components/app_core/app_snapshot.cpp
     ../../components/app_core/page_registry.cpp
     ../../components/app_core/carousel_controller.cpp
 )
-target_include_directories(host_tests PRIVATE ../../components/app_core/include)
+target_include_directories(host_tests PRIVATE
+    ../../components/app_core/include
+    ../../components/board_rlcd/include
+)
 
 enable_testing()
 add_test(NAME host_tests COMMAND host_tests)

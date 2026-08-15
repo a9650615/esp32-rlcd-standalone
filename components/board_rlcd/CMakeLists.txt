@@ -2,6 +2,7 @@ idf_component_register(
     SRCS
         "display_port.cpp"
         "lvgl_port.cpp"
+        "board_buttons.cpp"
     INCLUDE_DIRS
         "include"
     PRIV_REQUIRES

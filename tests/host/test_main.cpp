@@ -1,5 +1,6 @@
 #include "test_support.hpp"
 
+#include <cstddef>
 #include <iostream>
 
 namespace host_tests {
@@ -23,7 +24,8 @@ int main() {
       std::cout << "FAIL " << name << ": " << error.what() << '\n';
     }
   }
-  std::cout << host_tests::all_tests().size() << " cases, " << failures
+  const std::size_t case_count = host_tests::all_tests().size();
+  std::cout << case_count << " cases, " << failures
             << " failures\n";
   return failures == 0 ? 0 : 1;
 }
