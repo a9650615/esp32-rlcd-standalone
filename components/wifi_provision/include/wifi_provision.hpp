@@ -22,4 +22,14 @@ void toggle_setup();
 // provisioning state, keeping a single snapshot publisher.
 void set_battery(const app_core::BatteryData& battery);
 
+// Same pattern as set_battery: callable from any task, merges the one field
+// into the shared snapshot and republishes. Keeps this component the single
+// AppSnapshot owner/publisher rather than letting each provider task manage
+// its own copy.
+void set_indoor(const app_core::IndoorData& indoor);
+void set_weather(const app_core::WeatherData& weather);
+void set_taiwan_market(const app_core::MarketData& market);
+void set_us_market(const app_core::MarketData& market);
+void set_clock(const app_core::ClockData& clock);
+
 }  // namespace wifi_provision

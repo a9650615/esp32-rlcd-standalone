@@ -57,47 +57,67 @@ void render_market(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
   apply_surface(parent);
   const MarketLayout layout = market_layout(bounds);
   const Rect primary = layout.primary;
-  // The axis labels below the chart get whatever label() will actually give
-  // them, not what we ask for: a 17 px box grows to font.line_height + 2 and
-  // the extra row used to land one pixel past the safe canvas. Reserve the
-  // real height here so the chart yields the row instead.
-  const int axis_height = safe_text_box_height(17, small_font()->line_height);
-  const Rect chart{primary.x + 8, primary.y + 70, primary.width - 16,
-                   std::max(1, primary.bottom() - primary.y - 71 - axis_height)};
 
   label(parent, us_market ? "US MARKET" : "TAIWAN MARKET",
         {primary.x + 8, primary.y + 4, primary.width - 16, 18}, small_font());
-  label(parent, market.primary_label.c_str(),
-        {primary.x + 8, primary.y + 23, primary.width / 2 - 8, 30},
-        medium_font());
-  char value[24];
-  char change[24];
-  std::snprintf(value, sizeof(value), "%d", market.primary_value);
-  std::snprintf(change, sizeof(change), "%+.2f%%",
-                market.primary_change_percent);
-  label(parent, value,
-        {primary.x + primary.width / 2, primary.y + 20,
-         primary.width / 2 - 8, 32},
-        large_font(), LV_TEXT_ALIGN_RIGHT);
-  label(parent, change,
-        {primary.x + primary.width / 2, primary.y + 52,
-         primary.width / 2 - 8, 18},
-        small_font(), LV_TEXT_ALIGN_RIGHT);
-  divider(parent, {primary.x + 8, primary.y + 66, primary.width - 16,
-                   kSeparatorWidth});
 
-  dotted_grid(parent, chart);
-  polyline(parent, normalize_chart_samples(market.intraday_samples, chart),
-           chart);
-  label(parent, "09:00", {chart.x, chart.bottom() + 1, chart.width / 3, axis_height},
-        small_font());
-  label(parent, "MID",
-        {chart.x + chart.width / 3, chart.bottom() + 1, chart.width / 3, axis_height},
-        small_font(), LV_TEXT_ALIGN_CENTER);
-  label(parent, "NOW",
-        {chart.x + 2 * chart.width / 3, chart.bottom() + 1,
-         chart.width / 3, axis_height},
-        small_font(), LV_TEXT_ALIGN_RIGHT);
+  if (!market.valid) {
+    // No fabricated primary_value/percent/chart below the title - see
+    // ui_data.hpp no_data_rect for the shared placeholder geometry.
+    label(parent, kNoDataLabel, no_data_rect(primary), medium_font(),
+          LV_TEXT_ALIGN_CENTER);
+  } else {
+    // The axis labels below the chart get whatever label() will actually
+    // give them, not what we ask for: a 17 px box grows to
+    // font.line_height + 2 and the extra row used to land one pixel past the
+    // safe canvas. Reserve the real height here so the chart yields the row
+    // instead.
+    const int axis_height = safe_text_box_height(17, small_font()->line_height);
+    const Rect chart = market_chart_rect(primary, small_font()->line_height);
+
+    label(parent, market.primary_label.c_str(),
+          {primary.x + 8, primary.y + 23, primary.width / 2 - 8, 30},
+          medium_font());
+    char value[24];
+    char change[24];
+    std::snprintf(value, sizeof(value), "%d", market.primary_value);
+    std::snprintf(change, sizeof(change), "%+.2f%%",
+                  market.primary_change_percent);
+    label(parent, value,
+          {primary.x + primary.width / 2, primary.y + 20,
+           primary.width / 2 - 8, 32},
+          large_font(), LV_TEXT_ALIGN_RIGHT);
+    label(parent, change,
+          {primary.x + primary.width / 2, primary.y + 52,
+           primary.width / 2 - 8, 18},
+          small_font(), LV_TEXT_ALIGN_RIGHT);
+    divider(parent, {primary.x + 8, primary.y + 66, primary.width - 16,
+                     kSeparatorWidth});
+
+    if (market.has_intraday) {
+      dotted_grid(parent, chart);
+      polyline(parent, normalize_chart_samples(market.intraday_samples, chart),
+               chart);
+      label(parent, "09:00",
+            {chart.x, chart.bottom() + 1, chart.width / 3, axis_height},
+            small_font());
+      label(parent, "MID",
+            {chart.x + chart.width / 3, chart.bottom() + 1, chart.width / 3,
+             axis_height},
+            small_font(), LV_TEXT_ALIGN_CENTER);
+      label(parent, "NOW",
+            {chart.x + 2 * chart.width / 3, chart.bottom() + 1,
+             chart.width / 3, axis_height},
+            small_font(), LV_TEXT_ALIGN_RIGHT);
+    } else {
+      // A daily-close-only source (e.g. TWSE) has no intraday series - the
+      // figures above are real, but drawing a flat repeat of the close would
+      // read as "the market did not move" rather than "no intraday data
+      // exists". Skip the chart, grid, and axis labels; say so instead.
+      label(parent, kNoIntradayLabel, chart_placeholder_rect(chart),
+            small_font(), LV_TEXT_ALIGN_CENTER);
+    }
+  }
 
   render_market_sidebar(parent, snapshot, market, layout.side, us_market);
   page_dots(parent, page_index, page_count, bounds);

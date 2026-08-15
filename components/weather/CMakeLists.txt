@@ -1,0 +1,14 @@
+idf_component_register(
+    SRCS
+        "weather_parse.cpp"
+        "weather.cpp"
+    INCLUDE_DIRS
+        "include"
+    PRIV_REQUIRES
+        app_core
+        json
+        esp_http_client
+        mbedtls
+        esp_timer
+        log
+)

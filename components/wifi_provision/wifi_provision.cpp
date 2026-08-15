@@ -252,6 +252,41 @@ void set_battery(const app_core::BatteryData& battery) {
   unlock();
 }
 
+void set_indoor(const app_core::IndoorData& indoor) {
+  lock();
+  snapshot_.indoor = indoor;
+  ui::publish_snapshot(snapshot_);
+  unlock();
+}
+
+void set_weather(const app_core::WeatherData& weather) {
+  lock();
+  snapshot_.weather = weather;
+  ui::publish_snapshot(snapshot_);
+  unlock();
+}
+
+void set_taiwan_market(const app_core::MarketData& market) {
+  lock();
+  snapshot_.taiwan_market = market;
+  ui::publish_snapshot(snapshot_);
+  unlock();
+}
+
+void set_us_market(const app_core::MarketData& market) {
+  lock();
+  snapshot_.us_market = market;
+  ui::publish_snapshot(snapshot_);
+  unlock();
+}
+
+void set_clock(const app_core::ClockData& clock) {
+  lock();
+  snapshot_.clock = clock;
+  ui::publish_snapshot(snapshot_);
+  unlock();
+}
+
 std::string current_ap_ssid() {
   lock();
   std::string result = ap_ssid_;

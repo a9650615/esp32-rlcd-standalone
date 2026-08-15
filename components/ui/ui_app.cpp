@@ -58,15 +58,20 @@ bool g_published_dirty = false;
 
 void (*g_setup_gesture_handler)() = nullptr;
 
-// The subset of AppSnapshot that non-UI FreeRTOS tasks (wifi_provision,
-// the battery monitor) actually publish. Deliberately excludes
-// clock/weather/market/indoor, which are computed on the LVGL thread itself
-// (see update_clock) - overwriting them from a stale published copy would
-// clobber live UI-owned state with whatever wifi_provision's own local
-// AppSnapshot mirror happened to hold at publish time.
+// The subset of AppSnapshot that non-UI FreeRTOS tasks (wifi_provision, the
+// battery monitor, and now the indoor/weather/market/net_time providers)
+// publish. clock is included too - update_clock() below defers to it once
+// its source reads "SNTP" instead of recomputing from the boot-time RTC/
+// fallback clock.
 struct PublishedFields {
   app_core::SetupData setup;
   app_core::BatteryData battery;
+  app_core::IndoorData indoor;
+  app_core::WeatherData weather;
+  app_core::WeatherData new_york_weather;
+  app_core::MarketData taiwan_market;
+  app_core::MarketData us_market;
+  app_core::ClockData clock;
 };
 
 // Non-blocking: if the mutex is momentarily held by a concurrent publish,
@@ -78,6 +83,12 @@ bool consume_published(PublishedFields& out) {
   if (dirty) {
     out.setup = g_published_snapshot.setup;
     out.battery = g_published_snapshot.battery;
+    out.indoor = g_published_snapshot.indoor;
+    out.weather = g_published_snapshot.weather;
+    out.new_york_weather = g_published_snapshot.new_york_weather;
+    out.taiwan_market = g_published_snapshot.taiwan_market;
+    out.us_market = g_published_snapshot.us_market;
+    out.clock = g_published_snapshot.clock;
     g_published_dirty = false;
   }
   xSemaphoreGive(g_publish_mutex);
@@ -142,6 +153,14 @@ void update_clock(Runtime& runtime, uint64_t now_ms) {
       now_ms >= runtime.started_ms ? (now_ms - runtime.started_ms) / kMinuteMs : 0;
   if (minute == runtime.last_clock_minute) return;
   runtime.last_clock_minute = minute;
+  // Once net_time has published a real SNTP-synced clock (see
+  // consume_published/PublishedFields above), that reading owns the display
+  // - recomputing from the boot-time RTC/compile-time fallback clock here
+  // would stamp over real network time every minute. Before the first sync
+  // lands, snapshot.clock.source is whatever start() was given (empty or
+  // "RTC fallback"/"PCF85063"), so the fallback path below still runs
+  // exactly as before.
+  if (runtime.snapshot.clock.source == "SNTP") return;
   const app_core::RtcDateTime clock = clock_at(runtime, now_ms);
   static constexpr std::array<const char*, 12> month_names = {
       "Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -265,6 +284,26 @@ void timer_callback(lv_timer_t* timer) {
   if (published_updated) {
     runtime->snapshot.setup = published.setup;
     runtime->snapshot.battery = published.battery;
+    // indoor/weather/market/clock have no per-field widget registered the
+    // way the tray clock/network/battery labels are (see UiContext) - a
+    // structural change like NO DATA <-> real figures or a chart appearing
+    // can't be a text-only diff anyway. So these are merged into the
+    // snapshot here and simply picked up whole by the next render_current
+    // this page already gets from normal carousel dwell/navigation, rather
+    // than forcing an extra rebuild of whichever page happens to be showing
+    // right now - that would be exactly the unconditional-rebuild-on-publish
+    // flash/lockup risk the tray label-only path was built to avoid, now
+    // multiplied by four independently-timed providers instead of one.
+    // clock is the exception: update_visible_clock below already does a
+    // label-only compare-and-set against runtime->snapshot.clock.hero, so
+    // merging it here is all clock needs to reach the screen without a
+    // rebuild.
+    runtime->snapshot.indoor = published.indoor;
+    runtime->snapshot.weather = published.weather;
+    runtime->snapshot.new_york_weather = published.new_york_weather;
+    runtime->snapshot.taiwan_market = published.taiwan_market;
+    runtime->snapshot.us_market = published.us_market;
+    runtime->snapshot.clock = published.clock;
   }
 
   // Set whenever a genuine page-identity change forces a full atomic

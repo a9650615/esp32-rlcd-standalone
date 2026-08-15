@@ -4,6 +4,8 @@ idf_component_register(
         "lvgl_port.cpp"
         "board_buttons.cpp"
         "battery.cpp"
+        "board_i2c.cpp"
+        "shtc3.cpp"
     INCLUDE_DIRS
         "include"
     PRIV_REQUIRES

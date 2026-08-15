@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(layout_carousel_host_tests LANGUAGES CXX)
+project(layout_carousel_host_tests LANGUAGES C CXX)
 
 option(HOST_DEMO_MISSING_PAGE "Hide the deterministic weather page" OFF)
 
@@ -17,16 +17,28 @@ add_executable(host_tests
     test_setup_page.cpp
     test_wifi_config.cpp
     test_battery.cpp
+    test_net_time.cpp
+    test_i2c_shtc3.cpp
+    test_weather.cpp
+    test_market.cpp
     ../../components/app_core/app_snapshot.cpp
     ../../components/app_core/page_registry.cpp
     ../../components/app_core/carousel_controller.cpp
     ../../components/wifi_config/wifi_config.cpp
+    ../../components/net_time/net_time_convert.cpp
+    ../../components/weather/weather_parse.cpp
+    ../../components/market/market_parse.cpp
+    ../../.tools/esp-idf/components/json/cJSON/cJSON.c
 )
 target_include_directories(host_tests PRIVATE
     ../../components/app_core/include
     ../../components/board_rlcd/include
     ../../components/ui/include
     ../../components/wifi_config/include
+    ../../components/net_time/include
+    ../../components/weather/include
+    ../../components/market/include
+    ../../.tools/esp-idf/components/json/cJSON
 )
 if(HOST_DEMO_MISSING_PAGE)
     target_compile_definitions(host_tests PRIVATE APP_CORE_DEMO_MISSING_PAGE=1)

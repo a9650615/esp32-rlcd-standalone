@@ -105,8 +105,15 @@ void assert_tree_in_safe_canvas(lv_obj_t* object, int page) {
 }
 #endif
 
+// `valid` gates the fabricated-number path once, here, for every caller
+// (Home's right tiles and the market-page/indoor-page sidebar tiles below)
+// instead of each call site inventing its own placeholder: an invalid tile
+// shows kNoDataLabel with a blank detail line and no leading icon (an icon
+// would itself imply data that is not there), never the caller's
+// possibly-default value/detail strings.
 void tile(lv_obj_t* parent, const char* title, const char* value,
-          const char* detail, Rect bounds, bool weather, bool indoor) {
+          const char* detail, Rect bounds, bool weather, bool indoor,
+          bool valid = true) {
 #ifndef NDEBUG
   // Logged, not asserted: see the tree walk above - LVGL's assert handler
   // never returns, so a layout complaint would cost the whole display.
@@ -121,17 +128,21 @@ void tile(lv_obj_t* parent, const char* title, const char* value,
 #endif
   const TileTextLayout rows = tile_text_layout(bounds);
   label(parent, title, rows.title, small_font(), LV_TEXT_ALIGN_LEFT);
-  const bool has_leading_visual = weather || indoor;
+  const bool has_leading_visual = valid && (weather || indoor);
   const Rect leading_visual =
       tile_leading_visual_rect(bounds, has_leading_visual);
-  if (weather) {
-    weather_icon(parent, leading_visual, false);
-  } else if (indoor) {
-    temperature_icon(parent, leading_visual);
+  if (has_leading_visual) {
+    if (weather) {
+      weather_icon(parent, leading_visual, false);
+    } else if (indoor) {
+      temperature_icon(parent, leading_visual);
+    }
   }
-  label(parent, value, tile_value_rect(bounds, has_leading_visual), medium_font(),
+  label(parent, valid ? value : kNoDataLabel,
+        tile_value_rect(bounds, has_leading_visual), medium_font(),
         LV_TEXT_ALIGN_CENTER);
-  label(parent, detail, rows.detail, small_font(), LV_TEXT_ALIGN_CENTER);
+  label(parent, valid ? detail : "", rows.detail, small_font(),
+        LV_TEXT_ALIGN_CENTER);
 }
 
 }  // namespace
@@ -193,9 +204,10 @@ void render_right_tiles(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
   char market_detail[24];
   std::snprintf(weather_value, sizeof(weather_value), "%.0f C",
                 snapshot.weather.current.temperature_c);
-  std::snprintf(weather_detail, sizeof(weather_detail), "%s %u%%",
+  std::snprintf(weather_detail, sizeof(weather_detail), "%s %u%%%s",
                 snapshot.weather.current.condition.c_str(),
-                snapshot.weather.current.rain_probability_percent);
+                snapshot.weather.current.rain_probability_percent,
+                snapshot.weather.stale ? kStaleSuffix : "");
   std::snprintf(indoor_value, sizeof(indoor_value), "%.1f C",
                 snapshot.indoor.temperature_c);
   std::snprintf(indoor_detail, sizeof(indoor_detail), "RH %u%%",
@@ -204,9 +216,12 @@ void render_right_tiles(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
                 snapshot.taiwan_market.primary_value);
   std::snprintf(market_detail, sizeof(market_detail), "%+.2f%%",
                 snapshot.taiwan_market.primary_change_percent);
-  tile(parent, "WEATHER", weather_value, weather_detail, weather, true, false);
-  tile(parent, "INDOOR", indoor_value, indoor_detail, indoor, false, true);
-  tile(parent, "MARKET", market_value, market_detail, market, false, false);
+  tile(parent, "WEATHER", weather_value, weather_detail, weather, true, false,
+       snapshot.weather.valid);
+  tile(parent, "INDOOR", indoor_value, indoor_detail, indoor, false, true,
+       snapshot.indoor.valid);
+  tile(parent, "MARKET", market_value, market_detail, market, false, false,
+       snapshot.taiwan_market.valid);
   divider(parent, {bounds.x, weather.bottom(), bounds.width, kSeparatorWidth});
   divider(parent, {bounds.x, indoor.bottom(), bounds.width, kSeparatorWidth});
 }
@@ -232,18 +247,20 @@ void render_market_sidebar(lv_obj_t* parent,
                 market.secondary_change_percent);
   std::snprintf(weather_value, sizeof(weather_value), "%.0f C",
                 weather_snapshot.current.temperature_c);
-  std::snprintf(weather_detail, sizeof(weather_detail), "%s %u%%",
+  std::snprintf(weather_detail, sizeof(weather_detail), "%s %u%%%s",
                 weather_snapshot.current.condition.c_str(),
-                weather_snapshot.current.rain_probability_percent);
+                weather_snapshot.current.rain_probability_percent,
+                weather_snapshot.stale ? kStaleSuffix : "");
   std::snprintf(indoor_value, sizeof(indoor_value), "%.1f C",
                 snapshot.indoor.temperature_c);
   std::snprintf(indoor_detail, sizeof(indoor_detail), "RH %u%%",
                 snapshot.indoor.humidity_percent);
   tile(parent, market.secondary_label.c_str(), index_value, index_detail, index,
-       false, false);
+       false, false, market.valid);
   tile(parent, weather_snapshot.current.location.c_str(), weather_value,
-       weather_detail, weather, true, false);
-  tile(parent, "INDOOR", indoor_value, indoor_detail, indoor, false, true);
+       weather_detail, weather, true, false, weather_snapshot.valid);
+  tile(parent, "INDOOR", indoor_value, indoor_detail, indoor, false, true,
+       snapshot.indoor.valid);
   divider(parent, {bounds.x, index.bottom(), bounds.width, kSeparatorWidth});
   divider(parent, {bounds.x, weather.bottom(), bounds.width, kSeparatorWidth});
 }

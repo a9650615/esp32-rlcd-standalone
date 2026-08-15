@@ -3,6 +3,7 @@
 #include "app_snapshot.hpp"
 #include "ui_theme.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdio>
@@ -383,10 +384,18 @@ inline std::string format_minute_clock(std::string clock) {
   return clock;
 }
 
+// Truthful per-source label - never claims "DEMO" for a real reading.
+// "PCF85063" is a real hardware RTC chip read; "SNTP" (net_time's sync
+// source, see components/net_time/net_time.cpp) is real network time; only
+// "RTC fallback" - the compile-time build-stamp clock used when no RTC chip
+// is present or its data looks implausible - is genuinely fake. Any other
+// input still gets an honest "UNKNOWN" rather than silently widening the old
+// DEMO net around it.
 inline std::string compact_clock_source(const std::string& source) {
-  if (source == "RTC fallback") return "DEMO / FALLBACK";
-  if (source == "PCF85063") return "DEMO / RTC";
-  return "DEMO / UNKNOWN";
+  if (source == "SNTP") return "SYNC";
+  if (source == "PCF85063") return "RTC";
+  if (source == "RTC fallback") return "FALLBACK";
+  return "UNKNOWN";
 }
 
 constexpr MarketLayout market_layout(const Rect bounds) {
@@ -397,6 +406,20 @@ constexpr MarketLayout market_layout(const Rect bounds) {
   return {{bounds.x, bounds.y, primary_width, bounds.height},
           {bounds.x + primary_width + kSeparatorWidth, bounds.y,
            bounds.width - primary_width - kSeparatorWidth, bounds.height}};
+}
+
+// The chart region of a market page's primary column, below the
+// label/value/change row and its divider. axis_font_line_height is passed in
+// (rather than read from the font object, unavailable in this LVGL-free
+// header) so render_market.cpp and the static_asserts below share one
+// formula - render_market.cpp calls this with small_font()->line_height, the
+// static_asserts with the literal kSetupSmallFontLineHeight that constant is
+// documented to equal.
+constexpr Rect market_chart_rect(const Rect primary,
+                                 const int axis_font_line_height) {
+  const int axis_height = safe_text_box_height(17, axis_font_line_height);
+  return {primary.x + 8, primary.y + 70, primary.width - 16,
+          std::max(1, primary.bottom() - primary.y - 71 - axis_height)};
 }
 
 constexpr std::array<Rect, 7> forecast_columns(const Rect bounds) {
@@ -411,6 +434,123 @@ constexpr std::array<Rect, 7> forecast_columns(const Rect bounds) {
   }
   return columns;
 }
+
+// The seven-day forecast row on the weather page, below the current-
+// conditions header and divider. Pure arithmetic on content's own
+// x/y/width/height, the same convention weather_forecast_rect callers rely
+// on, so this works for both the zero-offset frame render_weather.cpp builds
+// with and the absolute safe_canvas() frame the static_asserts below use.
+inline constexpr int kForecastTopOffset = 82;
+inline constexpr int kForecastSideInset = 8;
+
+constexpr Rect weather_forecast_rect(const Rect content) {
+  return {content.x + kForecastSideInset, content.y + kForecastTopOffset,
+          content.width - 2 * kForecastSideInset,
+          std::max(1, content.bottom() - content.y - kForecastTopOffset)};
+}
+
+struct ForecastColumnLayout {
+  Rect day;
+  Rect icon;
+  Rect condition;
+  Rect high;
+  Rect low;
+  Rect rain;
+};
+
+// High and low used to sit side by side on one line ("H68 L54") - cramped at
+// the ~55px column width seven columns leaves across the 388px safe canvas.
+// Stacked instead, high above low, each getting the column's full width.
+// Every text row height comes from safe_text_box_height (font14's line
+// height, see kSetupSmallFontLineHeight) so a font metrics change cannot
+// silently grow a row past what forecast_column_layout_fits below proves -
+// the same runtime-growth defect fixed by commit b52ff70.
+inline constexpr int kForecastRowGap = kSetupTightLineGap;
+inline constexpr int kForecastRowHeight =
+    safe_text_box_height(18, kSetupSmallFontLineHeight);
+inline constexpr int kForecastIconWidth = 26;
+inline constexpr int kForecastIconHeight = 27;
+
+constexpr ForecastColumnLayout forecast_column_layout(const Rect column) {
+  const Rect day{column.x, column.y, column.width, kForecastRowHeight};
+  const Rect icon{column.x + (column.width - kForecastIconWidth) / 2,
+                  day.bottom() + kForecastRowGap, kForecastIconWidth,
+                  kForecastIconHeight};
+  const Rect condition{column.x, icon.bottom() + kForecastRowGap,
+                       column.width, kForecastRowHeight};
+  const Rect high{column.x, condition.bottom() + kForecastRowGap,
+                  column.width, kForecastRowHeight};
+  const Rect low{column.x, high.bottom() + kForecastRowGap, column.width,
+                 kForecastRowHeight};
+  const Rect rain{column.x, low.bottom() + kForecastRowGap, column.width,
+                  kForecastRowHeight};
+  return {day, icon, condition, high, low, rain};
+}
+
+// Every row of a forecast column fits entirely inside that column.
+constexpr bool forecast_column_layout_fits(const Rect column) {
+  const ForecastColumnLayout layout = forecast_column_layout(column);
+  return rect_within(column, layout.day) && rect_within(column, layout.icon) &&
+        rect_within(column, layout.condition) &&
+        rect_within(column, layout.high) && rect_within(column, layout.low) &&
+        rect_within(column, layout.rain);
+}
+
+// No two rows within a forecast column overlap.
+constexpr bool forecast_column_layout_disjoint(const Rect column) {
+  const ForecastColumnLayout layout = forecast_column_layout(column);
+  const std::array<Rect, 6> rects{layout.day,  layout.icon, layout.condition,
+                                  layout.high, layout.low,  layout.rain};
+  for (std::size_t i = 0; i < rects.size(); ++i) {
+    for (std::size_t j = i + 1; j < rects.size(); ++j) {
+      if (rects_intersect(rects[i], rects[j])) return false;
+    }
+  }
+  return true;
+}
+
+// Every column of the real seven-day forecast row fits and is internally
+// disjoint - checked across all 7 columns, not just one, since the last
+// column's width differs from the rest (see forecast_columns above).
+constexpr bool forecast_columns_layout_all_fit(const Rect forecast) {
+  for (const Rect& column : forecast_columns(forecast)) {
+    if (!forecast_column_layout_fits(column)) return false;
+  }
+  return true;
+}
+constexpr bool forecast_columns_layout_all_disjoint(const Rect forecast) {
+  for (const Rect& column : forecast_columns(forecast)) {
+    if (!forecast_column_layout_disjoint(column)) return false;
+  }
+  return true;
+}
+
+// The forecast row's stacked content must also stay clear of the page dots
+// anchored to the bottom-right of the same content bounds (page_dots_geometry
+// below) - the last forecast column's x-range sits directly under them.
+constexpr bool forecast_rows_clear_page_dots(const Rect content) {
+  const int dots_top = content.bottom() - kPageDotSize;
+  for (const Rect& column : forecast_columns(weather_forecast_rect(content))) {
+    if (forecast_column_layout(column).rain.bottom() > dots_top) return false;
+  }
+  return true;
+}
+
+static_assert(
+    forecast_columns_layout_all_fit(
+        weather_forecast_rect(content_bounds(safe_canvas(),
+                                             app_core::PageId::Weather))),
+    "every forecast column's stacked day/icon/condition/high/low/rain rows "
+    "fit entirely inside their column");
+static_assert(
+    forecast_columns_layout_all_disjoint(
+        weather_forecast_rect(content_bounds(safe_canvas(),
+                                             app_core::PageId::Weather))),
+    "no two rows within a forecast column overlap");
+static_assert(
+    forecast_rows_clear_page_dots(
+        content_bounds(safe_canvas(), app_core::PageId::Weather)),
+    "the stacked forecast rows never reach down into the page dots row");
 
 constexpr std::array<ChartPoint, 8> normalize_chart_samples(
     const std::array<int, 8>& samples, const Rect bounds) {
@@ -439,5 +579,128 @@ constexpr std::array<ChartPoint, 8> normalize_chart_samples(
   }
   return points;
 }
+
+// A page whose backing struct is not yet MarketData/WeatherData/IndoorData
+// ::valid keeps its slot in the carousel and its title, but every number -
+// primary value, chart, forecast column - is replaced by this single
+// placeholder rather than a zero, an empty percentage, or a chart drawn from
+// an all-zero sample array. One shared string/geometry instead of four
+// copies, one per renderer (Taiwan market, US market, weather, indoor).
+inline constexpr char kNoDataLabel[] = "NO DATA";
+// Appended to a real (not fabricated) reading whose WeatherData::stale flag
+// is set - an old reading is still real data and should be shown, marked,
+// not dropped to the placeholder above.
+inline constexpr char kStaleSuffix[] = " OLD";
+
+// Reserves room for the page's own title row (e.g. "TAIWAN MARKET",
+// "INDOOR") above the placeholder - generously sized the same way
+// kSetupStatusHeight is above, not an exact font-metric fit, just enough
+// that the placeholder box built below can never land under the title text.
+inline constexpr int kNoDataTitleReserve =
+    safe_text_box_height(26, kSetupSmallFontLineHeight);
+inline constexpr int kNoDataBoxHeight = safe_text_box_height(
+    kSetupMediumFontLineHeight, kSetupMediumFontLineHeight);
+
+// Centers a NO DATA box within `area`, below the reserved title band. `area`
+// is a page's primary content rect (market_layout(content).primary for the
+// market/indoor pages) or the whole content rect for a page with no side
+// column (weather) - pure arithmetic on x/y/width/height, so it works for
+// both the zero-offset frame renderers receive and the absolute
+// safe_canvas() frame the static_asserts below use, the same convention
+// setup_layout already follows.
+constexpr Rect no_data_rect(const Rect area) {
+  const int top = area.y + kNoDataTitleReserve;
+  const int remaining = area.bottom() - top;
+  const int gap =
+      remaining > kNoDataBoxHeight ? (remaining - kNoDataBoxHeight) / 2 : 0;
+  return {area.x, top + gap, area.width, kNoDataBoxHeight};
+}
+
+// TaiwanMarket and UsMarket share the same tray-reduced content geometry
+// (content_bounds only branches on page_shows_tray, true for both), so one
+// proof against TaiwanMarket covers both market pages.
+static_assert(
+    rect_within(
+        content_bounds(safe_canvas(), app_core::PageId::TaiwanMarket),
+        no_data_rect(market_layout(content_bounds(
+                                       safe_canvas(),
+                                       app_core::PageId::TaiwanMarket))
+                        .primary)),
+    "the market no-data placeholder stays inside the tray-reduced content "
+    "bounds");
+static_assert(
+    no_data_rect(market_layout(content_bounds(
+                                    safe_canvas(),
+                                    app_core::PageId::TaiwanMarket))
+                     .primary)
+            .y >= market_layout(content_bounds(
+                                    safe_canvas(),
+                                    app_core::PageId::TaiwanMarket))
+                          .primary.y +
+                      kNoDataTitleReserve,
+    "the market no-data placeholder never overlaps the reserved title row");
+static_assert(
+    rect_within(content_bounds(safe_canvas(), app_core::PageId::Indoor),
+                no_data_rect(market_layout(content_bounds(
+                                               safe_canvas(),
+                                               app_core::PageId::Indoor))
+                                .primary)),
+    "the indoor no-data placeholder stays inside the tray-reduced content "
+    "bounds");
+static_assert(
+    rect_within(
+        content_bounds(safe_canvas(), app_core::PageId::Weather),
+        no_data_rect(
+            content_bounds(safe_canvas(), app_core::PageId::Weather))),
+    "the weather no-data placeholder - no side column, so it centers in the "
+    "whole content rect - stays inside the tray-reduced content bounds");
+
+// market.valid can be true with has_intraday false (a daily-close-only
+// source, e.g. TWSE): the label/value/change figures are real and still
+// render, but there is no intraday series to plot, so the chart, dotted
+// grid, and time-axis labels are skipped rather than drawing a flat,
+// invented line. This is a short, honest line in the space the chart would
+// have occupied instead - distinct from kNoDataLabel above, which means the
+// whole page has nothing to show.
+inline constexpr char kNoIntradayLabel[] = "NO INTRADAY DATA";
+
+// Centers a short placeholder line within the chart region `chart` would
+// otherwise occupy - no title reserve (unlike no_data_rect above), since the
+// chart region already sits below the market page's own label/value/change
+// row, not directly under a page title.
+constexpr Rect chart_placeholder_rect(const Rect chart) {
+  const int gap =
+      chart.height > kNoDataBoxHeight ? (chart.height - kNoDataBoxHeight) / 2 : 0;
+  return {chart.x, chart.y + gap, chart.width, kNoDataBoxHeight};
+}
+
+// TaiwanMarket and UsMarket share the same tray-reduced content geometry, so
+// one proof against TaiwanMarket covers both.
+static_assert(
+    rect_within(
+        market_layout(
+            content_bounds(safe_canvas(), app_core::PageId::TaiwanMarket))
+            .primary,
+        chart_placeholder_rect(market_chart_rect(
+            market_layout(content_bounds(safe_canvas(),
+                                         app_core::PageId::TaiwanMarket))
+                .primary,
+            kSetupSmallFontLineHeight))),
+    "the no-intraday chart placeholder stays inside the market page's "
+    "primary column");
+static_assert(
+    rect_within(
+        market_chart_rect(
+            market_layout(content_bounds(safe_canvas(),
+                                         app_core::PageId::TaiwanMarket))
+                .primary,
+            kSetupSmallFontLineHeight),
+        chart_placeholder_rect(market_chart_rect(
+            market_layout(content_bounds(safe_canvas(),
+                                         app_core::PageId::TaiwanMarket))
+                .primary,
+            kSetupSmallFontLineHeight))),
+    "the no-intraday chart placeholder stays inside the chart region it "
+    "replaces, not stretched to fill the whole primary column");
 
 }  // namespace ui

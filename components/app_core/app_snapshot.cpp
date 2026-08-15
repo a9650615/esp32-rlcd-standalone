@@ -208,8 +208,12 @@ AppSnapshot make_mock_snapshot(DemoScenario scenario) {
   snapshot.us_market = us_market();
   snapshot.weather = taipei_weather();
   snapshot.new_york_weather = new_york_weather();
-  snapshot.indoor = {24.8, 57, {24.2, 24.3, 24.5, 24.6,
-                                 24.7, 24.8, 24.8, 24.8}};
+  // valid stays false here and in every other builder: these figures are
+  // layout fixtures, not readings, and the UI must show a NO DATA placeholder
+  // until a real provider fills them in. Nothing on this snapshot may reach
+  // the panel as though it were measured.
+  snapshot.indoor = {false, 24.8, 57, {24.2, 24.3, 24.5, 24.6,
+                                        24.7, 24.8, 24.8, 24.8}};
   snapshot.availability = {};
 #ifdef APP_CORE_DEMO_MISSING_PAGE
   snapshot.availability.weather = false;

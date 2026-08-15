@@ -1,0 +1,10 @@
+idf_component_register(
+    SRCS
+        "net_time.cpp"
+        "net_time_convert.cpp"
+    INCLUDE_DIRS
+        "include"
+    PRIV_REQUIRES
+        app_core
+        esp_netif
+)

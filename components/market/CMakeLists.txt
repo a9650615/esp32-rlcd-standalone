@@ -1,0 +1,13 @@
+idf_component_register(
+    SRCS
+        "market_parse.cpp"
+        "market.cpp"
+    INCLUDE_DIRS
+        "include"
+    PRIV_REQUIRES
+        app_core
+        json
+        esp_http_client
+        mbedtls
+        log
+)

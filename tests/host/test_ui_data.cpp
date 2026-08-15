@@ -88,11 +88,14 @@ HOST_TEST(minute_formatter_keeps_only_hours_and_minutes) {
 }
 
 HOST_TEST(mast_clock_source_is_compact_and_truthful) {
-  EXPECT_EQ(ui::compact_clock_source("RTC fallback"),
-            std::string("DEMO / FALLBACK"));
-  EXPECT_EQ(ui::compact_clock_source("PCF85063"),
-            std::string("DEMO / RTC"));
-  EXPECT_EQ(ui::compact_clock_source(""), std::string("DEMO / UNKNOWN"));
+  // The DEMO prefix used to be on every case, including ones that are not
+  // demo data at all. Network-synced time is real, RTC time is real, and only
+  // the compile-time fallback is fabricated - labelling all three the same way
+  // was itself untruthful.
+  EXPECT_EQ(ui::compact_clock_source("SNTP"), std::string("SYNC"));
+  EXPECT_EQ(ui::compact_clock_source("PCF85063"), std::string("RTC"));
+  EXPECT_EQ(ui::compact_clock_source("RTC fallback"), std::string("FALLBACK"));
+  EXPECT_EQ(ui::compact_clock_source(""), std::string("UNKNOWN"));
 }
 
 HOST_TEST(comfort_band_label_uses_supported_ascii_glyphs) {

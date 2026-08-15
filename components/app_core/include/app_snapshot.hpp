@@ -35,7 +35,11 @@ RtcDateTime advance_rtc_datetime(RtcDateTime start, uint64_t elapsed_seconds);
 bool decode_pcf85063(const uint8_t* registers, std::size_t length,
                      RtcDateTime& decoded);
 
+// Providers set valid only once real data has landed. A false flag means the
+// page still renders and keeps its slot in the carousel, but shows a NO DATA
+// placeholder instead of numbers - never a fabricated value.
 struct MarketData {
+  bool valid = false;
   std::string display_name;
   std::string primary_label;
   int primary_value = 0;
@@ -43,6 +47,11 @@ struct MarketData {
   std::string secondary_label;
   int secondary_value = 0;
   double secondary_change_percent = 0.0;
+  // A daily-close-only source has no intraday series. Repeating the close
+  // across the array would draw a flat line, which reads as "the market did
+  // not move" rather than "there is no intraday data" - real numbers, invented
+  // shape. False means the UI must not draw a chart at all.
+  bool has_intraday = false;
   std::array<int, 8> intraday_samples{};
 };
 
@@ -62,12 +71,17 @@ struct WeatherDay {
 };
 
 struct WeatherData {
+  bool valid = false;
+  // True when the last successful fetch is old enough that the reading should
+  // be shown as stale rather than current.
+  bool stale = false;
   WeatherCurrent current;
   std::array<WeatherDay, 7> seven_day{};
   bool alert = false;
 };
 
 struct IndoorData {
+  bool valid = false;
   double temperature_c = 0.0;
   uint8_t humidity_percent = 0;
   // Deterministic mock history for this snapshot-only slice.
