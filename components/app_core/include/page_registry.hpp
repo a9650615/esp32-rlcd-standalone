@@ -17,11 +17,9 @@ class PageRegistry {
  public:
   void begin_cycle(const AppSnapshot& snapshot);
 
-  // Snapshot changes are deliberately ignored until the next cycle boundary.
-  void observe(const AppSnapshot& snapshot);
-
   const std::vector<PageDescriptor>& descriptors() const { return descriptors_; }
   std::vector<PageId> page_ids() const;
+  size_t size() const { return descriptors_.size(); }
 
  private:
   std::vector<PageDescriptor> descriptors_;

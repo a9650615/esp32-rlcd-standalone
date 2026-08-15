@@ -13,6 +13,7 @@ struct CarouselState {
   uint64_t page_started_ms = 0;
   uint64_t manual_until_ms = 0;
   bool manual_mode = false;
+  size_t page_count = kPageCount;
 };
 
 struct Transition {

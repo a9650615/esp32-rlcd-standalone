@@ -9,6 +9,7 @@ uint64_t pause_until(uint64_t now_ms) {
 }
 
 Transition manual_transition(CarouselState state, uint64_t now_ms, size_t index) {
+  if (state.page_count == 0) return {state, false};
   state.index = index;
   state.page_started_ms = now_ms;
   state.manual_until_ms = pause_until(now_ms);
@@ -19,6 +20,8 @@ Transition manual_transition(CarouselState state, uint64_t now_ms, size_t index)
 }  // namespace
 
 Transition tick(CarouselState state, uint64_t now_ms, uint8_t dwell_seconds) {
+  if (state.page_count == 0) return {state, false};
+
   if (state.manual_mode) {
     if (now_ms < state.manual_until_ms) return {state, false};
     state.index = 0;
@@ -34,18 +37,22 @@ Transition tick(CarouselState state, uint64_t now_ms, uint8_t dwell_seconds) {
     return {state, false};
   }
 
-  state.index = (state.index + 1) % kPageCount;
+  state.index = (state.index + 1) % state.page_count;
   state.page_started_ms = now_ms;
   return {state, true};
 }
 
 Transition next(CarouselState state, uint64_t now_ms) {
-  return manual_transition(state, now_ms, (state.index + 1) % kPageCount);
+  if (state.page_count == 0) return {state, false};
+  return manual_transition(state, now_ms,
+                           (state.index + 1) % state.page_count);
 }
 
 Transition previous(CarouselState state, uint64_t now_ms) {
+  if (state.page_count == 0) return {state, false};
   return manual_transition(state, now_ms,
-                           state.index == 0 ? kPageCount - 1 : state.index - 1);
+                           state.index == 0 ? state.page_count - 1
+                                            : state.index - 1);
 }
 
 }  // namespace app_core::carousel

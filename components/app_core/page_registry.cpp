@@ -54,10 +54,6 @@ void PageRegistry::begin_cycle(const AppSnapshot& snapshot) {
   }
 }
 
-void PageRegistry::observe(const AppSnapshot&) {
-  // Ordering is a cycle-boundary decision. Keep the current vector unchanged.
-}
-
 std::vector<PageId> PageRegistry::page_ids() const {
   std::vector<PageId> ids;
   ids.reserve(descriptors_.size());

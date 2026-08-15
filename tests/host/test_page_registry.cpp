@@ -4,6 +4,7 @@
 #include "page_registry.hpp"
 
 #include <array>
+#include <string>
 
 using app_core::AppSnapshot;
 using app_core::DemoScenario;
@@ -45,7 +46,10 @@ HOST_TEST(taiwan_session_orders_taiwan_market_first) {
   const AppSnapshot snapshot = make_mock_snapshot(DemoScenario::TaiwanSession);
   PageRegistry registry;
   registry.begin_cycle(snapshot);
-  EXPECT_EQ(registry.page_ids()[1], PageId::TaiwanMarket);
+  EXPECT_EQ(registry.page_ids(),
+            (std::vector<PageId>{PageId::Home, PageId::TaiwanMarket,
+                                 PageId::UsMarket, PageId::Weather,
+                                 PageId::Indoor}));
 }
 
 HOST_TEST(night_session_orders_us_market_first) {
@@ -65,9 +69,63 @@ HOST_TEST(registry_does_not_reorder_in_the_middle_of_a_cycle) {
   const auto started_order = registry.page_ids();
 
   snapshot.scenario = DemoScenario::NightSession;
-  registry.observe(snapshot);
   EXPECT_EQ(registry.page_ids(), started_order);
 
   registry.begin_cycle(snapshot);
   EXPECT_EQ(registry.page_ids()[1], PageId::UsMarket);
+}
+
+HOST_TEST(mock_fixture_contains_required_deterministic_content) {
+  const AppSnapshot snapshot = make_mock_snapshot(DemoScenario::TaiwanSession);
+
+  EXPECT_EQ(snapshot.clock.hero, std::string("09:41"));
+  EXPECT_EQ(snapshot.clock.date, std::string("Sat, 15 Aug 2026"));
+  EXPECT_EQ(snapshot.clock.source, std::string("Clock Hero"));
+
+  EXPECT_EQ(snapshot.taiwan_market.primary_label, std::string("TAIEX"));
+  EXPECT_EQ(snapshot.taiwan_market.primary_value, 24'334);
+  EXPECT_EQ(snapshot.taiwan_market.primary_change_percent, 0.52);
+  EXPECT_EQ(snapshot.taiwan_market.secondary_label, std::string("TW50"));
+  EXPECT_EQ(snapshot.taiwan_market.secondary_change_percent, 0.44);
+  EXPECT_EQ(snapshot.taiwan_market.secondary_value, 20'871);
+
+  EXPECT_EQ(snapshot.us_market.display_name, std::string("US Market"));
+  EXPECT_EQ(snapshot.us_market.primary_label, std::string("S&P 500"));
+  EXPECT_EQ(snapshot.us_market.primary_value, 5'432);
+  EXPECT_EQ(snapshot.us_market.primary_change_percent, -0.18);
+  EXPECT_EQ(snapshot.us_market.secondary_label, std::string("NASDAQ"));
+  EXPECT_EQ(snapshot.us_market.secondary_value, 17'667);
+  EXPECT_EQ(snapshot.us_market.secondary_change_percent, 0.21);
+
+  EXPECT_EQ(snapshot.weather.current.location, std::string("Taipei"));
+  EXPECT_EQ(snapshot.weather.current.condition, std::string("Cloudy"));
+  EXPECT_EQ(snapshot.weather.current.temperature_c, 29.0);
+  EXPECT_EQ(snapshot.weather.current.rain_probability_percent, 40);
+  EXPECT_EQ(snapshot.weather.seven_day.size(), static_cast<size_t>(7));
+  const std::array<app_core::WeatherDay, 7> expected_forecast = {{
+      {"Sat", "Cloudy", 30.0, 25.0},
+      {"Sun", "Rain", 28.0, 24.0},
+      {"Mon", "Rain", 27.0, 23.0},
+      {"Tue", "Cloudy", 29.0, 24.0},
+      {"Wed", "Sunny", 31.0, 25.0},
+      {"Thu", "Cloudy", 30.0, 25.0},
+      {"Fri", "Sunny", 32.0, 26.0},
+  }};
+  for (size_t i = 0; i < expected_forecast.size(); ++i) {
+    EXPECT_EQ(snapshot.weather.seven_day[i].day, expected_forecast[i].day);
+    EXPECT_EQ(snapshot.weather.seven_day[i].condition,
+              expected_forecast[i].condition);
+    EXPECT_EQ(snapshot.weather.seven_day[i].high_c, expected_forecast[i].high_c);
+    EXPECT_EQ(snapshot.weather.seven_day[i].low_c, expected_forecast[i].low_c);
+  }
+
+  EXPECT_EQ(snapshot.indoor.temperature_c, 24.8);
+  EXPECT_EQ(snapshot.indoor.humidity_percent, 57);
+
+  EXPECT_EQ(snapshot.taiwan_market.intraday_samples,
+            (std::array<int, 8>{24'060, 24'110, 24'095, 24'180,
+                                24'240, 24'220, 24'300, 24'334}));
+  EXPECT_EQ(snapshot.us_market.intraday_samples,
+            (std::array<int, 8>{5'410, 5'425, 5'420, 5'438,
+                                5'430, 5'440, 5'426, 5'432}));
 }
