@@ -72,37 +72,10 @@ void rebuild_active_pages(Runtime& runtime) {
   }
 }
 
-int days_in_month(uint16_t year, uint8_t month) {
-  static constexpr std::array<uint8_t, 12> days = {
-      31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
-  if (month == 2 &&
-      (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0))) {
-    return 29;
-  }
-  return days[std::min<std::size_t>(month - 1, days.size() - 1)];
-}
-
 app_core::RtcDateTime clock_at(const Runtime& runtime, uint64_t now_ms) {
-  app_core::RtcDateTime clock = runtime.initial_clock;
   const uint64_t elapsed_seconds =
       now_ms >= runtime.started_ms ? (now_ms - runtime.started_ms) / 1000 : 0;
-  const uint64_t total_seconds = runtime.initial_clock.second + elapsed_seconds;
-  const uint64_t total_minutes =
-      static_cast<uint64_t>(clock.hour) * 60 + clock.minute + total_seconds / 60;
-  clock.hour = static_cast<uint8_t>((total_minutes / 60) % 24);
-  clock.minute = static_cast<uint8_t>(total_minutes % 60);
-  clock.second = static_cast<uint8_t>(total_seconds % 60);
-  uint64_t days = total_minutes / (24 * 60);
-  while (days-- > 0) {
-    if (++clock.day > days_in_month(clock.year, clock.month)) {
-      clock.day = 1;
-      if (++clock.month > 12) {
-        clock.month = 1;
-        ++clock.year;
-      }
-    }
-  }
-  return clock;
+  return app_core::advance_rtc_datetime(runtime.initial_clock, elapsed_seconds);
 }
 
 const char* weekday_name(const app_core::RtcDateTime& date) {
@@ -112,7 +85,7 @@ const char* weekday_name(const app_core::RtcDateTime& date) {
     days += (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)) ? 366 : 365;
   }
   for (uint8_t month = 1; month < date.month; ++month) {
-    days += days_in_month(date.year, month);
+    days += app_core::days_in_month(date.year, month);
   }
   days += date.day - 1;
   static constexpr std::array<const char*, 7> names = {
@@ -169,8 +142,7 @@ void log_transition(const Runtime& runtime, const char* reason) {
            dwell_for(runtime, page), runtime.carousel.manual_until_ms);
 }
 
-bool render_current(Runtime& runtime, uint64_t now_ms, const char* reason,
-                    bool show_overlay) {
+bool render_current(Runtime& runtime, const char* reason, bool show_overlay) {
   for (std::size_t attempt = 0; attempt < runtime.active_pages.size() + 1;
        ++attempt) {
     if (runtime.active_pages.empty()) return false;
@@ -212,32 +184,37 @@ void begin_cycle(Runtime& runtime, uint64_t now_ms) {
            static_cast<unsigned>(runtime.active_pages.size()));
 }
 
+bool initialize_runtime(Runtime& runtime, uint64_t now_ms) {
+  runtime.started_ms = now_ms;
+  runtime.last_clock_minute = std::numeric_limits<uint64_t>::max();
+  update_clock(runtime, now_ms);
+  lv_obj_t* host = lv_obj_create(lv_screen_active());
+  if (host == nullptr || !init_context(runtime.context, host)) {
+    ESP_LOGE(kTag, "fatal: UI host/context initialization failed");
+    if (host != nullptr) lv_obj_delete(host);
+    return false;
+  }
+  lv_obj_set_size(host, kCanvasWidth, kCanvasHeight);
+  lv_obj_set_pos(host, 0, 0);
+  apply_surface(host);
+  begin_cycle(runtime, now_ms);
+  runtime.carousel.index = 0;
+  runtime.initialized = true;
+  if (!render_current(runtime, "startup", false)) {
+    ESP_LOGE(kTag, "fatal: initial page render failed");
+    reset_context(runtime.context);
+    runtime.initialized = false;
+    return false;
+  }
+  return true;
+}
+
 void timer_callback(lv_timer_t* timer) {
   auto* runtime = static_cast<Runtime*>(lv_timer_get_user_data(timer));
   if (runtime == nullptr) return;
   const uint64_t now_ms = static_cast<uint64_t>(esp_timer_get_time() / 1000);
 
-  if (!runtime->initialized) {
-    runtime->started_ms = now_ms;
-    runtime->last_clock_minute = std::numeric_limits<uint64_t>::max();
-    update_clock(*runtime, now_ms);
-    lv_obj_t* host = lv_obj_create(lv_screen_active());
-    if (host == nullptr || !init_context(runtime->context, host)) {
-      ESP_LOGE(kTag, "fatal: UI host/context initialization failed");
-      if (host != nullptr) lv_obj_delete(host);
-      return;
-    }
-    lv_obj_set_size(host, kCanvasWidth, kCanvasHeight);
-    lv_obj_set_pos(host, 0, 0);
-    apply_surface(host);
-    begin_cycle(*runtime, now_ms);
-    runtime->carousel.index = 0;
-    runtime->initialized = true;
-    if (!render_current(*runtime, now_ms, "startup", false)) {
-      ESP_LOGE(kTag, "fatal: initial page render failed");
-      return;
-    }
-  }
+  if (!runtime->initialized) return;
 
   QueueHandle_t queue = board::button_event_queue();
   if (queue != nullptr) {
@@ -255,7 +232,7 @@ void timer_callback(lv_timer_t* timer) {
                                         runtime->active_pages.size());
       runtime->carousel = transition.state;
       if (transition.page_changed) {
-        (void)render_current(*runtime, now_ms, reason, true);
+        (void)render_current(*runtime, reason, true);
       }
     }
   }
@@ -275,7 +252,7 @@ void timer_callback(lv_timer_t* timer) {
   runtime->carousel = transition.state;
   if (transition.page_changed) {
     if (wrapped) begin_cycle(*runtime, now_ms);
-    (void)render_current(*runtime, now_ms,
+    (void)render_current(*runtime,
                          wrapped ? "cycle" :
                                     (manual_timeout ? "manual-timeout" : "auto"),
                          false);
@@ -284,7 +261,7 @@ void timer_callback(lv_timer_t* timer) {
   const uint64_t before_minute = runtime->last_clock_minute;
   update_clock(*runtime, now_ms);
   if (runtime->last_clock_minute != before_minute && runtime->initialized) {
-    (void)render_current(*runtime, now_ms, "clock", false);
+    (void)update_visible_clock(runtime->context, runtime->snapshot);
   }
 }
 
@@ -303,10 +280,19 @@ bool start(const app_core::AppSnapshot& snapshot,
     ESP_LOGE(kTag, "fatal: unable to acquire LVGL lock for UI timer");
     return false;
   }
+  const uint64_t now_ms = static_cast<uint64_t>(esp_timer_get_time() / 1000);
+  if (!initialize_runtime(g_runtime, now_ms)) {
+    board::lvgl_unlock();
+    return false;
+  }
   g_runtime.timer = lv_timer_create(timer_callback, kTimerPeriodMs, &g_runtime);
-  board::lvgl_unlock();
   if (g_runtime.timer == nullptr) {
     ESP_LOGE(kTag, "fatal: unable to create 100 ms UI timer");
+    reset_context(g_runtime.context);
+    g_runtime.initialized = false;
+  }
+  board::lvgl_unlock();
+  if (g_runtime.timer == nullptr) {
     return false;
   }
   ESP_LOGI(kTag, "UI timer started period_ms=%u", kTimerPeriodMs);

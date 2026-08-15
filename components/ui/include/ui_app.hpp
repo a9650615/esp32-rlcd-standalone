@@ -31,6 +31,10 @@ struct UiContext {
 
   lv_obj_t* host = nullptr;
   lv_obj_t* root = nullptr;
+  // Owned by the current root; cleared before that root is deleted.
+  lv_obj_t* clock_label = nullptr;
+  // Staging-only registration used during atomic replacement.
+  lv_obj_t* staging_clock_label = nullptr;
   bool initialized = false;
 };
 
@@ -47,7 +51,7 @@ void reset_context(UiContext& context);
 
 void render_home(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
                  Rect bounds, std::size_t page_index,
-                 std::size_t page_count);
+                 std::size_t page_count, UiContext* context = nullptr);
 void render_right_tiles(lv_obj_t* parent,
                         const app_core::AppSnapshot& snapshot, Rect bounds);
 void render_market_sidebar(lv_obj_t* parent,
@@ -57,17 +61,17 @@ void render_market_sidebar(lv_obj_t* parent,
 // Shared by data pages in the next UI slice; Home intentionally does not call
 // this mast because its Clock Hero hierarchy is the page's primary content.
 void render_mast(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
-                 Rect bounds);
+                 Rect bounds, UiContext* context = nullptr);
 void render_market(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
                    const app_core::MarketData& market, Rect bounds,
                    std::size_t page_index, std::size_t page_count,
-                   bool us_market);
+                   bool us_market, UiContext* context = nullptr);
 void render_weather(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
                     Rect bounds, std::size_t page_index,
-                    std::size_t page_count);
+                    std::size_t page_count, UiContext* context = nullptr);
 void render_indoor(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
                    Rect bounds, std::size_t page_index,
-                   std::size_t page_count);
+                   std::size_t page_count, UiContext* context = nullptr);
 
 // The caller owns the LVGL lock. A detached replacement is built completely
 // before the previous context-owned page root is deleted and the replacement
@@ -76,6 +80,11 @@ lv_obj_t* render_page(UiContext& context,
                       const app_core::AppSnapshot& snapshot,
                       app_core::PageId page, Rect bounds,
                       std::size_t page_index, std::size_t page_count);
+
+// Caller owns the LVGL lock. Only the currently visible clock label is
+// mutated; page roots are never rebuilt for a minute refresh.
+bool update_visible_clock(UiContext& context,
+                          const app_core::AppSnapshot& snapshot);
 
 lv_obj_t* navigation_overlay(UiContext& context, Rect bounds);
 

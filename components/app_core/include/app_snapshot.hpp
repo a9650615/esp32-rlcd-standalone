@@ -28,6 +28,8 @@ struct RtcDateTime {
   uint8_t second = 0;
 };
 
+uint8_t days_in_month(uint16_t year, uint8_t month);
+RtcDateTime advance_rtc_datetime(RtcDateTime start, uint64_t elapsed_seconds);
 bool decode_pcf85063(const uint8_t* registers, std::size_t length,
                      RtcDateTime& decoded);
 

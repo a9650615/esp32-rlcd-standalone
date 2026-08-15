@@ -188,3 +188,15 @@ HOST_TEST(pcf85063_decode_rejects_invalid_bcd_and_ranges) {
   EXPECT_TRUE(!app_core::decode_pcf85063(invalid_calendar.data(),
                                          invalid_calendar.size(), decoded));
 }
+
+HOST_TEST(fallback_clock_advances_across_midnight_and_leap_day) {
+  const app_core::RtcDateTime start{2024, 2, 28, 23, 59, 50};
+  const app_core::RtcDateTime next =
+      app_core::advance_rtc_datetime(start, 24 * 60 * 60 + 24 * 60 + 15);
+  EXPECT_EQ(next.year, static_cast<uint16_t>(2024));
+  EXPECT_EQ(next.month, static_cast<uint8_t>(3));
+  EXPECT_EQ(next.day, static_cast<uint8_t>(1));
+  EXPECT_EQ(next.hour, static_cast<uint8_t>(0));
+  EXPECT_EQ(next.minute, static_cast<uint8_t>(24));
+  EXPECT_EQ(next.second, static_cast<uint8_t>(5));
+}

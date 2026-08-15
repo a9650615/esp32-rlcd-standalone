@@ -13,7 +13,7 @@ bool decode_bcd(uint8_t value, uint8_t mask, uint8_t maximum,
   return decoded <= maximum;
 }
 
-uint8_t days_in_month(uint16_t year, uint8_t month) {
+uint8_t days_in_month_impl(uint16_t year, uint8_t month) {
   static constexpr uint8_t days[] = {31, 28, 31, 30, 31, 30,
                                      31, 31, 30, 31, 30, 31};
   if (month == 2 &&
@@ -81,6 +81,32 @@ WeatherData new_york_weather() {
 
 }  // namespace
 
+uint8_t days_in_month(uint16_t year, uint8_t month) {
+  if (month == 0 || month > 12) return 0;
+  return days_in_month_impl(year, month);
+}
+
+RtcDateTime advance_rtc_datetime(RtcDateTime clock,
+                                 uint64_t elapsed_seconds) {
+  const uint64_t total_seconds = clock.second + elapsed_seconds;
+  const uint64_t total_minutes =
+      static_cast<uint64_t>(clock.hour) * 60 + clock.minute + total_seconds / 60;
+  clock.hour = static_cast<uint8_t>((total_minutes / 60) % 24);
+  clock.minute = static_cast<uint8_t>(total_minutes % 60);
+  clock.second = static_cast<uint8_t>(total_seconds % 60);
+  uint64_t days = total_minutes / (24 * 60);
+  while (days-- > 0) {
+    if (++clock.day > days_in_month_impl(clock.year, clock.month)) {
+      clock.day = 1;
+      if (++clock.month > 12) {
+        clock.month = 1;
+        ++clock.year;
+      }
+    }
+  }
+  return clock;
+}
+
 bool decode_pcf85063(const uint8_t* registers, std::size_t length,
                      RtcDateTime& decoded) {
   if (registers == nullptr || length < 7) return false;
@@ -103,7 +129,7 @@ bool decode_pcf85063(const uint8_t* registers, std::size_t length,
   }
   (void)weekday;
   const uint16_t full_year = static_cast<uint16_t>(2000 + year);
-  if (day > days_in_month(full_year, month)) return false;
+  if (day > days_in_month_impl(full_year, month)) return false;
   decoded = {full_year, month, day,
              hour, minute, second};
   return true;

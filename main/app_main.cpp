@@ -136,5 +136,5 @@ extern "C" void app_main() {
   if (!ui::start(snapshot, clock, !rtc_ok)) {
     fatal_loop("UI lifecycle initialization failed", ESP_FAIL);
   }
-  ESP_LOGI(kTag, "startup diagnostics registry=deferred-to-LVGL cycle=1");
+  ESP_LOGI(kTag, "startup diagnostics registry=ready cycle=1");
 }

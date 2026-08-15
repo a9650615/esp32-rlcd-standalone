@@ -48,9 +48,9 @@ void mini_history(lv_obj_t* parent, const Rect bounds,
 
 void render_indoor(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
                    Rect bounds, std::size_t page_index,
-                   std::size_t page_count) {
+                   std::size_t page_count, UiContext* context) {
   apply_surface(parent);
-  render_mast(parent, snapshot, {bounds.x, bounds.y, bounds.width, 28});
+  render_mast(parent, snapshot, {bounds.x, bounds.y, bounds.width, 28}, context);
 
   const Rect body{bounds.x, bounds.y + 28, bounds.width,
                   std::max(1, bounds.height - 28 - 8)};

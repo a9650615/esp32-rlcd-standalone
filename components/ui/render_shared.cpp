@@ -14,6 +14,8 @@ void context_host_deleted(lv_event_t* event) {
   if (context == nullptr) return;
   context->host = nullptr;
   context->root = nullptr;
+  context->clock_label = nullptr;
+  context->staging_clock_label = nullptr;
   context->initialized = false;
 }
 
@@ -68,6 +70,8 @@ bool init_context(UiContext& context, lv_obj_t* host) {
   if (context.initialized) return context.host == host;
   context.host = host;
   context.root = nullptr;
+  context.clock_label = nullptr;
+  context.staging_clock_label = nullptr;
   context.initialized = true;
   lv_obj_add_event_cb(host, context_host_deleted, LV_EVENT_DELETE, &context);
   return true;
@@ -79,10 +83,13 @@ void reset_context(UiContext& context) {
                                            &context);
   }
   if (context.root != nullptr) {
+    context.clock_label = nullptr;
     lv_obj_delete(context.root);
   }
   context.host = nullptr;
   context.root = nullptr;
+  context.clock_label = nullptr;
+  context.staging_clock_label = nullptr;
   context.initialized = false;
 }
 
@@ -156,7 +163,7 @@ void render_market_sidebar(lv_obj_t* parent,
 }
 
 void render_mast(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
-                 Rect bounds) {
+                 Rect bounds, UiContext* context) {
   const std::string clock = format_minute_clock(snapshot.clock.hero);
   const std::string source = snapshot.clock.source.empty()
                                  ? "SOURCE UNKNOWN"
@@ -165,10 +172,13 @@ void render_mast(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
   std::snprintf(indoor_summary, sizeof(indoor_summary), "%.1f  %u%%",
                 snapshot.indoor.temperature_c,
                 snapshot.indoor.humidity_percent);
-  label(parent, clock.c_str(), {bounds.x, bounds.y, 60, 25}, medium_font(),
-        LV_TEXT_ALIGN_LEFT);
-  std::string context = "SNAPSHOT / " + source;
-  label(parent, context.c_str(), {bounds.x + 64, bounds.y + 3, 155, 18},
+  lv_obj_t* clock_label =
+      label(parent, clock.c_str(), {bounds.x, bounds.y, 60, 25}, medium_font(),
+            LV_TEXT_ALIGN_LEFT);
+  if (context != nullptr) context->staging_clock_label = clock_label;
+  std::string context_text = "SNAPSHOT / " + source;
+  label(parent, context_text.c_str(),
+        {bounds.x + 64, bounds.y + 3, 155, 18},
         small_font());
   label(parent, "Wi-Fi OFF", {bounds.x + 221, bounds.y + 3, 70, 18},
         small_font());
@@ -204,38 +214,52 @@ lv_obj_t* render_page(UiContext& context,
 #endif
 
   const Rect local_bounds{0, 0, bounds.width, bounds.height};
+  context.staging_clock_label = nullptr;
 
   switch (page) {
     case app_core::PageId::TaiwanMarket:
       render_market(replacement, snapshot, snapshot.taiwan_market, local_bounds,
-                    page_index, page_count, false);
+                    page_index, page_count, false, &context);
       break;
     case app_core::PageId::UsMarket:
       render_market(replacement, snapshot, snapshot.us_market, local_bounds,
-                    page_index, page_count, true);
+                    page_index, page_count, true, &context);
       break;
     case app_core::PageId::Weather:
-      render_weather(replacement, snapshot, local_bounds, page_index, page_count);
+      render_weather(replacement, snapshot, local_bounds, page_index, page_count,
+                     &context);
       break;
     case app_core::PageId::Indoor:
-      render_indoor(replacement, snapshot, local_bounds, page_index, page_count);
+      render_indoor(replacement, snapshot, local_bounds, page_index, page_count,
+                    &context);
       break;
     case app_core::PageId::Home:
     default:
-      render_home(replacement, snapshot, local_bounds, page_index, page_count);
+      render_home(replacement, snapshot, local_bounds, page_index, page_count,
+                  &context);
       break;
   }
   lv_obj_set_parent(replacement, context.host);
   lv_obj_delete(staging_screen);
   if (context.root != nullptr && context.root != replacement) {
+    context.clock_label = nullptr;
     lv_obj_delete(context.root);
   }
   context.root = replacement;
+  context.clock_label = context.staging_clock_label;
+  context.staging_clock_label = nullptr;
   lv_obj_clear_flag(replacement, LV_OBJ_FLAG_HIDDEN);
 #ifndef NDEBUG
   assert_tree_in_safe_canvas(replacement);
 #endif
   return replacement;
+}
+
+bool update_visible_clock(UiContext& context,
+                          const app_core::AppSnapshot& snapshot) {
+  if (!context_ready(context) || context.clock_label == nullptr) return false;
+  lv_label_set_text(context.clock_label, snapshot.clock.hero.c_str());
+  return true;
 }
 
 lv_obj_t* navigation_overlay(UiContext& context, Rect bounds) {

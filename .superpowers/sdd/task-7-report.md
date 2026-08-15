@@ -14,4 +14,11 @@ Build and safety evidence:
 - `git diff --cached --check` passed. Static audit found no PWR use and no GPIO0/GPIO18 output configuration; the RTC path only uses `i2c_master_transmit_receive` for register-pointer readback.
 - `build/layout_carousel.map` retains `app_main -> ui::start -> lv_timer_create`, `ui_app.cpp` references `render_page`/carousel/registry, and the linked ELF contains the UI call path.
 
-Commit: pending checkpoint commit in the parent task.
+Commit: `0fd47b8` (base integration checkpoint); review-fix commit follows.
+
+## Review fixes
+
+- Initial UI host/context creation, registry setup, and first Home render now run synchronously under the LVGL lock in `ui::start`; `false` propagates through `app_main` to `fatal_loop` before the 100 ms timer is created. The map call path retains `app_main -> ui::start -> initialize_runtime -> render_page`.
+- `UiContext` now owns a staged/current clock-label pointer. Home and data mast renderers register it during replacement staging, root deletion/reset clears it, and minute refresh calls only `update_visible_clock`/`lv_label_set_text`; the minute branch contains no `render_page`, `lv_obj_create`, or replacement deletion.
+- Calendar advancement is centralized in portable `app_core::advance_rtc_datetime`/`days_in_month`, covered by a leap-day/midnight host test. The cycle diagnostic is emitted only after synchronous cycle-1 registry construction succeeds.
+- Review RED: the new host test initially failed to compile without `advance_rtc_datetime`; GREEN: host tests pass 32/32. Firmware build passes with app binary `0xaedc0` bytes; backup verifier and `git diff --check` remain green.

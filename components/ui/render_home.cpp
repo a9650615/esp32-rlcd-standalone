@@ -31,7 +31,7 @@ std::string next_event(const app_core::AppSnapshot& snapshot) {
 
 void render_home(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
                  Rect bounds, std::size_t page_index,
-                 std::size_t page_count) {
+                 std::size_t page_count, UiContext* context) {
 #ifndef NDEBUG
   LV_ASSERT_MSG(bounds.x >= 0 && bounds.y >= 0 &&
                     bounds.right() <= kCanvasWidth &&
@@ -49,8 +49,10 @@ void render_home(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
   divider(parent, {split_x, bounds.y, kSeparatorWidth, left.height});
 
   const std::string clock = format_minute_clock(snapshot.clock.hero);
-  label(parent, clock.c_str(), {left.x + 2, left.y + 2, left.width - 4, 59},
-        hero_font(), LV_TEXT_ALIGN_LEFT);
+  lv_obj_t* clock_label =
+      label(parent, clock.c_str(), {left.x + 2, left.y + 2, left.width - 4, 59},
+            hero_font(), LV_TEXT_ALIGN_LEFT);
+  if (context != nullptr) context->staging_clock_label = clock_label;
   label(parent, snapshot.clock.date.c_str(),
         {left.x + 3, left.y + 64, left.width - 6, 22}, small_font());
   const std::string sync = sync_status(snapshot);

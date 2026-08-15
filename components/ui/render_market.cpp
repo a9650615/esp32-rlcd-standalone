@@ -52,9 +52,9 @@ void polyline(lv_obj_t* parent, const std::array<ChartPoint, 8>& source,
 void render_market(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
                    const app_core::MarketData& market, Rect bounds,
                    std::size_t page_index, std::size_t page_count,
-                   bool us_market) {
+                   bool us_market, UiContext* context) {
   apply_surface(parent);
-  render_mast(parent, snapshot, {bounds.x, bounds.y, bounds.width, 28});
+  render_mast(parent, snapshot, {bounds.x, bounds.y, bounds.width, 28}, context);
 
   const int body_height = std::max(1, bounds.height - 28 - 8);
   const MarketLayout layout =
