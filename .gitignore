@@ -1,5 +1,9 @@
-# Full device dumps can contain credentials and per-device NVS data.
+# Full device dumps contain the NVS partition, which holds Wi-Fi credentials.
+# New manifests are ignored alongside them because they describe one specific
+# unit's dump; the factory-state manifest already tracked here is a deliberate
+# exception, kept as a record of how the board shipped.
 firmware/backups/*.bin
+firmware/backups/*.json
 
 # Temporary assembly files from interrupted backups.
 *.partial
@@ -7,18 +11,24 @@ firmware/backups/*.bin
 __pycache__/
 *.pyc
 
-# Browser-based design companion sessions.
+# Editor and language-server state.
+.cache/
 .superpowers/
+.DS_Store
+compile_commands.json
 
 # Local Git worktrees used for isolated implementation.
 .worktrees/
 
-.DS_Store
-
 # Project-local ESP-IDF toolchain and generated build/dependency state.
 .tools/
-build/
-build-host/
 managed_components/
 dependencies.lock
 sdkconfig
+
+# Build output. Keep scratch builds as subdirectories of these rather than
+# inventing sibling names like build-host-experiment: the trailing-slash rules
+# below already cover anything nested, and sibling directories are how 19
+# untracked build trees once accumulated at the repository root.
+build/
+build-host/

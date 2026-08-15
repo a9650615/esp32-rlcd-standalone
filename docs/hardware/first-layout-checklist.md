@@ -2,7 +2,8 @@
 
 Date: 2026-08-15 (Asia/Taipei)
 
-Port: `/dev/cu.usbmodem1101`
+Port: resolve it with `./scripts/find-board-port.sh` rather than assuming a
+name; enumeration order decides which device gets which `usbmodem` number.
 
 Status: Partial pass; manual visual/button/recovery checks remain open
 
@@ -54,7 +55,7 @@ Do not mark the first layout slice fully accepted until every manual item above 
 
 ## Wi-Fi provisioning
 
-Physical acceptance for `docs/superpowers/specs/2026-08-15-rlcd-wifi-provisioning.md`. Do not tick any item until observed on the physical board.
+Physical acceptance for `docs/design/specs/2026-08-15-rlcd-wifi-provisioning.md`. Do not tick any item until observed on the physical board.
 
 - [ ] `CONFIG_LV_USE_QRCODE=y` firmware builds and the Setup page renders a QR code (not text-only fallback) on hardware.
 - [ ] Setup AP `RLCD-XXXXXX` is open (no password); a phone joins with no password prompt.
@@ -74,7 +75,7 @@ Physical acceptance for `docs/superpowers/specs/2026-08-15-rlcd-wifi-provisionin
 
 ## System tray and battery
 
-Physical acceptance for `docs/superpowers/specs/2026-08-15-rlcd-system-tray-and-battery.md`. The Wi-Fi provisioning rows above predate the WPA2-PSK setup AP revision (see that spec's Decision 1) and are left unchanged here; the QR/WPA2 rows below supersede them for physical acceptance going forward. Do not tick any item until observed on the physical board.
+Physical acceptance for `docs/design/specs/2026-08-15-rlcd-system-tray-and-battery.md`. The Wi-Fi provisioning rows above predate two design changes and are left as a record rather than edited: the setup AP was briefly WPA2-PSK (that spec's Decision 1) and is now open, with a session password gating the portal page instead. The rows below are the ones to work through. Do not tick any item until observed on the physical board.
 
 - [ ] The Setup page QR at its current on-screen size scans reliably from a phone camera at normal arm's-length distance, under normal room lighting, on the reflective (non-backlit) panel.
 - [ ] Scanning the QR joins the phone to the open setup AP directly (no manual network pick) and lands on the setup page with the session password already supplied by the QR's query string, so no password is typed by hand.

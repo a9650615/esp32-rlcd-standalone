@@ -293,10 +293,10 @@ void timer_callback(lv_timer_t* timer) {
   // would sit frozen for the entire write, which is precisely when someone is
   // watching the panel to decide whether it is safe to unplug.
   //
-  // ponytail: full page rebuild per change, throttled by the publisher (see
-  // the ota monitor in app_main.cpp, which republishes on whole-percent steps
-  // only). If those repaints prove visible on the panel, register the percent
-  // label in UiContext and extend the label-only path instead.
+  // Known limitation: this is a full page rebuild per change, throttled only
+  // by the publisher (ota::Session republishes on whole-percent steps). If
+  // those repaints prove visible on the panel, register the percent label in
+  // UiContext and extend the label-only path to cover it instead.
   const bool ota_changed =
       published_updated &&
       (published.ota.phase != runtime->snapshot.ota.phase ||

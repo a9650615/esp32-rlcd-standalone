@@ -90,11 +90,14 @@ After flashing, capture evidence for:
 5. I2C discovery/read of the peripherals touched by the change;
 6. battery ADC, audio, RTC, or SD smoke tests when those subsystems changed.
 
-Capture serial non-interactively rather than attaching a monitor, so the log is a file you can grep and quote. Two things about the interpreter, both of which cost a cycle: this machine's `python3` has no `pyserial`, and `python` is not an `idf.py` action, so `./scripts/idf.sh python foo.py` fails with `No rule to make target 'python'`. Use the IDF environment's interpreter directly:
+Capture serial non-interactively rather than attaching a monitor, so the log is a file you can grep and quote. Two traps about the interpreter, both of which cost a cycle: a system `python3` generally has no `pyserial`, and `python` is not an `idf.py` action, so `./scripts/idf.sh python foo.py` fails with `No rule to make target 'python'`. Source the environment and use the interpreter it puts on PATH, rather than hardcoding a version-specific path under `~/.espressif`:
 
 ```bash
-~/.espressif/python_env/idf5.5_py3.9_env/bin/python capture.py "$PORT" 55
+source .tools/esp-idf/export.sh >/dev/null
+python capture.py "$PORT" 55
 ```
+
+For the same reason, invoke esptool as `python -m esptool`: the console script has been named both `esptool.py` and `esptool` across ESP-IDF versions, while the module name has not moved. `scripts/find-board-port.sh` does exactly this.
 
 For a carousel UI, observe every registered page once and the wrap back to Home. A successful Home render alone does not exercise the other renderers. Treat any stack-overflow message or software-reset loop as a failed flash even when all QIO/Flash/PSRAM gates passed.
 

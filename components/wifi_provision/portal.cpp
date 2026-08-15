@@ -105,8 +105,7 @@ std::string render_form_page(const std::string& error, const std::string& pw) {
   html +=
       "<hr><h2>Firmware</h2>"
       "<p>Current: " + std::string(current_app_version()) + "</p>"
-      "<form method=\"POST\" action=\"/ota?pw=" + pw + "\" "
-      "enctype=\"text/plain\" id=\"f\">"
+      "<form method=\"POST\" action=\"/ota?pw=" + pw + "\" id=\"f\">"
       "<input type=\"file\" id=\"b\" accept=\".bin\"><br>"
       "<input type=\"submit\" value=\"Upload and restart\"></form>"
       // Sends the file as the raw request body. Four lines of script instead

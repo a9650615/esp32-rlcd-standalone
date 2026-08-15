@@ -157,7 +157,7 @@ int net_vprintf(const char* format, va_list args) {
           g_ring->read_line(send_cursor, line, sizeof(line), line_len);
       xSemaphoreGive(g_ring_mutex);
       if (!has_line) break;
-      // ponytail: a failed/partial send here is treated as delivered (the
+      // Known limitation: a failed/partial send here is treated as delivered (the
       // cursor already advanced) rather than retried - simplest recovery
       // is just letting the operator reconnect, which replays the backlog.
       if (send(client_fd, line, line_len, 0) < 0) {

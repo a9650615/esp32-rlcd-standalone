@@ -74,7 +74,7 @@ The host build always uses the untrimmed default (`1000`) regardless of any devi
 
 ### 4. Repaint throttling is a standing architectural constraint
 
-**Approved.** See the shared rationale and rule already recorded in `docs/superpowers/specs/2026-08-15-rlcd-wifi-provisioning.md`'s "Update boundary contract" section — this document does not duplicate it, only calls out the battery-specific consequence: the battery task publishes every 30 s, forever, for the lifetime of the device. If every publish triggered a full `render_page` rebuild, the panel would visibly flash every 30 s indefinitely, not just during the short-lived Wi-Fi setup window.
+**Approved.** See the shared rationale and rule already recorded in `docs/design/specs/2026-08-15-rlcd-wifi-provisioning.md`'s "Update boundary contract" section — this document does not duplicate it, only calls out the battery-specific consequence: the battery task publishes every 30 s, forever, for the lifetime of the device. If every publish triggered a full `render_page` rebuild, the panel would visibly flash every 30 s indefinitely, not just during the short-lived Wi-Fi setup window.
 
 The rule stays the same regardless of which provider publishes: the LVGL timer rebuilds a page only on a genuine page-identity change (a different page is now showing); any other published change — including a battery percentage that moved by one point — updates only the specific label(s) whose text actually differs, following the existing `update_visible_clock` pattern (look up the cached `lv_obj_t*` label, compare/set its text, do not touch the rest of the tree).
 

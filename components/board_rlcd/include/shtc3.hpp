@@ -82,7 +82,7 @@ inline bool shtc3_decode(const uint8_t raw[6], float& temperature_c,
 
 #ifdef ESP_PLATFORM
 
-// ponytail: Waveshare's own factory demo subtracts a fixed 4 C from this
+// Calibration note: Waveshare's own factory demo subtracts a fixed 4 C from this
 // same formula, citing self-heating from sitting next to the ESP32-S3
 // module. Left at 0 rather than inherited blindly - self-heating depends on
 // enclosure and placement, so this is a per-board trim a bring-up pass
