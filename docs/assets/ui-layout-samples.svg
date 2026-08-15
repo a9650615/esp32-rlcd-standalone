@@ -1,0 +1,113 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="380" viewBox="0 0 920 380" role="img" aria-labelledby="title description">
+  <title id="title">ESP32-S3-RLCD-4.2 interface layout samples</title>
+  <desc id="description">Monochrome mockups of the default clock page and a Taiwan market page.</desc>
+  <style>
+    text { font-family: Arial, Helvetica, sans-serif; font-weight: 700; }
+    .page-title { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 14px; font-weight: 700; letter-spacing: 1px; fill: #f5f3e8; }
+    .screen { fill: #f5f3e8; stroke: #050505; stroke-width: 3; }
+    .ink { fill: #080808; }
+    .rule { stroke: #080808; stroke-width: 1; }
+    .grid { stroke: #888; stroke-width: 1; stroke-dasharray: 3 6; }
+    .chart { fill: none; stroke: #080808; stroke-width: 6; stroke-linecap: square; stroke-linejoin: miter; }
+    .hero { font-size: 63px; font-weight: 800; }
+    .value { font-size: 34px; font-weight: 800; }
+    .tile-value { font-size: 25px; font-weight: 800; }
+    .medium { font-size: 17px; font-weight: 800; }
+    .small { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; font-weight: 700; }
+    .tiny { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 8px; font-weight: 700; }
+  </style>
+
+  <rect width="920" height="380" rx="18" fill="#191919"/>
+  <text x="28" y="28" class="page-title">CLOCK HERO / DEFAULT</text>
+  <text x="492" y="28" class="page-title">TAIWAN MARKET / DATA PAGE</text>
+
+  <!-- Default clock hero -->
+  <g transform="translate(24 48)">
+    <rect class="screen" width="404" height="304" rx="5"/>
+    <line class="rule" x1="274" y1="6" x2="274" y2="286"/>
+
+    <text x="12" y="66" class="hero ink">10:18</text>
+    <text x="14" y="91" class="medium ink">SAT 15 AUG</text>
+    <text x="14" y="109" class="tiny ink">SYNCED  RTC  AGE 1M</text>
+    <line class="rule" x1="10" y1="119" x2="266" y2="119"/>
+
+    <rect x="13" y="133" width="43" height="18" class="ink"/>
+    <text x="20" y="146" class="tiny" fill="#f5f3e8">TODAY</text>
+    <text x="67" y="146" class="small ink">TAIWAN MARKET</text>
+    <text x="14" y="174" class="medium ink">NEXT  TAIEX  09:00</text>
+    <text x="14" y="204" class="small ink">WEATHER  20%</text>
+
+    <g transform="translate(16 216)" class="ink">
+      <circle cx="10" cy="10" r="7"/><circle cx="19" cy="8" r="9"/><circle cx="28" cy="11" r="6"/>
+      <rect x="8" y="10" width="23" height="8"/>
+    </g>
+    <text x="55" y="239" class="medium ink">TAIPEI  28 C</text>
+    <text x="14" y="267" class="tiny ink">REFLECTIVE MONO / SNAPSHOT</text>
+
+    <g transform="translate(275 0)">
+      <line class="rule" x1="0" y1="98" x2="129" y2="98"/>
+      <line class="rule" x1="0" y1="192" x2="129" y2="192"/>
+
+      <text x="10" y="19" class="tiny ink">TAIPEI</text>
+      <text x="10" y="56" class="tile-value ink">28 C</text>
+      <text x="10" y="75" class="small ink">RAIN 20%</text>
+
+      <text x="10" y="118" class="tiny ink">INDOOR</text>
+      <text x="10" y="156" class="tile-value ink">24.8 C</text>
+      <text x="10" y="176" class="small ink">HUMIDITY 57%</text>
+
+      <text x="10" y="211" class="tiny ink">TAIEX</text>
+      <text x="10" y="248" class="tile-value ink">+0.52%</text>
+      <text x="10" y="268" class="small ink">24,334</text>
+    </g>
+    <g class="ink" transform="translate(368 289)">
+      <circle cx="0" cy="0" r="3"/><circle cx="8" cy="0" r="2"/><circle cx="16" cy="0" r="2"/><circle cx="24" cy="0" r="2"/>
+    </g>
+  </g>
+
+  <!-- Taiwan market page -->
+  <g transform="translate(490 48)">
+    <rect class="screen" width="404" height="304" rx="5"/>
+    <line class="rule" x1="6" y1="34" x2="398" y2="34"/>
+    <line class="rule" x1="280" y1="34" x2="280" y2="298"/>
+
+    <text x="10" y="26" class="medium ink">10:18</text>
+    <text x="72" y="17" class="tiny ink">SAT 15 AUG</text>
+    <text x="180" y="17" class="small ink">TW MARKET</text>
+    <text x="180" y="29" class="tiny ink">TAIPEI / UPDATED 1M</text>
+    <text x="337" y="21" class="tiny ink">WiFi</text>
+    <rect x="365" y="16" width="5" height="5" class="ink"/><rect x="372" y="13" width="5" height="8" class="ink"/><rect x="379" y="10" width="5" height="11" class="ink"/>
+
+    <rect x="14" y="47" width="90" height="18" class="ink"/>
+    <text x="21" y="60" class="tiny" fill="#f5f3e8">TAIEX / TODAY</text>
+    <text x="14" y="99" class="value ink">24,334</text>
+    <text x="215" y="80" class="medium ink">+126</text>
+    <text x="213" y="100" class="medium ink">+0.52%</text>
+
+    <line class="grid" x1="14" y1="142" x2="268" y2="142"/>
+    <line class="grid" x1="14" y1="190" x2="268" y2="190"/>
+    <line class="grid" x1="14" y1="238" x2="268" y2="238"/>
+    <polyline class="chart" points="14,226 31,215 47,222 64,186 82,197 100,158 117,173 137,134 154,148 174,118 194,134 214,101 232,116 250,82 268,92"/>
+    <circle cx="268" cy="92" r="8" fill="#f5f3e8" stroke="#080808" stroke-width="5"/>
+    <text x="14" y="278" class="tiny ink">09:00</text>
+    <text x="128" y="278" class="tiny ink">MID</text>
+    <text x="248" y="278" class="tiny ink">NOW</text>
+
+    <g transform="translate(281 35)">
+      <line class="rule" x1="0" y1="88" x2="122" y2="88"/>
+      <line class="rule" x1="0" y1="176" x2="122" y2="176"/>
+      <text x="10" y="20" class="tiny ink">TW50</text>
+      <text x="10" y="52" class="tile-value ink">+0.44%</text>
+      <text x="10" y="70" class="small ink">20,871</text>
+      <text x="10" y="110" class="tiny ink">TAIPEI</text>
+      <text x="10" y="143" class="tile-value ink">28 C</text>
+      <text x="10" y="161" class="small ink">RAIN 20%</text>
+      <text x="10" y="198" class="tiny ink">INDOOR</text>
+      <text x="10" y="230" class="tile-value ink">24.8 C</text>
+      <text x="10" y="248" class="small ink">HUM 57%</text>
+    </g>
+    <g class="ink" transform="translate(368 289)">
+      <circle cx="0" cy="0" r="2"/><circle cx="8" cy="0" r="3"/><circle cx="16" cy="0" r="2"/><circle cx="24" cy="0" r="2"/>
+    </g>
+  </g>
+</svg>
