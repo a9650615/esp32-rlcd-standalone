@@ -1,6 +1,7 @@
 #pragma once
 
 #include "app_snapshot.hpp"
+#include "ui_strings.hpp"
 #include "carousel_controller.hpp"
 #include "ui_theme.hpp"
 
@@ -274,7 +275,7 @@ constexpr bool setup_ssid_row_width_ok(const Rect content) {
 // with so renderers and the label-only repaint path (ui_app.cpp) share one
 // source of truth instead of formatting the same text twice.
 inline std::string setup_status_text(const std::string& status) {
-  return status.empty() ? std::string(kSetupDefaultStatus) : status;
+  return status.empty() ? std::string(text(Text::SetupDefaultStatus)) : status;
 }
 
 // The AP is always open now (no Wi-Fi password), so this line's job is
@@ -284,7 +285,7 @@ inline std::string setup_status_text(const std::string& status) {
 // proves would risk clipping the one thing on this row that cannot clip:
 // the SSID itself.
 inline std::string setup_ssid_text(const std::string& ap_ssid) {
-  if (ap_ssid.empty()) return kSetupNoSsidLabel;
+  if (ap_ssid.empty()) return text(Text::SetupNoSsid);
   return "WIFI: " + ap_ssid;
 }
 
@@ -292,7 +293,7 @@ inline std::string setup_ssid_text(const std::string& ap_ssid) {
 // distinctly from the SSID line above so it is not mistaken for a Wi-Fi
 // passphrase.
 inline std::string setup_password_text(const std::string& portal_password) {
-  if (portal_password.empty()) return kSetupNoPortalPasswordLabel;
+  if (portal_password.empty()) return text(Text::SetupNoPortalPassword);
   return "PAGE PW: " + portal_password;
 }
 

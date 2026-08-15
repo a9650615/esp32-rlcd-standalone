@@ -3,12 +3,16 @@
 #include "app_snapshot.hpp"
 #include "page_registry.hpp"
 #include "ui_data.hpp"
+#include "ui_strings.hpp"
 #include "ui_theme.hpp"
 
 #include <cstddef>
 
 #ifndef UI_THEME_GEOMETRY_ONLY
 #include <lvgl.h>
+
+// Pulls in lvgl.h itself, so it stays inside the guard host tests rely on.
+#include "ui_fonts.hpp"
 #endif
 
 namespace ui {

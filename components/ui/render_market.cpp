@@ -1,4 +1,5 @@
 #include "ui_app.hpp"
+#include "ui_fonts.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -7,9 +8,9 @@
 namespace ui {
 namespace {
 
-const lv_font_t* large_font() { return &lv_font_montserrat_28; }
-const lv_font_t* medium_font() { return &lv_font_montserrat_20; }
-const lv_font_t* small_font() { return &lv_font_montserrat_14; }
+const lv_font_t* large_font() { return font_large(); }
+const lv_font_t* medium_font() { return font_medium(); }
+const lv_font_t* small_font() { return font_small(); }
 
 void release_chart_points(lv_event_t* event) {
   auto* points = static_cast<lv_point_precise_t*>(lv_event_get_user_data(event));
@@ -68,7 +69,7 @@ void render_market(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
   if (!market.valid) {
     // No fabricated primary_value/percent/chart below the title - see
     // ui_data.hpp no_data_rect for the shared placeholder geometry.
-    label(parent, kNoDataLabel, no_data_rect(primary), medium_font(),
+    label(parent, text(Text::NoData), no_data_rect(primary), medium_font(),
           LV_TEXT_ALIGN_CENTER);
   } else {
     // The axis labels below the chart get whatever label() will actually
@@ -118,7 +119,7 @@ void render_market(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
       // figures above are real, but drawing a flat repeat of the close would
       // read as "the market did not move" rather than "no intraday data
       // exists". Skip the chart, grid, and axis labels; say so instead.
-      label(parent, kNoIntradayLabel, chart_placeholder_rect(chart),
+      label(parent, text(Text::NoIntradayData), chart_placeholder_rect(chart),
             small_font(), LV_TEXT_ALIGN_CENTER);
     }
   }

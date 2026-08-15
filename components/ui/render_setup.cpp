@@ -1,10 +1,11 @@
 #include "ui_app.hpp"
+#include "ui_fonts.hpp"
 
 namespace ui {
 namespace {
 
-const lv_font_t* medium_font() { return &lv_font_montserrat_20; }
-const lv_font_t* small_font() { return &lv_font_montserrat_14; }
+const lv_font_t* medium_font() { return font_medium(); }
+const lv_font_t* small_font() { return font_small(); }
 
 }  // namespace
 
@@ -16,7 +17,7 @@ void render_setup(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
   apply_surface(parent);
   const SetupLayout layout = setup_layout(bounds);
 
-  label(parent, kSetupTitle, layout.title, medium_font());
+  label(parent, text(Text::SetupTitle), layout.title, medium_font());
   const std::string ssid_text = setup_ssid_text(snapshot.setup.ap_ssid);
   label(parent, ssid_text.c_str(), layout.ssid, small_font());
   // Rendered larger than the surrounding rows and, below, allowed to wrap:
@@ -56,11 +57,11 @@ void render_setup(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
     // fallback, not just an apology: the AP is open (no Wi-Fi password to
     // relay), and both portal_url and the page password are already on
     // screen for manual entry.
-    label(parent, kSetupQrUnavailableLabel, layout.qr, small_font(),
+    label(parent, text(Text::SetupQrUnavailable), layout.qr, small_font(),
          LV_TEXT_ALIGN_CENTER);
   }
 
-  label(parent, kSetupInstructions, layout.instructions, small_font());
+  label(parent, text(Text::SetupInstructions), layout.instructions, small_font());
   const std::string status = setup_status_text(snapshot.setup.status);
   lv_obj_t* status_label = label(parent, status.c_str(), layout.status, small_font());
   if (status_label != nullptr) {

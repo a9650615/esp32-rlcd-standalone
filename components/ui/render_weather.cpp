@@ -1,13 +1,14 @@
 #include "ui_app.hpp"
+#include "ui_fonts.hpp"
 
 #include <cstdio>
 
 namespace ui {
 namespace {
 
-const lv_font_t* hero_font() { return &lv_font_montserrat_28; }
-const lv_font_t* medium_font() { return &lv_font_montserrat_20; }
-const lv_font_t* small_font() { return &lv_font_montserrat_14; }
+const lv_font_t* hero_font() { return font_large(); }
+const lv_font_t* medium_font() { return font_medium(); }
+const lv_font_t* small_font() { return font_small(); }
 
 }  // namespace
 
@@ -30,7 +31,7 @@ void render_weather(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
     // use.
     label(parent, "WEATHER", {bounds.x + 8, bounds.y + 4, bounds.width - 16, 18},
           small_font());
-    label(parent, kNoDataLabel, no_data_rect(bounds), medium_font(),
+    label(parent, text(Text::NoData), no_data_rect(bounds), medium_font(),
           LV_TEXT_ALIGN_CENTER);
     return;
   }
@@ -47,7 +48,7 @@ void render_weather(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
   char current_line[48];
   std::snprintf(current_line, sizeof(current_line), "%.1f C   RAIN %u%%%s",
                 current.temperature_c, current.rain_probability_percent,
-                weather.stale ? kStaleSuffix : "");
+                weather.stale ? text(Text::StaleSuffix) : "");
   label(parent, current_line,
         {bounds.x + 205, bounds.y + 42, bounds.width - 213, 20}, small_font(),
         LV_TEXT_ALIGN_RIGHT);

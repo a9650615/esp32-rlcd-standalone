@@ -1,4 +1,5 @@
 #include "ui_theme.hpp"
+#include "ui_fonts.hpp"
 #include "ui_data.hpp"
 
 #include <algorithm>
@@ -285,7 +286,7 @@ lv_obj_t* navigation_overlay(lv_obj_t* parent, Rect bounds) {
   lv_obj_add_event_cb(overlay, overlay_deleted, LV_EVENT_DELETE, state);
   lv_obj_t* overlay_text =
       label(overlay, "KEY  <   AUTO   >  BOOT", {0, 0, bounds.width, 24},
-            &lv_font_montserrat_14, LV_TEXT_ALIGN_CENTER);
+            font_small(), LV_TEXT_ALIGN_CENTER);
   if (overlay_text != nullptr) {
     lv_obj_set_style_bg_color(overlay_text, lv_color_black(), 0);
     lv_obj_set_style_text_color(overlay_text, lv_color_white(), 0);

@@ -1,11 +1,33 @@
 #include "ui_app.hpp"
+#include "ui_fonts.hpp"
 
 namespace ui {
 namespace {
 
-const lv_font_t* phase_font() { return &lv_font_montserrat_28; }
-const lv_font_t* percent_font() { return &lv_font_montserrat_48; }
-const lv_font_t* small_font() { return &lv_font_montserrat_14; }
+const lv_font_t* phase_font() { return font_large(); }
+
+// The phase names live here rather than in app_core: that layer owns the state
+// machine, not what the panel calls it, and translating the label is a UI
+// concern. app_core::ota_phase_label stays as the log-facing wording.
+Text ota_phase_text(app_core::OtaPhase phase) {
+  switch (phase) {
+    case app_core::OtaPhase::Receiving:
+      return Text::OtaUpdating;
+    case app_core::OtaPhase::Writing:
+      return Text::OtaFinishing;
+    case app_core::OtaPhase::Verifying:
+      return Text::OtaVerifying;
+    case app_core::OtaPhase::RolledBack:
+      return Text::OtaRolledBack;
+    case app_core::OtaPhase::Failed:
+      return Text::OtaFailed;
+    case app_core::OtaPhase::Idle:
+      break;
+  }
+  return Text::OtaWorking;
+}
+const lv_font_t* percent_font() { return font_hero(); }
+const lv_font_t* small_font() { return font_small(); }
 
 }  // namespace
 
@@ -23,7 +45,7 @@ void render_ota(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
   const OtaLayout layout = ota_layout(bounds);
   const app_core::OtaData& ota = snapshot.ota;
 
-  label(parent, app_core::ota_phase_label(ota.phase), layout.phase,
+  label(parent, text(ota_phase_text(ota.phase)), layout.phase,
         phase_font(), LV_TEXT_ALIGN_CENTER);
 
   // Percentage only when a feeder actually knew the total size. Everything
@@ -37,14 +59,14 @@ void render_ota(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
     label(parent, percent, layout.percent, percent_font(),
           LV_TEXT_ALIGN_CENTER);
   } else if (app_core::ota_owns_screen(ota)) {
-    label(parent, kOtaProgressUnknown, layout.percent, percent_font(),
+    label(parent, text(Text::OtaWorking), layout.percent, percent_font(),
           LV_TEXT_ALIGN_CENTER);
   }
 
   // Only while flash is actually being written. On RolledBack or Failed the
   // write is over and telling someone not to power off would be false.
   if (app_core::ota_owns_screen(ota)) {
-    label(parent, kOtaWarning, layout.warning, small_font(),
+    label(parent, text(Text::OtaDoNotPowerOff), layout.warning, small_font(),
           LV_TEXT_ALIGN_CENTER);
   }
 

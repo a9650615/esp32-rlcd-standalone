@@ -1,4 +1,5 @@
 #include "ui_app.hpp"
+#include "ui_fonts.hpp"
 
 #include <string>
 
@@ -13,8 +14,8 @@ namespace {
 constexpr char kTag[] = "ui_geometry";
 #endif
 
-const lv_font_t* hero_font() { return &lv_font_montserrat_48; }
-const lv_font_t* row_font() { return &lv_font_montserrat_20; }
+const lv_font_t* hero_font() { return font_hero(); }
+const lv_font_t* row_font() { return font_medium(); }
 
 }  // namespace
 

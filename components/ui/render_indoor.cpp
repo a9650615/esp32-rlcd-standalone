@@ -1,4 +1,5 @@
 #include "ui_app.hpp"
+#include "ui_fonts.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -7,9 +8,9 @@
 namespace ui {
 namespace {
 
-const lv_font_t* hero_font() { return &lv_font_montserrat_48; }
-const lv_font_t* medium_font() { return &lv_font_montserrat_20; }
-const lv_font_t* small_font() { return &lv_font_montserrat_14; }
+const lv_font_t* hero_font() { return font_hero(); }
+const lv_font_t* medium_font() { return font_medium(); }
+const lv_font_t* small_font() { return font_small(); }
 
 void release_points(lv_event_t* event) {
   auto* points = static_cast<lv_point_precise_t*>(lv_event_get_user_data(event));
@@ -64,7 +65,7 @@ void render_indoor(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
     // the title - see ui_data.hpp no_data_rect for the shared placeholder
     // geometry. A comfort band drawn at 0% or a flat all-zero history line
     // would both be fabricated numbers, so nothing below the title draws.
-    label(parent, kNoDataLabel, no_data_rect(primary), medium_font(),
+    label(parent, text(Text::NoData), no_data_rect(primary), medium_font(),
           LV_TEXT_ALIGN_CENTER);
   } else {
     char temperature[24];
@@ -77,7 +78,7 @@ void render_indoor(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
     label(parent, humidity, {primary.x + 211, primary.y + 44,
                              primary.width - 219, 28}, medium_font(),
           LV_TEXT_ALIGN_RIGHT);
-    label(parent, kComfortBandLabel,
+    label(parent, text(Text::ComfortBand),
           {primary.x + 8, primary.y + 98, primary.width - 16, 18}, small_font());
     const int band_x = primary.x + 14;
     const int band_y = primary.y + 129;

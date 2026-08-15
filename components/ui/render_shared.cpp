@@ -1,4 +1,5 @@
 #include "ui_app.hpp"
+#include "ui_fonts.hpp"
 
 #include <cstdio>
 #include <cstring>
@@ -15,8 +16,8 @@ namespace {
 constexpr char kTag[] = "ui_geometry";
 #endif
 
-const lv_font_t* small_font() { return &lv_font_montserrat_14; }
-const lv_font_t* medium_font() { return &lv_font_montserrat_20; }
+const lv_font_t* small_font() { return font_small(); }
+const lv_font_t* medium_font() { return font_medium(); }
 
 void context_host_deleted(lv_event_t* event) {
   auto* context = static_cast<UiContext*>(lv_event_get_user_data(event));
@@ -145,7 +146,7 @@ void tile(lv_obj_t* parent, const char* title, const char* value,
       temperature_icon(parent, leading_visual);
     }
   }
-  label(parent, valid ? value : kNoDataLabel,
+  label(parent, valid ? value : text(Text::NoData),
         tile_value_rect(bounds, has_leading_visual), medium_font(),
         LV_TEXT_ALIGN_CENTER);
   label(parent, valid ? detail : "", rows.detail, small_font(),
@@ -225,7 +226,7 @@ void render_right_tiles(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
       std::snprintf(detail, sizeof(detail), "%s%s%s",
                     snapshot.weather.alert ? "ALERT  " : "",
                     snapshot.weather.current.condition.c_str(),
-                    snapshot.weather.stale ? kStaleSuffix : "");
+                    snapshot.weather.stale ? text(Text::StaleSuffix) : "");
       condition = snapshot.weather.current.condition.c_str();
       weather = true;
       break;
@@ -274,7 +275,7 @@ void render_market_sidebar(lv_obj_t* parent,
   std::snprintf(weather_detail, sizeof(weather_detail), "%s %u%%%s",
                 weather_snapshot.current.condition.c_str(),
                 weather_snapshot.current.rain_probability_percent,
-                weather_snapshot.stale ? kStaleSuffix : "");
+                weather_snapshot.stale ? text(Text::StaleSuffix) : "");
   std::snprintf(indoor_value, sizeof(indoor_value), "%.1f C",
                 snapshot.indoor.temperature_c);
   std::snprintf(indoor_detail, sizeof(indoor_detail), "RH %u%%",

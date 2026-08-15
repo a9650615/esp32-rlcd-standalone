@@ -488,6 +488,9 @@ void timer_callback(lv_timer_t* timer) {
 bool start(const app_core::AppSnapshot& snapshot,
            const app_core::RtcDateTime& clock, bool rtc_fallback) {
   if (g_runtime.timer != nullptr) return false;
+  // Before anything renders: until this runs the interface fonts carry no
+  // Chinese fallback, so a first frame drawn ahead of it would show boxes.
+  fonts_init();
   ESP_LOGI(kTag, "main task stack free before UI init=%u bytes",
            static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
   g_runtime.snapshot = snapshot;
