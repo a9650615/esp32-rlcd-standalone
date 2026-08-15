@@ -77,15 +77,30 @@ Physical acceptance for `docs/superpowers/specs/2026-08-15-rlcd-wifi-provisionin
 Physical acceptance for `docs/superpowers/specs/2026-08-15-rlcd-system-tray-and-battery.md`. The Wi-Fi provisioning rows above predate the WPA2-PSK setup AP revision (see that spec's Decision 1) and are left unchanged here; the QR/WPA2 rows below supersede them for physical acceptance going forward. Do not tick any item until observed on the physical board.
 
 - [ ] The Setup page QR at its current on-screen size scans reliably from a phone camera at normal arm's-length distance, under normal room lighting, on the reflective (non-backlit) panel.
-- [ ] Scanning the QR joins the phone to the WPA2-PSK setup AP directly (no separate manual password entry), and the joined network shows WPA2 security in the phone's Wi-Fi settings, not open/none.
-- [ ] Android auto-prompts to open the captive portal after joining the WPA2 setup AP.
-- [ ] iOS auto-prompts to open the captive portal after joining the WPA2 setup AP.
+- [ ] Scanning the QR joins the phone to the open setup AP directly (no manual network pick) and lands on the setup page with the session password already supplied by the QR's query string, so no password is typed by hand.
+- [ ] Android auto-prompts to open the captive portal after joining the open setup AP.
+- [ ] iOS auto-prompts to open the captive portal after joining the open setup AP.
+- [ ] Reaching the setup page without the QR (typing the address directly) still demands the session password, confirming the page gate and not the AP is what protects it.
+- [ ] Entering real home Wi-Fi credentials through the phone connects the board and the setup AP shuts down; the credentials survive a power cycle.
 - [ ] The system tray (time / network status / battery) is legible at normal desk viewing distance on TaiwanMarket, UsMarket, Weather, Indoor, and Setup.
 - [ ] Home shows no system tray and keeps its full-height Clock Hero, with no leftover tray-band artifact from an adjacent page.
 - [ ] Battery percentage shown in the tray is within a reasonable margin of a multimeter reading taken across the installed cell's terminals.
 - [ ] The `CONFIG_BATTERY_CALIBRATION_PERMILLE` calibration step (reported mV vs. multimeter mV, per the spec's Calibration procedure) has been performed at least once on this board and its resulting value recorded.
 - [ ] After installing the cell and connecting Type-C first to start the power path, the board continues running normally once Type-C is unplugged (battery-only operation).
 - [ ] Watching the panel across a battery sample (30 s cadence) shows no visible full-screen repaint/flash attributable to the battery publish alone.
+
+## Live-data layout, on the panel
+
+Everything below has been checked as geometry only. None of it has been seen on
+the physical reflective panel.
+
+- [ ] Each of the four weather silhouettes is distinguishable from the others at desk distance, and the drawn icon matches the condition text beside it.
+- [ ] Home's single tall tile reads as intentional at full height, with its content visibly centred rather than drifting toward the top.
+- [ ] The tray's page dots show the right count and mark the current page, including when auto-rotation skips a page.
+- [ ] A `NO DATA` placeholder is legible and unmistakably not a number, on both a market page and the weather page.
+- [ ] The stacked high/low temperatures do not collide with each other or with the tile's detail line.
+- [ ] `NO INTRADAY DATA` on the Taiwan page reads as a deliberate state, with no chart, grid, or axis drawn behind it.
+- [ ] The IP-geolocated city on the weather page is actually where the board is. If it is not, note the correct coordinates: the override setter exists but has no settings-page field yet.
 
 ## OTA partition table migration
 
