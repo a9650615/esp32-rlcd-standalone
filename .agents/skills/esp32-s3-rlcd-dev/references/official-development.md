@@ -105,40 +105,76 @@ idf.py -p "$PORT" flash monitor
 
 ### Flash mode handoff and serial gate
 
-ESP-IDF 5.5.x has an intentional boot-image handoff: when `CONFIG_ESPTOOLPY_FLASHMODE_QIO=y` (or the corresponding QOUT selection) is active, the generated esptool arguments for the first/second-stage boot path can contain `--flash_mode dio`; the bootloader then enables quad mode. Therefore **`sdkconfig` QIO plus `build/flash_args` DIO is not, by itself, a flashing blocker**. The authoritative local Kconfig source is the ESP-IDF 5.5.x checkout at `$IDF_PATH/components/bootloader/Kconfig.projbuild` (`CONFIG_ESPTOOLPY_FLASHMODE_QIO`); inspect that pinned checkout when tool behavior changes.
+ESP-IDF 5.5.x has an intentional boot-image handoff: when `CONFIG_ESPTOOLPY_FLASHMODE_QIO=y` is active, the generated esptool arguments for the first/second-stage boot path can contain `--flash_mode dio`; the bootloader then enables quad mode. Therefore **`sdkconfig` QIO plus `build/flash_args` DIO is not, by itself, a flashing blocker**. The authoritative local Kconfig source is the ESP-IDF 5.5.x checkout at `$IDF_PATH/components/bootloader/Kconfig.projbuild` (`CONFIG_ESPTOOLPY_FLASHMODE_QIO`); inspect that pinned checkout when tool behavior changes.
 
-After flashing, capture the serial log and require QIO handoff evidence such as `qio_mode: Enabling default flash chip QIO`, `SPI Mode : QIO`, or `spi_flash: flash io: qio`, together with a clean boot, no reset loop, and the expected 16 MB Flash / 8 MB PSRAM detection. Block the write or acceptance if QIO is not selected in the effective configuration, the device loops/resets, or boot/runtime evidence remains non-QIO. `--flash_mode dio` alone is not evidence of a bad image.
+The earlier ROM line `mode:DIO` is expected and does not negate the later gates. After flashing, capture the serial log and require **all** of these patterns (allow only whitespace variation around the displayed separators):
+
+```text
+qio_mode: Enabling default flash chip QIO
+boot\.esp32s3: SPI Mode[[:space:]]*:[[:space:]]*QIO
+spi_flash: flash io: qio
+boot\.esp32s3: SPI Flash Size[[:space:]]*:[[:space:]]*16MB
+esp_psram: Found 8MB PSRAM device
+esp_psram: SPI SRAM memory test OK
+```
+
+Also require a clean boot with no reset loop. Block the write or acceptance if QIO is not selected in effective configuration, any required pattern is missing, the device loops/resets, or boot/runtime evidence remains non-QIO. `--flash_mode dio` alone is not evidence of a bad image.
 
 ### Worktree-safe factory-backup gate
 
 Gitignored and untracked files belong to a physical worktree; a linked worktree does not materialize a sibling checkout's ignored backup. Before any write, choose one setup and record it in the verification output:
 
 1. Keep the sensitive full dump at a canonical **absolute** path outside disposable worktree state, or explicitly copy/link it into an ignored backup path in the active worktree without tracking it.
-2. From the active worktree root, prefer the repository verifier when present:
+2. The repository verifier applies only after the binary has been explicitly copied or linked into its documented expected **relative** path inside the active worktree. From that active worktree root, prefer the verifier when present:
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"
 ./scripts/verify-factory-backup.sh
 ```
 
-3. Fail closed if the verifier or backup is absent. Independently check the binary (not only its manifest):
+3. For a canonical external absolute path, use this separate fully fail-closed check (replace the syntactically valid example path before running):
 
 ```bash
-test -f "$BACKUP" && test "$(wc -c < "$BACKUP")" -eq 16777216
-shasum -a 256 "$BACKUP"  # compare the digest with the expected project value
+BACKUP=/absolute/path/to/waveshare-factory-full-flash.bin
+EXPECTED_SHA256=68db31b92d8a37bd321101d9ffb093bf2f3213d3e0bf111368e9a8f59919650f
+
+test -f "$BACKUP" || { echo "missing backup: $BACKUP" >&2; exit 1; }
+BYTES="$(wc -c < "$BACKUP" | tr -d '[:space:]')"
+test "$BYTES" = 16777216 || { echo "wrong backup size: $BYTES" >&2; exit 1; }
+
+if command -v sha256sum >/dev/null 2>&1; then
+  ACTUAL_SHA256="$(sha256sum "$BACKUP" | awk '{print $1}')"
+elif command -v shasum >/dev/null 2>&1; then
+  ACTUAL_SHA256="$(shasum -a 256 "$BACKUP" | awk '{print $1}')"
+else
+  echo "need sha256sum or shasum" >&2
+  exit 1
+fi
+test "$ACTUAL_SHA256" = "$EXPECTED_SHA256" || {
+  echo "backup SHA-256 mismatch: $ACTUAL_SHA256" >&2
+  exit 1
+}
 ```
 
-The expected digest must come from the project’s trusted verification gate or recorded device manifest and must be compared to the bytes that will be restored. A manifest does not imply that its `.bin` exists. Treat the dump and manifest as sensitive because NVS can contain credentials, device identity, and user data.
+The expected digest must be compared to the bytes that will be restored; a manifest does not imply that its `.bin` exists. Treat the dump and manifest as sensitive because NVS can contain credentials, device identity, and user data.
 
 ### ESP-IDF component-graph acceptance gate
 
-A valid `components/ui/CMakeLists.txt`, a successful `idf.py build`, and unchanged binary size do **not** prove that UI sources compiled or linked. The staged compile gate requires:
+A valid `components/ui/CMakeLists.txt`, a successful `idf.py build`, and unchanged binary size do **not** prove that UI sources compiled or linked. After a configured build, force the component target to compile from clean state and capture its output, for example:
+
+```bash
+idf.py reconfigure
+idf.py build
+cmake --build build --target __idf_ui --clean-first | tee /tmp/ui-component-build.log
+```
+
+The staged compile gate requires the log to contain UI source object compile lines and `Built target __idf_ui`, plus:
 
 - an application dependency edge through `REQUIRES` or `PRIV_REQUIRES` (or an equivalent source-level dependency that makes the component reachable);
-- build output showing the UI source object lines and `Built target __idf_<name>` for the component; and
-- for final integration, an ELF/map symbol or an intentional call path proving retention, followed by the on-device display refresh and serial evidence.
+- a final full `idf.py build`; and
+- at final integration (Task 7), an ELF/map symbol or an intentional call path proving retention, followed by the on-device display refresh and serial evidence.
 
-Keep compile proof separate from final link/retention/runtime proof. An unchanged binary size is a warning signal: investigate the graph and ELF/map before accepting the UI.
+Keep clean-target compile proof separate from dependency, final link/retention, and runtime proof. An unchanged binary size indicates likely dead-strip or unretained code: investigate the graph and ELF/map before accepting the UI.
 
 ### Arduino
 

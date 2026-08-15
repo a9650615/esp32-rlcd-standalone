@@ -57,9 +57,9 @@ idf.py -p "$PORT" flash monitor
 
 Build/flash gates:
 
-- With ESP-IDF 5.5.x, `CONFIG_ESPTOOLPY_FLASHMODE_QIO=y` may legitimately produce `--flash_mode dio` in generated `flash_args`; judge the post-flash serial handoff, not that argument alone. Require the QIO evidence and stop on missing QIO config, reset loops, or non-QIO boot/runtime behavior described in [references/official-development.md](references/official-development.md).
-- A full backup in a main checkout is not automatically present in a linked worktree. Make the ignored `.bin` available through a canonical absolute path or an explicitly copied/linked ignored path, then run the repository backup verifier from the active worktree. Check the binary itself for exactly 16,777,216 bytes and the expected SHA-256; a manifest alone is not proof that the binary exists.
-- A component directory and successful project build do not prove that its sources compiled or linked. Require a `REQUIRES`/`PRIV_REQUIRES` edge, component/object build evidence, and final ELF/map symbol or runtime-call evidence; unchanged binary size is a warning, not proof.
+- With ESP-IDF 5.5.x, `CONFIG_ESPTOOLPY_FLASHMODE_QIO=y` may legitimately produce `--flash_mode dio` in generated `flash_args`; judge the post-flash serial handoff, not that argument alone. Require **all** exact QIO/Flash/PSRAM log gates in [references/official-development.md](references/official-development.md), and stop on any missing gate, reset loop, or non-QIO runtime.
+- A full backup in a main checkout is not automatically present in a linked worktree. Copy/link the ignored `.bin` into the verifier's expected active-worktree relative path before running that verifier, or use the separate absolute-path size/hash check. A manifest alone is not proof that the binary exists.
+- A component directory and successful project build do not prove that its sources compiled or linked. Force a clean component target build, capture object/target evidence, then require dependency, final ELF/map or runtime-call, and hardware evidence; unchanged binary size is a warning, not proof.
 
 For Arduino, configure `ESP32S3 Dev Module`, USB CDC enabled, Hardware CDC/JTAG, QIO 80 MHz, 16 MB Flash, OPI PSRAM, and the official 16 MB partition scheme. Start at 921600 upload baud only if stable; lower it after a reproducible serial error.
 
