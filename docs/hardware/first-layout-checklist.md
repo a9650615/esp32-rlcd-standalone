@@ -102,6 +102,20 @@ the physical reflective panel.
 - [ ] `NO INTRADAY DATA` on the Taiwan page reads as a deliberate state, with no chart, grid, or axis drawn behind it.
 - [ ] The IP-geolocated city on the weather page is actually where the board is. If it is not, note the correct coordinates: the override setter exists but has no settings-page field yet.
 
+## OTA rollback guard
+
+The guard itself cannot be exercised from a `factory` boot: that slot has no
+otadata state, so it correctly reports `readable=0 pending_verify=0` and
+exits. Everything below needs an image actually written to `ota_0`.
+
+- [x] Factory boot leaves the guard inert: `ota guard: slot=factory readable=0 pending_verify=0`, no rollback attempted. (Observed 2026-08-16.)
+- [ ] An image written to `ota_0` boots as PENDING_VERIFY, the panel shows `VERIFYING UPDATE`, and the guard logs the LVGL loop counter advancing and marks it valid.
+- [ ] After that confirmation, a power cycle stays on `ota_0` rather than reverting.
+- [ ] An image deliberately broken so the LVGL loop never turns is rolled back by the guard within ~35 s without any button press, and the board returns on the previous slot showing `UPDATE ROLLED BACK`.
+- [ ] A startup that reaches `fatal_loop` while PENDING_VERIFY rolls back instead of halting, and a `factory` boot reaching `fatal_loop` still halts for diagnosis rather than boot-looping.
+- [ ] `DO NOT POWER OFF` and the phase text are legible at desk distance on the panel, and no tray or page dots appear on the OTA page.
+- [ ] KEY and BOOT do nothing at all while the OTA page owns the screen, including the KEY long-press setup gesture.
+
 ## OTA partition table migration
 
 Physical acceptance for `docs/hardware/ota-partition-migration.md`. Layout-only
