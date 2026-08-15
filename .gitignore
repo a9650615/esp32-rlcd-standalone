@@ -1,0 +1,16 @@
+# Full device dumps can contain credentials and per-device NVS data.
+firmware/backups/*.bin
+
+# Temporary assembly files from interrupted backups.
+*.partial
+
+__pycache__/
+*.pyc
+
+# Browser-based design companion sessions.
+.superpowers/
+
+# Local Git worktrees used for isolated implementation.
+.worktrees/
+
+.DS_Store

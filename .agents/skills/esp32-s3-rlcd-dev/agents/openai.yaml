@@ -1,0 +1,4 @@
+interface:
+  display_name: "ESP32-S3 RLCD Development"
+  short_description: "Develop and recover Waveshare ESP32-S3-RLCD-4.2 projects"
+  default_prompt: "Use $esp32-s3-rlcd-dev to build, flash, debug, or recover this Waveshare board safely."

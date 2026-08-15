@@ -1,0 +1,13 @@
+{
+  "source": "Waveshare official GitHub repository",
+  "repository": "https://github.com/waveshareteam/ESP32-S3-RLCD-4.2",
+  "commit": "eb1f63427d735a22b9c30e22fa63ebddae1834d3",
+  "repository_path": "03_Firmware/01_Factory_V1.bin",
+  "download_url": "https://raw.githubusercontent.com/waveshareteam/ESP32-S3-RLCD-4.2/eb1f63427d735a22b9c30e22fa63ebddae1834d3/03_Firmware/01_Factory_V1.bin",
+  "size": 4548144,
+  "sha256": "d0591315a722d33f4a08931a0341ab840a6c15c56b289d621e8fc18bec8d55a8",
+  "flash_offset": 0,
+  "image_validation": "valid ESP32-S3 bootloader checksum and validation hash",
+  "bootloader": {"esp_idf": "v5.5.2", "compile_time": "Jan 20 2026 18:11:43"},
+  "factory_app": {"project": "03_Fac", "version": "1", "esp_idf": "v5.5.2", "compile_time": "Jan 20 2026 18:13:54"}
+}

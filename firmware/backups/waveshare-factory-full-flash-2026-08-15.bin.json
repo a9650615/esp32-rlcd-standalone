@@ -1,0 +1,23 @@
+{
+  "created_at": "2026-08-15T15:30:00+08:00",
+  "source": "complete flash read from connected Waveshare ESP32-S3-RLCD-4.2",
+  "read_only": true,
+  "port": "/dev/cu.usbmodem1101",
+  "chip": "ESP32-S3 (QFN56) revision v0.2",
+  "module": "ESP32-S3-WROOM-1-N16R8",
+  "flash_size": 16777216,
+  "flash_mode": "quad",
+  "flash_voltage": "3.3V",
+  "psram_size": 8388608,
+  "sha256": "68db31b92d8a37bd321101d9ffb093bf2f3213d3e0bf111368e9a8f59919650f",
+  "read_method": "esptool 5.3.1 ROM loader, 1 MiB chunks, --no-stub",
+  "verification": "independent device reread matched at offsets 0x000000, 0x700000, and 0xF00000",
+  "image_validation": "valid ESP32-S3 bootloader checksum and validation hash",
+  "bootloader": {"esp_idf": "v5.5.2", "compile_time": "Feb 27 2026 15:50:35"},
+  "factory_app": {"project": "03_Fac", "version": "1", "esp_idf": "v5.5.2", "compile_time": "Mar 2 2026 11:18:29"},
+  "partitions": [
+    {"label": "nvs", "type": 1, "subtype": 2, "offset": 36864, "size": 24576, "flags": 0},
+    {"label": "phy_init", "type": 1, "subtype": 1, "offset": 61440, "size": 4096, "flags": 0},
+    {"label": "factory", "type": 0, "subtype": 0, "offset": 65536, "size": 8388608, "flags": 0}
+  ]
+}
