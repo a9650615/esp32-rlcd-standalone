@@ -191,18 +191,20 @@ import os
 from pathlib import Path
 
 data = json.loads(Path("build/project_description.json").read_text(encoding="utf-8"))
-components = data.get("build_components")
-if not isinstance(components, list):
-    raise SystemExit("missing build_components list")
-if not any(item.get("name") == "ui" for item in components):
-    raise SystemExit("ui is absent from build_components")
+assert "build_components" in data, "missing build_components key"
+assert isinstance(data["build_components"], list), "build_components is not a list"
+assert "ui" in data["build_components"], "ui is absent from build_components"
+assert "build_component_info" in data, "missing build_component_info key"
+assert isinstance(data["build_component_info"], dict), "build_component_info is not a dict"
 consumer_name = os.environ["CONSUMER_COMPONENT"]
-consumer = next((item for item in components if item.get("name") == consumer_name), None)
-if consumer is None:
-    raise SystemExit(f"missing consuming component: {consumer_name}")
-deps = set(consumer.get("reqs", [])) | set(consumer.get("priv_reqs", []))
-if "ui" not in deps:
-    raise SystemExit(f"{consumer_name} has no REQUIRES/PRIV_REQUIRES edge to ui")
+assert consumer_name in data["build_component_info"], f"missing consuming component: {consumer_name}"
+consumer = data["build_component_info"][consumer_name]
+assert isinstance(consumer, dict), f"component info is not a dict: {consumer_name}"
+reqs = consumer.get("reqs", [])
+priv_reqs = consumer.get("priv_reqs", [])
+assert isinstance(reqs, list), f"reqs is not a list: {consumer_name}"
+assert isinstance(priv_reqs, list), f"priv_reqs is not a list: {consumer_name}"
+assert "ui" in set(reqs) | set(priv_reqs), f"{consumer_name} has no REQUIRES/PRIV_REQUIRES edge to ui"
 PY
 ```
 - a final full `idf.py build`; and
