@@ -245,6 +245,16 @@ void handle_wifi_disconnected(DisconnectReason reason) {
   unlock();
 }
 
+// Provider tasks start about 1.7 s before DHCP completes, so a fetch issued at
+// task start hits a stack with no route and fails with ESP_ERR_HTTP_CONNECT.
+// They wait on this instead of guessing a startup delay.
+bool station_has_ip() {
+  lock();
+  const bool connected = snapshot_.setup.connected;
+  unlock();
+  return connected;
+}
+
 void set_battery(const app_core::BatteryData& battery) {
   lock();
   snapshot_.battery = battery;

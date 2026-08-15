@@ -20,6 +20,10 @@ void toggle_setup();
 // app_main). Merges battery into the shared snapshot this component already
 // owns and republishes via ui::publish_snapshot() without touching
 // provisioning state, keeping a single snapshot publisher.
+// True once the station holds an IP. Network providers must gate their first
+// fetch on this; at boot they are running well before DHCP finishes.
+bool station_has_ip();
+
 void set_battery(const app_core::BatteryData& battery);
 
 // Same pattern as set_battery: callable from any task, merges the one field

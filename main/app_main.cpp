@@ -180,13 +180,34 @@ constexpr uint32_t kIndoorSamplePeriodMs = 60'000;
 // geolocation / manual override); AppSnapshot::new_york_weather is left
 // untouched (stays at its default-invalid state) rather than duplicating
 // this one reading into a second "city" that was never actually fetched.
+// A fetch issued before DHCP completes fails with ESP_ERR_HTTP_CONNECT, and
+// the provider then sleeps its full refresh interval - which is how a boot race
+// turned into half an hour of NO DATA on a network that was already up. Wait
+// for the address rather than guessing a startup delay.
+void wait_for_station_ip() {
+  while (!wifi_provision::station_has_ip()) {
+    vTaskDelay(pdMS_TO_TICKS(500));
+  }
+}
+
+// A failed fetch retries sooner than the normal interval so a transient outage
+// does not cost a full cycle, but not so often that a rate-limited or broken
+// endpoint gets hammered.
+constexpr uint32_t kProviderRetryPeriodMs = 5 * 60'000;
+
 [[noreturn]] void weather_monitor_task(void*) {
+  wait_for_station_ip();
   for (;;) {
-    if (!weather::refresh()) {
-      ESP_LOGW(kTag, "weather refresh failed; serving cached/stale reading");
-    }
-    wifi_provision::set_weather(weather::current());
-    vTaskDelay(pdMS_TO_TICKS(weather::kRefreshIntervalSeconds * 1000));
+    const bool ok = weather::refresh();
+    const app_core::WeatherData current = weather::current();
+    // Logged on success as well as failure: a silent success and a silent
+    // failure are indistinguishable from a serial capture, and that ambiguity
+    // has cost this project several debugging cycles already.
+    ESP_LOGI(kTag, "weather refresh ok=%d valid=%d stale=%d temp_c=%.1f", ok,
+             current.valid, current.stale, current.current.temperature_c);
+    wifi_provision::set_weather(current);
+    vTaskDelay(pdMS_TO_TICKS(ok ? weather::kRefreshIntervalSeconds * 1000
+                                : kProviderRetryPeriodMs));
   }
 }
 
@@ -196,16 +217,21 @@ constexpr uint32_t kIndoorSamplePeriodMs = 60'000;
 // or substituted value, so taiwan()/us() are safe to publish unconditionally
 // right after each refresh call.
 [[noreturn]] void market_monitor_task(void*) {
+  wait_for_station_ip();
   for (;;) {
-    if (!market::refresh_taiwan()) {
-      ESP_LOGW(kTag, "Taiwan market refresh failed");
-    }
-    wifi_provision::set_taiwan_market(market::taiwan());
-    if (!market::refresh_us()) {
-      ESP_LOGW(kTag, "US market refresh failed");
-    }
-    wifi_provision::set_us_market(market::us());
-    vTaskDelay(pdMS_TO_TICKS(market::kRefreshIntervalSeconds * 1000));
+    const bool taiwan_ok = market::refresh_taiwan();
+    const app_core::MarketData taiwan = market::taiwan();
+    ESP_LOGI(kTag, "taiwan refresh ok=%d valid=%d value=%d intraday=%d",
+             taiwan_ok, taiwan.valid, taiwan.primary_value, taiwan.has_intraday);
+    wifi_provision::set_taiwan_market(taiwan);
+    const bool us_ok = market::refresh_us();
+    const app_core::MarketData us = market::us();
+    ESP_LOGI(kTag, "us refresh ok=%d valid=%d value=%d intraday=%d", us_ok,
+             us.valid, us.primary_value, us.has_intraday);
+    wifi_provision::set_us_market(us);
+    vTaskDelay(pdMS_TO_TICKS((taiwan_ok && us_ok)
+                                 ? market::kRefreshIntervalSeconds * 1000
+                                 : kProviderRetryPeriodMs));
   }
 }
 
