@@ -31,7 +31,10 @@ HOST_TEST(ui_geometry_contract) {
   EXPECT_EQ(cells[2].bottom(), 276);
   EXPECT_TRUE(ui::tile_content_is_centered(cells[0]));
   EXPECT_TRUE(ui::tile_content_is_centered(cells[2]));
-  EXPECT_TRUE(ui::tile_content_has_no_reserved_footer(cells[2]));
+  // Home's single tall tile: centring must hold at full sidebar height too.
+  // The retired footer check failed here purely because the cell is more than
+  // three times its content tall, which is the layout working as designed.
+  EXPECT_TRUE(ui::tile_content_is_centered(ui::Rect{0, 0, 118, 276}));
 
   ui::UiContext context;
   EXPECT_TRUE(!ui::context_ready(context));

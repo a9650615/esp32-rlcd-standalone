@@ -123,12 +123,6 @@ constexpr bool tile_content_is_centered(const Rect cell) {
   return delta <= 2;
 }
 
-constexpr bool tile_content_has_no_reserved_footer(const Rect cell) {
-  const Rect content = tile_content_rect(cell);
-  return content.y >= cell.y && content.bottom() <= cell.bottom() &&
-         cell.bottom() - content.bottom() < cell.height / 3;
-}
-
 constexpr int safe_text_box_height(const int requested_height,
                                    const int font_line_height) {
   const int stroke_safe_height = font_line_height + 2 * kTextInset;

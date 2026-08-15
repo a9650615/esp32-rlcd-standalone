@@ -215,13 +215,6 @@ later when an issuer rotates.
 - Whether the IP geolocation lands on the right city. If it does not, the
   override setter exists but no settings-page field is wired to it yet.
 
-## Known cosmetic noise
-
-`ui_geometry: right tile has a reserved footer band` logs once per Home
-render. The debug-only tile check assumes the old three-tile geometry; Home now
-has one tall tile. Harmless, but it should be either fixed or removed rather
-than left to train people to ignore geometry warnings.
-
 ## Next slices, roughly in order
 
 1. **OTA update logic.** The layout and version number exist; the client does
@@ -235,7 +228,6 @@ than left to train people to ignore geometry warnings.
    The `storage` littlefs partition exists for exactly this; without
    persistence a history page only ever shows the current uptime.
 3. **A settings-page field for the weather location override.**
-4. **Fix or delete the stale tile footer check.**
 
 ## Reproducible commands
 

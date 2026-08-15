@@ -120,13 +120,15 @@ void tile(lv_obj_t* parent, const char* title, const char* value,
 #ifndef NDEBUG
   // Logged, not asserted: see the tree walk above - LVGL's assert handler
   // never returns, so a layout complaint would cost the whole display.
+  // Centering is the whole check: content centred in its cell leaves equal
+  // space above and below, so a dead band can only appear if centring fails.
+  // A separate footer test used to sit here and required the cell to be under
+  // three times the content height - true of the old three-tile sidebar, never
+  // of Home's single tall tile, so it warned once per render for a layout that
+  // was correct.
   if (!tile_content_is_centered(bounds)) {
     ESP_LOGW(kTag, "right tile content not vertically centered: y=%d h=%d",
              bounds.y, bounds.height);
-  }
-  if (!tile_content_has_no_reserved_footer(bounds)) {
-    ESP_LOGW(kTag, "right tile has a reserved footer band: y=%d h=%d", bounds.y,
-             bounds.height);
   }
 #endif
   const TileTextLayout rows = tile_text_layout(bounds);
