@@ -1,0 +1,5 @@
+config DEMO_MISSING_PAGE
+    bool "Hide weather page in demo fixture"
+    default n
+    help
+        Remove the weather page from the deterministic demo registry.

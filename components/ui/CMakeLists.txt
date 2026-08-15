@@ -3,6 +3,9 @@ idf_component_register(
         "ui_theme.cpp"
         "render_shared.cpp"
         "render_home.cpp"
+        "render_market.cpp"
+        "render_weather.cpp"
+        "render_indoor.cpp"
     INCLUDE_DIRS
         "include"
     REQUIRES

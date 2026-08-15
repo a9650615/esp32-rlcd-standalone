@@ -1,6 +1,7 @@
 #pragma once
 
 #include "app_snapshot.hpp"
+#include "ui_data.hpp"
 #include "ui_theme.hpp"
 
 #ifndef UI_THEME_GEOMETRY_ONLY
@@ -39,10 +40,21 @@ void render_home(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
                  Rect bounds, uint8_t active_page);
 void render_right_tiles(lv_obj_t* parent,
                         const app_core::AppSnapshot& snapshot, Rect bounds);
+void render_market_sidebar(lv_obj_t* parent,
+                           const app_core::AppSnapshot& snapshot,
+                           const app_core::MarketData& market,
+                           Rect bounds, bool us_market);
 // Shared by data pages in the next UI slice; Home intentionally does not call
 // this mast because its Clock Hero hierarchy is the page's primary content.
 void render_mast(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
                  Rect bounds);
+void render_market(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
+                   const app_core::MarketData& market, Rect bounds,
+                   uint8_t active_page, bool us_market);
+void render_weather(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
+                    Rect bounds, uint8_t active_page);
+void render_indoor(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
+                   Rect bounds, uint8_t active_page);
 
 // The caller owns the LVGL lock. A detached replacement is built completely
 // before the previous context-owned page root is deleted and the replacement

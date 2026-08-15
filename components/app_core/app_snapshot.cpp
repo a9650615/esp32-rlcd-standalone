@@ -55,6 +55,9 @@ AppSnapshot make_mock_snapshot(DemoScenario scenario) {
   snapshot.weather = taipei_weather();
   snapshot.indoor = {24.8, 57};
   snapshot.availability = {};
+#ifdef APP_CORE_DEMO_MISSING_PAGE
+  snapshot.availability.weather = false;
+#endif
   snapshot.scenario = scenario;
   return snapshot;
 }

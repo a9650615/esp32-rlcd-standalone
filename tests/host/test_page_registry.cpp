@@ -16,10 +16,16 @@ HOST_TEST(registry_has_all_five_pages_when_data_is_available) {
   const AppSnapshot snapshot = make_mock_snapshot(DemoScenario::TaiwanSession);
   PageRegistry registry;
   registry.begin_cycle(snapshot);
+#ifdef APP_CORE_DEMO_MISSING_PAGE
+  EXPECT_EQ(registry.page_ids(),
+            (std::vector<PageId>{PageId::Home, PageId::TaiwanMarket,
+                                 PageId::UsMarket, PageId::Indoor}));
+#else
   EXPECT_EQ(registry.page_ids(),
             (std::vector<PageId>{PageId::Home, PageId::TaiwanMarket,
                                  PageId::UsMarket, PageId::Weather,
                                  PageId::Indoor}));
+#endif
 }
 
 HOST_TEST(registry_omits_unavailable_pages) {
@@ -36,30 +42,48 @@ HOST_TEST(morning_alert_orders_weather_before_other_data_pages) {
   const AppSnapshot snapshot = make_mock_snapshot(DemoScenario::MorningAlert);
   PageRegistry registry;
   registry.begin_cycle(snapshot);
+#ifdef APP_CORE_DEMO_MISSING_PAGE
+  EXPECT_EQ(registry.page_ids(),
+            (std::vector<PageId>{PageId::Home, PageId::TaiwanMarket,
+                                 PageId::UsMarket, PageId::Indoor}));
+#else
   EXPECT_EQ(registry.page_ids(),
             (std::vector<PageId>{PageId::Home, PageId::Weather,
                                  PageId::TaiwanMarket, PageId::UsMarket,
                                  PageId::Indoor}));
+#endif
 }
 
 HOST_TEST(taiwan_session_orders_taiwan_market_first) {
   const AppSnapshot snapshot = make_mock_snapshot(DemoScenario::TaiwanSession);
   PageRegistry registry;
   registry.begin_cycle(snapshot);
+#ifdef APP_CORE_DEMO_MISSING_PAGE
+  EXPECT_EQ(registry.page_ids(),
+            (std::vector<PageId>{PageId::Home, PageId::TaiwanMarket,
+                                 PageId::UsMarket, PageId::Indoor}));
+#else
   EXPECT_EQ(registry.page_ids(),
             (std::vector<PageId>{PageId::Home, PageId::TaiwanMarket,
                                  PageId::UsMarket, PageId::Weather,
                                  PageId::Indoor}));
+#endif
 }
 
 HOST_TEST(night_session_orders_us_market_first) {
   const AppSnapshot snapshot = make_mock_snapshot(DemoScenario::NightSession);
   PageRegistry registry;
   registry.begin_cycle(snapshot);
+#ifdef APP_CORE_DEMO_MISSING_PAGE
+  EXPECT_EQ(registry.page_ids(),
+            (std::vector<PageId>{PageId::Home, PageId::UsMarket,
+                                 PageId::TaiwanMarket, PageId::Indoor}));
+#else
   EXPECT_EQ(registry.page_ids(),
             (std::vector<PageId>{PageId::Home, PageId::UsMarket,
                                  PageId::Weather, PageId::TaiwanMarket,
                                  PageId::Indoor}));
+#endif
 }
 
 HOST_TEST(registry_does_not_reorder_in_the_middle_of_a_cycle) {
