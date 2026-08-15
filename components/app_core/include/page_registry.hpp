@@ -2,6 +2,7 @@
 
 #include "app_snapshot.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -19,7 +20,7 @@ class PageRegistry {
 
   const std::vector<PageDescriptor>& descriptors() const { return descriptors_; }
   std::vector<PageId> page_ids() const;
-  size_t size() const { return descriptors_.size(); }
+  std::size_t size() const { return descriptors_.size(); }
 
  private:
   std::vector<PageDescriptor> descriptors_;

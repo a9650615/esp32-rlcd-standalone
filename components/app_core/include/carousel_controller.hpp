@@ -13,7 +13,6 @@ struct CarouselState {
   uint64_t page_started_ms = 0;
   uint64_t manual_until_ms = 0;
   bool manual_mode = false;
-  size_t page_count = kPageCount;
 };
 
 struct Transition {
@@ -23,9 +22,10 @@ struct Transition {
 
 namespace carousel {
 
-Transition tick(CarouselState state, uint64_t now_ms, uint8_t dwell_seconds);
-Transition next(CarouselState state, uint64_t now_ms);
-Transition previous(CarouselState state, uint64_t now_ms);
+Transition tick(CarouselState state, uint64_t now_ms, uint8_t dwell_seconds,
+                size_t page_count);
+Transition next(CarouselState state, uint64_t now_ms, size_t page_count);
+Transition previous(CarouselState state, uint64_t now_ms, size_t page_count);
 
 }  // namespace carousel
 }  // namespace app_core
