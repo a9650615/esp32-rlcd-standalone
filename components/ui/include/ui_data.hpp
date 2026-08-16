@@ -430,7 +430,10 @@ struct SystemTrayLayout {
 // words - "WIFI", "NO WIFI", "BAT 91%" - which is a lot of the tray spent on
 // two facts that a shape carries at a glance. The exact charge figure moved to
 // the settings page, where it is the number a calibration is compared against.
-inline constexpr int kTrayWifiIconWidth = 18;
+// Three stacked arcs plus a dot need height; the battery does not, so they
+// are sized separately rather than sharing one number that suits neither.
+inline constexpr int kTrayWifiIconWidth = 22;
+inline constexpr int kTrayWifiIconHeight = 20;
 inline constexpr int kTrayIconHeight = 14;
 inline constexpr int kTrayBatteryIconWidth = 30;
 inline constexpr int kTrayIconGap = 8;
@@ -473,8 +476,9 @@ constexpr SystemTrayLayout system_tray_layout(const Rect bounds,
   const int icon_y = bounds.y + (kSystemTrayHeight - kTrayIconHeight) / 2;
   const Rect battery{bounds.right() - kTrayBatteryIconWidth, icon_y,
                      kTrayBatteryIconWidth, kTrayIconHeight};
-  const Rect network{battery.x - kTrayIconGap - kTrayWifiIconWidth, icon_y,
-                     kTrayWifiIconWidth, kTrayIconHeight};
+  const Rect network{battery.x - kTrayIconGap - kTrayWifiIconWidth,
+                     bounds.y + (kSystemTrayHeight - kTrayWifiIconHeight) / 2,
+                     kTrayWifiIconWidth, kTrayWifiIconHeight};
   return {time, network, battery};
 }
 

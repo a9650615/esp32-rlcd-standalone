@@ -522,6 +522,14 @@ void timer_callback(lv_timer_t* timer) {
           render_page(runtime->context, runtime->snapshot,
                       app_core::PageId::Ota, safe_canvas(), 0, 0);
       if (rendered == nullptr) ESP_LOGE(kTag, "renderer failure page=Ota");
+#ifndef NDEBUG
+      // This page takes the screen and returns early, so it never reached the
+      // carousel's own arming below - the one screen that most wants looking
+      // at was the one the screenshot tool could not reach.
+      runtime->shot_pending = true;
+      runtime->shot_after_frame = board::lvgl_frame_count() + 1;
+      runtime->shot_page = app_core::PageId::Ota;
+#endif
     }
     runtime->showing_ota = true;
     // Not setup.active: Setup may still be logically active underneath, but it

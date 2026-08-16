@@ -268,22 +268,22 @@ void humidity_icon(lv_obj_t* parent, Rect bounds, bool inverse) {
                inverse);
 }
 
-// The radiating fan, not signal bars - bars read as cellular, and this is a
-// wifi indicator.
+// Three thick arcs over a filled dot - the standard mark.
 //
-// There is no arc primitive here and no diagonal, so the arcs are whole rings
-// whose centres sit below the bottom of a clipping container: LVGL clips
-// children to their parent unless LV_OBJ_FLAG_OVERFLOW_VISIBLE is set, so only
-// each ring's upper half is drawn. Two rings and a dot give the standard mark.
+// There is no arc primitive here and no diagonal, so each arc is a whole ring
+// concentric with the dot, clipped by a container whose bottom edge sits above
+// the dot: LVGL clips children to their parent unless OVERFLOW_VISIBLE is set,
+// so only the upper cap of each ring survives. The ends come out cut square
+// rather than angled, which is the one way this differs from the drawn glyph;
+// at tray size that is not what the eye picks up. Stroke weight and the
+// number of bands are.
 //
 // Returns the arcs so the caller can hide them in place. Rebuilding the page
-// to change a connection indicator would repaint the whole panel, which is
-// visible on a reflective display.
+// to change a connection indicator would repaint the whole panel visibly.
 WifiIconParts wifi_icon(lv_obj_t* parent, Rect bounds, bool connected) {
   WifiIconParts parts{};
-  const int dot = 4;
-  // Everything above the dot is arc; the container's bottom edge is where the
-  // rings are cut.
+  const int dot = std::max(5, bounds.height * 3 / 10);
+  const int stroke = std::max(2, bounds.height / 7);
   const int arc_height = bounds.height - dot - 1;
   lv_obj_t* clip = lv_obj_create(parent);
   if (clip == nullptr) return parts;
@@ -291,42 +291,37 @@ WifiIconParts wifi_icon(lv_obj_t* parent, Rect bounds, bool connected) {
   lv_obj_set_pos(clip, bounds.x, bounds.y);
   lv_obj_set_size(clip, bounds.width, arc_height);
 
-  // Concentric about the dot, which sits below the container - so what shows
-  // is a shallow cap of each circle rather than a half of it. Centring them on
-  // the container's own bottom edge gave exact semicircles, and a semicircle
-  // is a dome: that is the hotspot idiom, not the wifi one.
   const int centre_x = bounds.width / 2;
-  const int dot_centre_y = bounds.height - dot / 2 - 1;
-  // Both diameters are chosen so the visible cap is genuinely curved. Going
-  // much wider than the icon flattens the top of the circle into a straight
-  // line across the container - measured, not guessed: at radius 16 with the
-  // centre 11px down, the arc is already 23px wide by the time it reaches the
-  // top edge of an 18px box.
-  const int diameters[2] = {bounds.width, bounds.width * 3 / 5};
-  for (int i = 0; i < 2; ++i) {
+  // Relative to the container, so the rings are concentric with the dot that
+  // sits below it. Centring them on the container's own edge would give exact
+  // semicircles, and a dome over a dot is the hotspot idiom.
+  const int centre_y = bounds.height - dot / 2 - 1;
+  // Evenly spaced bands: the outermost reaches the top of the icon, the
+  // innermost stops just above the dot.
+  const int span = arc_height;
+  for (int i = 0; i < 3; ++i) {
+    const int radius = centre_y - (span * i) / 3;
     lv_obj_t* ring = lv_obj_create(clip);
     if (ring == nullptr) continue;
     apply_surface(ring);
-    const int size = diameters[i];
-    lv_obj_set_pos(ring, centre_x - size / 2, dot_centre_y - size / 2);
-    lv_obj_set_size(ring, size, size);
+    lv_obj_set_pos(ring, centre_x - radius, centre_y - radius);
+    lv_obj_set_size(ring, radius * 2, radius * 2);
     lv_obj_set_style_radius(ring, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_opa(ring, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(ring, 2, 0);
+    lv_obj_set_style_border_width(ring, stroke, 0);
     lv_obj_set_style_border_color(ring, lv_color_black(), 0);
     parts.bars[i] = ring;
   }
-  // The dot is always drawn: an indicator that disappears entirely is
-  // indistinguishable from one that failed to render.
-  filled_circle(parent, bounds.x + centre_x, bounds.bottom() - dot / 2 - 1,
-                dot, false);
+  // Always drawn: an indicator that vanishes completely cannot be told apart
+  // from one that failed to render.
+  filled_circle(parent, bounds.x + centre_x, bounds.y + centre_y, dot, false);
   set_wifi_icon_state(parts, connected);
   return parts;
 }
 
 void set_wifi_icon_state(const WifiIconParts& parts, bool connected) {
   // Hidden rather than hollowed: these are already outlines, so there is no
-  // emptier version of them to fall back to. Dot alone means no link.
+  // emptier version to fall back to. The dot alone means no link.
   for (lv_obj_t* ring : parts.bars) {
     if (ring == nullptr) continue;
     lv_obj_set_style_border_opa(ring, connected ? LV_OPA_COVER : LV_OPA_TRANSP,
