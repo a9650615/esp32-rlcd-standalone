@@ -21,16 +21,29 @@ void release_points(lv_event_t* event) {
   delete[] points;
 }
 
+// Draws only the points that were actually recorded. The array's unused tail
+// is zeros, and a line through those is a shape made of readings nobody took -
+// the same objection this project has to a flat intraday chart drawn from a
+// repeated close.
 void mini_history(lv_obj_t* parent, const Rect bounds,
-                  const std::array<double, 8>& history) {
+                  const std::array<double, 8>& history, std::size_t count) {
+  if (count < 2) {
+    // One point is not a trend, and zero is not a chart. Say which.
+    label(parent, text(Text::HistoryCollecting), bounds, small_font(),
+          LV_TEXT_ALIGN_CENTER);
+    return;
+  }
   std::array<int, 8> samples{};
-  for (std::size_t index = 0; index < history.size(); ++index) {
+  for (std::size_t index = 0; index < count; ++index) {
     samples[index] = static_cast<int>(history[index] * 10.0);
   }
-  const auto normalized = normalize_chart_samples(samples, bounds);
-  auto* points = new (std::nothrow) lv_point_precise_t[normalized.size()];
+  // Scale across the recorded span only, so a half-full history uses the whole
+  // width instead of trailing off into the empty slots.
+  const auto normalized =
+      normalize_chart_samples_n(samples, bounds, count);
+  auto* points = new (std::nothrow) lv_point_precise_t[count];
   if (points == nullptr) return;
-  for (std::size_t index = 0; index < normalized.size(); ++index) {
+  for (std::size_t index = 0; index < count; ++index) {
     points[index] = {normalized[index].x - bounds.x,
                      normalized[index].y - bounds.y};
   }
@@ -45,7 +58,7 @@ void mini_history(lv_obj_t* parent, const Rect bounds,
   lv_obj_set_style_line_color(line, lv_color_black(), 0);
   lv_obj_set_style_line_width(line, kDataLineWidth, 0);
   lv_obj_set_style_line_rounded(line, false, 0);
-  lv_line_set_points(line, points, normalized.size());
+  lv_line_set_points(line, points, static_cast<uint32_t>(count));
   lv_obj_add_event_cb(line, release_points, LV_EVENT_DELETE, points);
 }
 
@@ -105,7 +118,8 @@ void render_indoor(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
     label(parent, text(Text::TileHistory), {primary.x + 8, primary.y + 174, 72, 18},
           small_font());
     mini_history(parent, {primary.x + 8, primary.y + 195, primary.width - 16, 35},
-                 snapshot.indoor.temperature_history_c);
+                 snapshot.indoor.temperature_history_c,
+                 snapshot.indoor.temperature_history_count);
   }
 
   // No sidebar. The market pages used to lend this page their column, which

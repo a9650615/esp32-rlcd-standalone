@@ -846,6 +846,38 @@ static_assert(
 // bottom edge - forecast_rows_clear_page_dots and its static_assert were
 // removed along with that overlap concern.
 
+// As normalize_chart_samples, but over the first `count` samples only, so a
+// partly-filled series spans the full width instead of running into its own
+// empty tail. `count` below 2 returns nothing usable - the caller should not
+// be drawing a line from fewer than two points.
+constexpr std::array<ChartPoint, 8> normalize_chart_samples_n(
+    const std::array<int, 8>& samples, const Rect bounds, std::size_t count) {
+  std::array<ChartPoint, 8> points{};
+  if (count < 2) return points;
+  if (count > samples.size()) count = samples.size();
+  int minimum = samples[0];
+  int maximum = samples[0];
+  for (std::size_t i = 1; i < count; ++i) {
+    if (samples[i] < minimum) minimum = samples[i];
+    if (samples[i] > maximum) maximum = samples[i];
+  }
+  const int range = maximum - minimum;
+  for (std::size_t index = 0; index < count; ++index) {
+    const int x =
+        bounds.x + static_cast<int>((index * static_cast<std::size_t>(
+                                         bounds.width - 1)) /
+                                    (count - 1));
+    int y = bounds.y + bounds.height / 2;
+    if (range != 0) {
+      y = bounds.y + ((maximum - samples[index]) * (bounds.height - 1)) / range;
+    }
+    if (y < bounds.y) y = bounds.y;
+    if (y >= bounds.bottom()) y = bounds.bottom() - 1;
+    points[index] = {x, y};
+  }
+  return points;
+}
+
 constexpr std::array<ChartPoint, 8> normalize_chart_samples(
     const std::array<int, 8>& samples, const Rect bounds) {
   std::array<ChartPoint, 8> points{};

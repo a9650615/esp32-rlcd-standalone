@@ -58,6 +58,7 @@ enum class Text : uint16_t {
   TileMarket,
   TileWeather,
   TileHistory,
+  HistoryCollecting,
   TileRange,
   MarketClose,
   TileStatus,

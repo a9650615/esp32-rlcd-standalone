@@ -16,6 +16,7 @@
 #include "weather.hpp"
 #include "wifi_provision.hpp"
 
+#include <array>
 #include <cstdio>
 #include <cstring>
 
@@ -277,7 +278,20 @@ constexpr uint32_t kIndoorSamplePeriodMs = 60'000;
 // even on failure, with a freshly default-constructed IndoorData (valid
 // stays false): a read/CRC failure must flip the page to NO DATA, not leave
 // whatever the last valid reading was sitting on screen as though current.
+// One history point per half hour, so the eight slots span four hours - long
+// enough for a room's trend to be a shape rather than noise, short enough that
+// the display says something on the day it is switched on. The reading itself
+// is still sampled every minute; this only decides how often one is kept.
+//
+// In RAM, so it starts empty after a reboot. The chart draws only the points
+// that exist rather than padding with zeros, which is why the count travels
+// with the array.
+constexpr uint32_t kIndoorHistoryIntervalMs = 30 * 60'000;
+
 [[noreturn]] void indoor_monitor_task(void*) {
+  std::array<double, 8> history{};
+  uint8_t history_count = 0;
+  uint32_t since_history_ms = kIndoorHistoryIntervalMs;  // record immediately
   for (;;) {
     app_core::IndoorData indoor;
     float temperature_c = 0.0f;
@@ -292,6 +306,28 @@ constexpr uint32_t kIndoorSamplePeriodMs = 60'000;
     } else {
       ESP_LOGW(kTag, "SHTC3 read failed");
     }
+    // Only a good reading advances the history; a failed read must not push a
+    // gap into the series and it must not silently age the interval either.
+    if (indoor.valid) {
+      since_history_ms += kIndoorSamplePeriodMs;
+      if (since_history_ms >= kIndoorHistoryIntervalMs) {
+        since_history_ms = 0;
+        if (history_count < history.size()) {
+          history[history_count++] = indoor.temperature_c;
+        } else {
+          for (std::size_t i = 1; i < history.size(); ++i) {
+            history[i - 1] = history[i];
+          }
+          history[history.size() - 1] = indoor.temperature_c;
+        }
+        ESP_LOGI(kTag, "indoor history: %u/%u points, newest %.1f C",
+                 history_count, static_cast<unsigned>(history.size()),
+                 indoor.temperature_c);
+      }
+    }
+    indoor.temperature_history_c = history;
+    indoor.temperature_history_count = history_count;
+
     wifi_provision::set_indoor(indoor);
     vTaskDelay(pdMS_TO_TICKS(kIndoorSamplePeriodMs));
   }

@@ -230,12 +230,31 @@ void weather_icon(lv_obj_t* parent, Rect bounds, WeatherIconKind kind,
   }
 }
 
+// A thermometer: bulb, stem, and two scale ticks. The previous version was
+// four thin bars that read as a tally mark rather than an instrument - the
+// same failure the weather icons had, where fine strokes disappear on a panel
+// with no backlight and contrast that depends on the room.
+//
+// The bulb is the recognition: a filled circle under a filled stem is a
+// thermometer at almost any size, where an outline of one is not.
 void temperature_icon(lv_obj_t* parent, Rect bounds, bool inverse) {
-  const int stem_x = bounds.x + bounds.width / 2;
-  line_segment(parent, stem_x, bounds.y + 2, 2, bounds.height - 8, inverse);
-  line_segment(parent, stem_x - 4, bounds.y + bounds.height - 8, 10, 2, inverse);
-  line_segment(parent, stem_x - 4, bounds.y + 2, 2, 5, inverse);
-  line_segment(parent, stem_x + 4, bounds.y + 2, 2, 5, inverse);
+  const int centre_x = bounds.x + bounds.width / 2;
+  const int bulb = std::max(6, bounds.width / 2);
+  const int stem_width = std::max(3, bulb / 3);
+  const int stem_top = bounds.y + 1;
+  const int bulb_centre_y = bounds.bottom() - bulb / 2 - 1;
+
+  // Stem runs into the bulb so the two read as one body, not a ball on a pole.
+  line_segment(parent, centre_x - stem_width / 2, stem_top, stem_width,
+               bulb_centre_y - stem_top, inverse);
+  filled_circle(parent, centre_x, bulb_centre_y, bulb, inverse);
+
+  // Two ticks on the left, which is what separates a thermometer from a pin.
+  const int tick_width = std::max(3, bulb / 2);
+  const int tick_x = centre_x - stem_width / 2 - tick_width - 1;
+  const int span = bulb_centre_y - stem_top;
+  line_segment(parent, tick_x, stem_top + span / 4, tick_width, 2, inverse);
+  line_segment(parent, tick_x, stem_top + span / 2, tick_width, 2, inverse);
 }
 
 void humidity_icon(lv_obj_t* parent, Rect bounds, bool inverse) {
@@ -249,38 +268,61 @@ void humidity_icon(lv_obj_t* parent, Rect bounds, bool inverse) {
                inverse);
 }
 
-// Three ascending bars, filled when the station holds an address and hollow
-// when it does not. No diagonal is available on this renderer, so a crossed-out
-// or curved wifi glyph is not on the table; filled-versus-hollow is the one
-// distinction that survives at 18px on a reflective panel.
+// The radiating fan, not signal bars - bars read as cellular, and this is a
+// wifi indicator.
 //
-// Returns the bars so the caller can restyle them in place. Rebuilding the
-// page to change a connection indicator would repaint the whole panel, which
-// is visible here.
+// There is no arc primitive here and no diagonal, so the arcs are whole rings
+// whose centres sit below the bottom of a clipping container: LVGL clips
+// children to their parent unless LV_OBJ_FLAG_OVERFLOW_VISIBLE is set, so only
+// each ring's upper half is drawn. Two rings and a dot give the standard mark.
+//
+// Returns the arcs so the caller can hide them in place. Rebuilding the page
+// to change a connection indicator would repaint the whole panel, which is
+// visible on a reflective display.
 WifiIconParts wifi_icon(lv_obj_t* parent, Rect bounds, bool connected) {
   WifiIconParts parts{};
-  const int gap = 2;
-  const int bar_width = (bounds.width - 2 * gap) / 3;
-  for (int i = 0; i < 3; ++i) {
-    const int height = bounds.height * (i + 2) / 4;
-    lv_obj_t* bar = line_segment(parent, bounds.x + i * (bar_width + gap),
-                                 bounds.bottom() - height, bar_width, height,
-                                 false);
-    if (bar != nullptr) {
-      lv_obj_set_style_border_width(bar, 1, 0);
-      lv_obj_set_style_border_color(bar, lv_color_black(), 0);
-    }
-    parts.bars[i] = bar;
+  const int dot = 4;
+  // Everything above the dot is arc; the container's bottom edge is where the
+  // rings are cut.
+  const int arc_height = bounds.height - dot - 1;
+  lv_obj_t* clip = lv_obj_create(parent);
+  if (clip == nullptr) return parts;
+  apply_surface(clip);
+  lv_obj_set_pos(clip, bounds.x, bounds.y);
+  lv_obj_set_size(clip, bounds.width, arc_height);
+
+  // Ring centres land on the container's bottom edge, so each contributes its
+  // top half only.
+  const int centre_x = bounds.width / 2;
+  const int diameters[2] = {bounds.width, bounds.width * 5 / 9};
+  for (int i = 0; i < 2; ++i) {
+    lv_obj_t* ring = lv_obj_create(clip);
+    if (ring == nullptr) continue;
+    apply_surface(ring);
+    const int size = diameters[i];
+    lv_obj_set_pos(ring, centre_x - size / 2, arc_height - size / 2);
+    lv_obj_set_size(ring, size, size);
+    lv_obj_set_style_radius(ring, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_opa(ring, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(ring, 2, 0);
+    lv_obj_set_style_border_color(ring, lv_color_black(), 0);
+    parts.bars[i] = ring;
   }
+  // The dot is always drawn: an indicator that disappears entirely is
+  // indistinguishable from one that failed to render.
+  filled_circle(parent, bounds.x + centre_x, bounds.bottom() - dot / 2 - 1,
+                dot, false);
   set_wifi_icon_state(parts, connected);
   return parts;
 }
 
 void set_wifi_icon_state(const WifiIconParts& parts, bool connected) {
-  for (lv_obj_t* bar : parts.bars) {
-    if (bar == nullptr) continue;
-    lv_obj_set_style_bg_color(bar, connected ? lv_color_black()
-                                             : lv_color_white(), 0);
+  // Hidden rather than hollowed: these are already outlines, so there is no
+  // emptier version of them to fall back to. Dot alone means no link.
+  for (lv_obj_t* ring : parts.bars) {
+    if (ring == nullptr) continue;
+    lv_obj_set_style_border_opa(ring, connected ? LV_OPA_COVER : LV_OPA_TRANSP,
+                                0);
   }
 }
 

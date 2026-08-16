@@ -99,6 +99,11 @@ struct IndoorData {
   uint8_t humidity_percent = 0;
   // Deterministic mock history for this snapshot-only slice.
   std::array<double, 8> temperature_history_c{};
+  // How many of the history slots hold a real reading, oldest first. Zero
+  // until the first interval elapses. Without it the array's leading zeros are
+  // indistinguishable from measurements of 0 C, and the chart drew a line
+  // through them - a shape made of numbers nobody recorded.
+  uint8_t temperature_history_count = 0;
 };
 
 struct Availability {
