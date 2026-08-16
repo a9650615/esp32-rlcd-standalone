@@ -13,7 +13,6 @@ idf_component_register(
         "ui_strings.cpp"
         "settings_menu.cpp"
         "ui_fonts.cpp"
-        "ui_screenshot.cpp"
         "fonts/rlcd_cjk_14.c"
         "fonts/rlcd_cjk_20.c"
         "fonts/rlcd_cjk_28.c"

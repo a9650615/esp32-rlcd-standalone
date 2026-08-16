@@ -171,18 +171,19 @@ Debug builds photograph themselves, and the picture comes back over the network:
 ./scripts/remote.sh shot out/     # PNG of what is on the panel right now
 ```
 
-That is `GET /shot`, answered on demand. There is also a once-per-boot dump of
-every page into the log stream, which is what to read when the question is
-about a page you cannot get the carousel to sit on, or about boot order. Both
-emit the same `SHOT <base64>` lines, and `scripts/decode-screenshots.py` reads
-either without being told which.
+That is `GET /shot`, answered on demand, and it is the only screenshot path.
+`scripts/decode-screenshots.py` turns its `SHOT <base64>` output into a PNG.
 
-Two things about the boot-time dump that each cost a cycle to rediscover: the
-page already on screen at boot does not emit until the carousel brings it back
-around, so a capture shorter than ~90 s silently returns a subset that reads as
-"those pages are broken"; and `/shot` returns **403 while the setup page is
-showing**, deliberately, because that page prints the portal password and a
-screenshot route that answered would hand it to the whole LAN.
+It returns **403 while the setup page is showing**, deliberately: that page
+prints the portal password, and a screenshot route that answered would hand it
+to the whole LAN.
+
+There used to be a second path that dumped every page into the log once per
+boot. Do not bring it back. Five frames is ~115 KB of base64 against a 128 KB
+retained ring, so the ring held almost nothing but pictures, every reconnect
+replayed them before showing anything current, and real diagnostics were
+evicted - which presented as events "missing" from captures that had in fact
+recorded them.
 
 Use it for anything about arrangement: clipping, overlap, alignment, a value that never arrived, a page still carrying another page's content. Three defects that no geometry check could see were found in the first two captures - a temperature rendered in a digits-only font and coming out as an empty box, a sensor page still drawing a market sidebar, and seven forecast columns all truncated to `Thun...`.
 

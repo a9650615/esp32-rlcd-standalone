@@ -32,6 +32,7 @@
 #include <esp_err.h>
 #include <esp_heap_caps.h>
 #include <esp_log.h>
+#include <esp_system.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
@@ -772,6 +773,36 @@ extern "C" void app_main() {
   // does. Without this the answers were gone before anyone could connect,
   // which on a board with no cable means they were unobservable.
   (void)net_log::begin();
+
+  // Why the last boot ended, logged where the network can see it.
+  //
+  // A panic writes its backtrace straight to UART and never reaches the log
+  // sink, and the reboot takes the retained ring with it, so on a board with
+  // no cable a crash leaves no trace at all - the only symptom is an image
+  // that quietly gets rolled back. This is the one breadcrumb that survives,
+  // because the reason is held in RTC memory across the reset.
+  const esp_reset_reason_t reset_reason = esp_reset_reason();
+  const char* reset_text = "other";
+  switch (reset_reason) {
+    case ESP_RST_POWERON: reset_text = "power-on"; break;
+    case ESP_RST_SW: reset_text = "software restart"; break;
+    case ESP_RST_PANIC: reset_text = "PANIC (crash)"; break;
+    case ESP_RST_INT_WDT: reset_text = "interrupt watchdog"; break;
+    case ESP_RST_TASK_WDT: reset_text = "task watchdog"; break;
+    case ESP_RST_WDT: reset_text = "other watchdog"; break;
+    case ESP_RST_BROWNOUT: reset_text = "brownout"; break;
+    case ESP_RST_EXT: reset_text = "external reset"; break;
+    default: break;
+  }
+  if (reset_reason == ESP_RST_PANIC || reset_reason == ESP_RST_INT_WDT ||
+      reset_reason == ESP_RST_TASK_WDT || reset_reason == ESP_RST_WDT ||
+      reset_reason == ESP_RST_BROWNOUT) {
+    ESP_LOGE(kTag, "previous boot ended in %s (reason %d)", reset_text,
+             static_cast<int>(reset_reason));
+  } else {
+    ESP_LOGI(kTag, "previous boot ended in %s (reason %d)", reset_text,
+             static_cast<int>(reset_reason));
+  }
 
   esp_err_t result = board::display_init();
   if (result != ESP_OK) fatal_loop("display initialization failed", result);
