@@ -134,7 +134,16 @@ inline constexpr int kSetupStatusGap = 6;
 // has plenty of unused height below the instructions row (see
 // setup_layout_fits below), so this only needs to be generously large, not
 // an exact font-metric calculation.
-inline constexpr int kSetupStatusHeight = 4 * kSetupLineHeight;
+inline constexpr int kSetupStatusHeight = 3 * kSetupLineHeight;
+// Two wrapped lines. One line was never enough: at 168px of usable column the
+// English instruction measured 481px and the Chinese 309px, so most of the
+// sentence explaining how to use the page had been clipped away since it was
+// written. Nothing caught it because the Setup page only renders behind a KEY
+// long press, and the overflow log only fires for labels actually drawn.
+// Three, because the English sentence needs 352px at 168px per line and
+// shaving it to two would mean writing worse English to fit a box. The column
+// has the room: setup_layout_fits below is what proves it still does.
+inline constexpr int kSetupInstructionsHeight = 3 * kSetupLineHeight;
 inline constexpr char kSetupTitle[] = "Setup";
 inline constexpr char kSetupNoSsidLabel[] = "AP SSID unavailable";
 inline constexpr char kSetupNoPortalPasswordLabel[] = "PAGE PW: unavailable";
@@ -167,7 +176,7 @@ constexpr SetupLayout setup_layout(const Rect bounds) {
   const Rect portal{bounds.x, password.bottom() + kSetupTightLineGap,
                     text_width, kSetupLineHeight};
   const Rect instructions{bounds.x, portal.bottom() + kSetupBlockGap,
-                          text_width, kSetupLineHeight};
+                          text_width, kSetupInstructionsHeight};
   const Rect status{bounds.x, instructions.bottom() + kSetupStatusGap,
                     text_width, kSetupStatusHeight};
   return {qr, title, ssid, password, portal, instructions, status};

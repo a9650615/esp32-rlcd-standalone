@@ -57,11 +57,18 @@ void render_setup(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
     // fallback, not just an apology: the AP is open (no Wi-Fi password to
     // relay), and both portal_url and the page password are already on
     // screen for manual entry.
-    label(parent, text(Text::SetupQrUnavailable), layout.qr, small_font(),
-         LV_TEXT_ALIGN_CENTER);
+    lv_obj_t* fallback = label(parent, text(Text::SetupQrUnavailable),
+                               layout.qr, small_font(), LV_TEXT_ALIGN_CENTER);
+    // The QR rect is 200px square, so there is room to wrap; without this the
+    // Chinese wording needs 207px on one line and loses its ending.
+    if (fallback != nullptr) lv_label_set_long_mode(fallback, LV_LABEL_LONG_WRAP);
   }
 
-  label(parent, text(Text::SetupInstructions), layout.instructions, small_font());
+  lv_obj_t* instructions = label(parent, text(Text::SetupInstructions),
+                                 layout.instructions, small_font());
+  if (instructions != nullptr) {
+    lv_label_set_long_mode(instructions, LV_LABEL_LONG_WRAP);
+  }
   const std::string status = setup_status_text(snapshot.setup.status);
   lv_obj_t* status_label = label(parent, status.c_str(), layout.status, small_font());
   if (status_label != nullptr) {
