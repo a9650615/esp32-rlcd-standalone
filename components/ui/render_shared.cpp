@@ -449,6 +449,11 @@ lv_obj_t* render_page(UiContext& context,
     button_hints(replacement, page_dots_band(local_bounds),
                  input_hints(InputContext::Menu));
   }
+#ifndef NDEBUG
+  // After the tree is complete but before it is handed to the host, so the
+  // snapshot is of a finished page.
+  lv_obj_update_layout(replacement);
+#endif
   lv_obj_set_parent(replacement, context.host);
   lv_obj_delete(staging_screen);
   if (context.root != nullptr && context.root != replacement) {

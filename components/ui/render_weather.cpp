@@ -65,7 +65,7 @@ void render_weather(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
           LV_TEXT_ALIGN_CENTER);
     weather_icon(parent, layout.icon,
                 weather_icon_kind_for_condition(day.condition));
-    label(parent, day.condition.c_str(),
+    label(parent, forecast_condition_short(day.condition),
           {layout.condition.x + 1, layout.condition.y,
            layout.condition.width - 2, layout.condition.height},
           small_font(), LV_TEXT_ALIGN_CENTER);

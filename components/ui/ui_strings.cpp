@@ -65,7 +65,7 @@ constexpr Row kRows[] = {
     {"LOW BATTERY", "電量偏低"},
     {"OVERVOLTAGE", "電壓過高"},
     {"DRY", "偏乾"},
-    {"HUMID", "偏濕"},
+    {"WET", "偏濕"},
     {"MID", "盤中"},
     {"NOW", "現在"},
     {"WIFI: ", "熱點: "},

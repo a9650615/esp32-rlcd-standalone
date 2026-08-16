@@ -17,6 +17,9 @@
 #include <lvgl.h>
 
 #include "board_buttons.hpp"
+#ifndef NDEBUG
+#include "ui_screenshot.hpp"
+#endif
 #include "lvgl_port.hpp"
 
 namespace ui {
@@ -44,6 +47,14 @@ struct Runtime {
   // Same role as showing_setup, for the settings menu.
   bool showing_settings = false;
   SettingsMenu settings;
+#ifndef NDEBUG
+  // A page renders on one tick and its pixels reach the panel on the next, so
+  // the screenshot is taken a tick late - otherwise it captures the page that
+  // was on screen before.
+  bool shot_pending = false;
+  app_core::PageId shot_page = app_core::PageId::Home;
+  uint32_t shot_after_frame = 0;
+#endif
   // Tracks whether the Setup page (rather than a carousel page) is the last
   // thing rendered, so entering/leaving setup mode triggers exactly one
   // atomic page replacement instead of one every 100 ms tick.
@@ -297,6 +308,14 @@ void timer_callback(lv_timer_t* timer) {
 
   if (!runtime->initialized) return;
 
+#ifndef NDEBUG
+  if (runtime->shot_pending &&
+      board::lvgl_frame_count() >= runtime->shot_after_frame) {
+    runtime->shot_pending = false;
+    dump_frame_once(runtime->shot_page, page_name(runtime->shot_page));
+  }
+#endif
+
   // Set when the settings page needs redrawing - the cursor moved, a value
   // changed, or it was just opened.
   bool settings_dirty = false;
@@ -549,6 +568,16 @@ void timer_callback(lv_timer_t* timer) {
     page_rebuilt = true;
   }
   runtime->showing_setup = runtime->snapshot.setup.active;
+
+#ifndef NDEBUG
+  if (page_rebuilt) {
+    runtime->shot_pending = true;
+    runtime->shot_after_frame = board::lvgl_frame_count() + 1;
+    runtime->shot_page = runtime->active_pages.empty()
+                             ? app_core::PageId::Home
+                             : runtime->active_pages[runtime->carousel.index];
+  }
+#endif
 
   const uint64_t before_minute = runtime->last_clock_minute;
   update_clock(*runtime, now_ms);

@@ -195,6 +195,33 @@ constexpr bool setup_layout_fits(const Rect content) {
         rect_within(content, layout.status);
 }
 
+// A forecast column is 49px wide. "Thunderstorm" measures 106px there and
+// arrives as "Thun...", which distinguishes it from nothing. The icon narrows
+// the answer to one of four silhouettes; this word is what separates showers
+// from a thunderstorm inside that, so dropping it loses real information and
+// truncating it loses the same information more slowly.
+//
+// A vocabulary sized for the column instead. Every term below fits at font 14,
+// and the mapping is by substring for the same reason
+// weather_icon_kind_for_condition is: a WMO wording this does not know about
+// should fall through to something honest rather than to a blank.
+inline const char* forecast_condition_short(const std::string& condition) {
+  if (condition.find("Tstorm") != std::string::npos ||
+      condition.find("Thunder") != std::string::npos) return "STRM";
+  if (condition.find("Snow") != std::string::npos) return "SNOW";
+  if (condition.find("Shower") != std::string::npos) return "SHWR";
+  if (condition.find("Icy") != std::string::npos) return "ICE";
+  if (condition.find("Drizzle") != std::string::npos) return "DRIZ";
+  if (condition.find("Rain") != std::string::npos) return "RAIN";
+  if (condition.find("Fog") != std::string::npos) return "FOG";
+  if (condition.find("Overcast") != std::string::npos) return "DULL";
+  if (condition.find("Partly") != std::string::npos) return "PART";
+  if (condition.find("Clear") != std::string::npos ||
+      condition.find("Sunny") != std::string::npos) return "CLEAR";
+  if (condition.find("Cloud") != std::string::npos) return "CLOUD";
+  return "";
+}
+
 struct SettingsLayout {
   Rect title;
   // One row per SettingsItem. Fixed-size rather than computed per item so the

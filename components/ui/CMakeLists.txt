@@ -13,6 +13,7 @@ idf_component_register(
         "ui_strings.cpp"
         "settings_menu.cpp"
         "ui_fonts.cpp"
+        "ui_screenshot.cpp"
         "fonts/rlcd_cjk_14.c"
         "fonts/rlcd_cjk_20.c"
         "fonts/rlcd_cjk_28.c"
@@ -24,6 +25,7 @@ idf_component_register(
         esp_app_format
         board_rlcd
         lvgl__lvgl
+        mbedtls
 )
 
 # Every build, not every configure: ui_strings.cpp changes far more often than

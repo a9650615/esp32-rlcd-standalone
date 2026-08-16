@@ -20,4 +20,21 @@ void lvgl_unlock();
 // the reset that would otherwise trigger a rollback.
 uint32_t lvgl_loop_count();
 
+#ifndef NDEBUG
+// 400x300 at one bit per pixel, rows top to bottom, MSB leftmost, 1 = black.
+inline constexpr size_t kFramebufferSnapshotBytes = 400 * 300 / 8;
+
+// Copies the last frame drawn. Debug builds only - this exists so panel layout
+// can be looked at rather than inferred from geometry logs, which cannot say
+// whether something is ugly, only whether it is out of bounds.
+//
+// False before the first frame, or if `length` is short.
+bool framebuffer_snapshot(uint8_t* out, size_t length);
+
+// Completed whole frames since boot. A full-screen redraw arrives as several
+// partial flushes, so this counts only the one that finishes the bottom-right
+// corner - wait for it to advance before trusting a snapshot.
+uint32_t lvgl_frame_count();
+#endif
+
 }  // namespace board

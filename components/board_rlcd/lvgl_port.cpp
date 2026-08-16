@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <cstring>
 
 #include <esp_heap_caps.h>
 #include <esp_log.h>
@@ -37,16 +38,56 @@ std::atomic<uint32_t> lvgl_loops{0};
 
 void increase_lvgl_tick(void*) { lv_tick_inc(kTickPeriodMs); }
 
+#ifndef NDEBUG
+// A copy of what was drawn, in plain raster order - one bit per pixel, rows
+// top to bottom, MSB leftmost. The panel's own buffer is in the ST7305's
+// packed layout behind two lookup tables, so reconstructing an image from it
+// would mean reimplementing the controller's addressing; this is the same
+// pixels one step earlier, where they are still in the order a PNG wants.
+//
+// 15000 bytes in PSRAM, debug builds only. It exists so layout work can be
+// looked at instead of inferred from geometry logs.
+uint8_t* shadow_buffer = nullptr;
+
+// Incremented when a flush completes the bottom-right corner, i.e. when the
+// shadow holds a whole frame rather than part of one. LVGL delivers a
+// full-screen redraw in several flushes across several handler passes, so
+// "the tick after the render" is not when the picture is finished - reading it
+// then gave screenshots two page transitions stale.
+std::atomic<uint32_t> frames_flushed{0};
+
+void shadow_set_pixel(int x, int y, bool black) {
+  if (shadow_buffer == nullptr) return;
+  if (x < 0 || y < 0 || x >= kWidth || y >= kHeight) return;
+  const size_t index = static_cast<size_t>(y) * (kWidth / 8) + (x / 8);
+  const uint8_t mask = static_cast<uint8_t>(0x80U >> (x % 8));
+  if (black) {
+    shadow_buffer[index] |= mask;
+  } else {
+    shadow_buffer[index] &= static_cast<uint8_t>(~mask);
+  }
+}
+#endif
+
 void flush_display(lv_display_t* display_handle, const lv_area_t* area,
                    uint8_t* color_p) {
   Display& display = board::display();
   const uint16_t* pixels = reinterpret_cast<const uint16_t*>(color_p);
   for (int y = area->y1; y <= area->y2; ++y) {
     for (int x = area->x1; x <= area->x2; ++x) {
-      display.set_pixel(x, y, *pixels++ < 0x7fff ? Color::Black : Color::White);
+      const bool black = *pixels++ < 0x7fff;
+      display.set_pixel(x, y, black ? Color::Black : Color::White);
+#ifndef NDEBUG
+      shadow_set_pixel(x, y, black);
+#endif
     }
   }
   display.refresh();
+#ifndef NDEBUG
+  if (area->x2 >= kWidth - 1 && area->y2 >= kHeight - 1) {
+    frames_flushed.fetch_add(1, std::memory_order_relaxed);
+  }
+#endif
   lv_display_flush_ready(display_handle);
 }
 
@@ -170,7 +211,14 @@ esp_err_t lvgl_init() {
     cleanup_lvgl();
     return ESP_ERR_NO_MEM;
   }
-  ESP_LOGI(kTag, "LVGL task created on core 0");
+  #ifndef NDEBUG
+  shadow_buffer = static_cast<uint8_t*>(
+      heap_caps_calloc(1, kFramebufferSnapshotBytes, MALLOC_CAP_SPIRAM));
+  if (shadow_buffer == nullptr) {
+    ESP_LOGW(kTag, "screenshot buffer unavailable; snapshots disabled");
+  }
+#endif
+ESP_LOGI(kTag, "LVGL task created on core 0");
   return ESP_OK;
 }
 
@@ -188,6 +236,21 @@ void lvgl_unlock() {
     (void)xSemaphoreGive(lvgl_mutex);
   }
 }
+
+#ifndef NDEBUG
+uint32_t lvgl_frame_count() {
+  return frames_flushed.load(std::memory_order_relaxed);
+}
+
+bool framebuffer_snapshot(uint8_t* out, size_t length) {
+  if (shadow_buffer == nullptr || out == nullptr ||
+      length < kFramebufferSnapshotBytes) {
+    return false;
+  }
+  std::memcpy(out, shadow_buffer, kFramebufferSnapshotBytes);
+  return true;
+}
+#endif
 
 uint32_t lvgl_loop_count() {
   return lvgl_loops.load(std::memory_order_relaxed);

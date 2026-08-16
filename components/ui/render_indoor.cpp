@@ -8,7 +8,11 @@
 namespace ui {
 namespace {
 
-const lv_font_t* hero_font() { return font_hero(); }
+// Not font_hero(): that is the clock's 128px face and it contains ten digits
+// and a colon. A temperature carries a decimal point, a space and a unit, none
+// of which have glyphs there - which is exactly how this page lost its reading
+// until a screenshot showed an empty box where the number should be.
+const lv_font_t* hero_font() { return font_large(); }
 const lv_font_t* medium_font() { return font_medium(); }
 const lv_font_t* small_font() { return font_small(); }
 
@@ -56,8 +60,10 @@ void render_indoor(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
   (void)page_index;
   (void)page_count;
   apply_surface(parent);
-  const MarketLayout layout = market_layout(bounds);
-  const Rect primary = layout.primary;
+  // Full width. market_layout's 72/28 split was only here to leave room for a
+  // sidebar this page no longer has.
+  const Rect primary_full = bounds;
+  const Rect primary = primary_full;
   label(parent, text(Text::TileIndoor), {primary.x + 8, primary.y + 5, 100, 18}, small_font());
 
   if (!snapshot.indoor.valid) {
@@ -102,8 +108,10 @@ void render_indoor(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
                  snapshot.indoor.temperature_history_c);
   }
 
-  render_market_sidebar(parent, snapshot, snapshot.taiwan_market, layout.side,
-                        false);
+  // No sidebar. The market pages used to lend this page their column, which
+  // put an index quote beside a room temperature and made the page about two
+  // unrelated things. The sensor page is about the sensor; the primary column
+  // takes the full width.
 }
 
 }  // namespace ui
