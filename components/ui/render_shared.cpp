@@ -18,6 +18,7 @@ constexpr char kTag[] = "ui_geometry";
 
 const lv_font_t* small_font() { return font_small(); }
 const lv_font_t* medium_font() { return font_medium(); }
+const lv_font_t* large_font() { return font_large(); }
 
 void context_host_deleted(lv_event_t* event) {
   auto* context = static_cast<UiContext*>(lv_event_get_user_data(event));
@@ -133,7 +134,7 @@ void tile(lv_obj_t* parent, const char* title, const char* value,
   }
 #endif
   const TileTextLayout rows = tile_text_layout(bounds);
-  label(parent, title, rows.title, small_font(), LV_TEXT_ALIGN_LEFT);
+  label(parent, title, rows.title, medium_font(), LV_TEXT_ALIGN_LEFT);
   const bool has_leading_visual = valid && (weather || indoor);
   const Rect leading_visual =
       tile_leading_visual_rect(bounds, has_leading_visual);
@@ -147,7 +148,7 @@ void tile(lv_obj_t* parent, const char* title, const char* value,
     }
   }
   label(parent, valid ? value : text(Text::NoData),
-        tile_value_rect(bounds, has_leading_visual), medium_font(),
+        tile_value_rect(bounds, has_leading_visual), large_font(),
         LV_TEXT_ALIGN_CENTER);
   label(parent, valid ? detail : "", rows.detail, small_font(),
         LV_TEXT_ALIGN_CENTER);

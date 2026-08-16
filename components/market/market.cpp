@@ -143,6 +143,12 @@ bool refresh_us() {
   app_core::MarketData parsed;
   parsed.display_name = "US MARKET";
   parsed.has_intraday = primary.has_intraday;
+  // The primary index dates the page: both quotes come from the same session,
+  // and taking it from one of them keeps this a reported fact rather than a
+  // reconciliation of two.
+  parsed.as_of_year = primary.as_of_year;
+  parsed.as_of_month = primary.as_of_month;
+  parsed.as_of_day = primary.as_of_day;
   parsed.primary_label = primary.label;
   parsed.primary_value = primary.value;
   parsed.primary_change_percent = primary.change_percent;

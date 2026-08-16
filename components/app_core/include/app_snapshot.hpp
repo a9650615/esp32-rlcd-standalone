@@ -55,6 +55,17 @@ struct MarketData {
   // shape. False means the UI must not draw a chart at all.
   bool has_intraday = false;
   std::array<int, 8> intraday_samples{};
+  // The session these figures are from, as the source reported it. Zero means
+  // the source did not say.
+  //
+  // A closed market is the normal weekend state, and a page showing Thursday's
+  // close with no date invites reading it as today's. Both providers supply
+  // this - TWSE as a ROC-calendar date field, Yahoo as regularMarketTime - so
+  // it is reported rather than inferred from the device clock, which would be
+  // a guess about a market on the other side of the world.
+  uint16_t as_of_year = 0;
+  uint8_t as_of_month = 0;
+  uint8_t as_of_day = 0;
 };
 
 struct WeatherCurrent {

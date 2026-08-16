@@ -21,7 +21,7 @@ inline constexpr int kCanvasHeight = 300;
 inline constexpr int kSafeMargin = 6;
 inline constexpr int kSeparatorWidth = 1;
 inline constexpr uint32_t kNavigationOverlayDurationMs = 2'000;
-inline constexpr int kTileContentHeight = 64;
+inline constexpr int kTileContentHeight = 76;  // 24 title + 34 value + 18 detail
 inline constexpr int kTileInset = 6;
 inline constexpr int kTextStrokeWidth = 1;
 inline constexpr int kTextInset = 1;
@@ -93,13 +93,22 @@ constexpr Rect tile_content_rect(const Rect cell) {
           cell.width - 2 * kTileInset, kTileContentHeight};
 }
 
+// Title 24, value 34, detail 18. The title used to be the smallest row on the
+// tile, which read as a caption under a number rather than a heading over one;
+// at font 20 it is a heading. The value grows with it so the reading still
+// dominates - equal sizes would remove the hierarchy rather than fix it.
+inline constexpr int kTileTitleHeight = 24;
+inline constexpr int kTileValueHeight = 34;
+inline constexpr int kTileDetailHeight = 18;
 constexpr TileTextLayout tile_text_layout(const Rect cell) {
   const Rect content = tile_content_rect(cell);
-  return {{cell.x + kTileInset, content.y, cell.width - 2 * kTileInset, 18},
-          {cell.x + kTileInset, content.y + 18,
-           cell.width - 2 * kTileInset, 28},
-          {cell.x + kTileInset, content.y + 46,
-           cell.width - 2 * kTileInset, 18}};
+  return {{cell.x + kTileInset, content.y, cell.width - 2 * kTileInset,
+           kTileTitleHeight},
+          {cell.x + kTileInset, content.y + kTileTitleHeight,
+           cell.width - 2 * kTileInset, kTileValueHeight},
+          {cell.x + kTileInset,
+           content.y + kTileTitleHeight + kTileValueHeight,
+           cell.width - 2 * kTileInset, kTileDetailHeight}};
 }
 
 constexpr Rect tile_leading_visual_rect(const Rect cell,

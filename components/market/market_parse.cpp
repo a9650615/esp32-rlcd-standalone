@@ -8,6 +8,32 @@
 namespace market {
 namespace {
 
+// Days-to-civil, Howard Hinnant's algorithm. UTC rather than the exchange's
+// own zone: the response gives seconds since the epoch and the timezone name
+// separately, and quietly applying one to the other would turn a reported fact
+// into a computed guess. A close is dated by its UTC day here, which is the
+// same calendar day as New York's for any regular session.
+void civil_from_unix(long long seconds, uint16_t& year, uint8_t& month,
+                     uint8_t& day) {
+  long long z = seconds / 86400 + 719468;
+  const long long era = (z >= 0 ? z : z - 146096) / 146097;
+  const unsigned long long doe = static_cast<unsigned long long>(z - era * 146097);
+  const unsigned long long yoe =
+      (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+  const long long y = static_cast<long long>(yoe) + era * 400;
+  const unsigned long long doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+  const unsigned long long mp = (5 * doy + 2) / 153;
+  const unsigned long long d = doy - (153 * mp + 2) / 5 + 1;
+  const unsigned long long m = mp + (mp < 10 ? 3 : -9);
+  year = static_cast<uint16_t>(y + (m <= 2 ? 1 : 0));
+  month = static_cast<uint8_t>(m);
+  day = static_cast<uint8_t>(d);
+}
+
+}  // namespace
+
+namespace {
+
 // Field values TWSE publishes for MI_INDEX are all JSON strings (confirmed
 // against the endpoint's own swagger schema, e.g. "收盤指數": {"type":
 // "string"}), not numbers - this extracts one and fails closed on anything
@@ -49,12 +75,30 @@ bool parse_taiwan_index(const char* json, std::size_t length,
     double taiex_value = 0.0, taiex_change = 0.0;
     double tw50_value = 0.0, tw50_change = 0.0;
     bool have_taiex = false, have_tw50 = false;
+    uint16_t as_of_year = 0;
+    uint8_t as_of_month = 0;
+    uint8_t as_of_day = 0;
 
     const cJSON* row = nullptr;
     cJSON_ArrayForEach(row, root) {
       if (!cJSON_IsObject(row)) continue;
       std::string name;
       if (!string_field(row, "指數", name)) continue;
+      // "1150814" is ROC year 115, month 08, day 14 - the Republic-of-China
+      // calendar TWSE publishes in, 1911 years behind the Gregorian one.
+      std::string roc_date;
+      if (as_of_year == 0 && string_field(row, "日期", roc_date) &&
+          roc_date.size() == 7) {
+        const int roc = (roc_date[0] - '0') * 100 + (roc_date[1] - '0') * 10 +
+                        (roc_date[2] - '0');
+        const int month = (roc_date[3] - '0') * 10 + (roc_date[4] - '0');
+        const int day = (roc_date[5] - '0') * 10 + (roc_date[6] - '0');
+        if (roc > 0 && month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+          as_of_year = static_cast<uint16_t>(roc + 1911);
+          as_of_month = static_cast<uint8_t>(month);
+          as_of_day = static_cast<uint8_t>(day);
+        }
+      }
       if (name == "發行量加權股價指數" && !have_taiex) {
         have_taiex = numeric_string_field(row, "收盤指數", taiex_value) &&
                      numeric_string_field(row, "漲跌百分比", taiex_change);
@@ -73,6 +117,9 @@ bool parse_taiwan_index(const char* json, std::size_t length,
     parsed.secondary_label = "TW50";
     parsed.secondary_value = static_cast<int>(std::lround(tw50_value));
     parsed.secondary_change_percent = tw50_change;
+    parsed.as_of_year = as_of_year;
+    parsed.as_of_month = as_of_month;
+    parsed.as_of_day = as_of_day;
     // No intraday feed in this response - see the comment on
     // parse_taiwan_index() in market_parse.hpp for why a flat repeat of the
     // real close, not zero or an interpolated series, is used here.
@@ -113,6 +160,15 @@ bool parse_yahoo_quote(const char* json, std::size_t length,
 
     const cJSON* meta = cJSON_GetObjectItemCaseSensitive(result0, "meta");
     if (!cJSON_IsObject(meta)) break;
+    uint16_t as_of_year = 0;
+    uint8_t as_of_month = 0;
+    uint8_t as_of_day = 0;
+    const cJSON* market_time =
+        cJSON_GetObjectItemCaseSensitive(meta, "regularMarketTime");
+    if (cJSON_IsNumber(market_time) && market_time->valuedouble > 0) {
+      civil_from_unix(static_cast<long long>(market_time->valuedouble),
+                      as_of_year, as_of_month, as_of_day);
+    }
     const cJSON* price_item =
         cJSON_GetObjectItemCaseSensitive(meta, "regularMarketPrice");
     const cJSON* prev_item =
@@ -168,6 +224,9 @@ bool parse_yahoo_quote(const char* json, std::size_t length,
 
     IndexQuote parsed;
     parsed.has_intraday = have_intraday;
+    parsed.as_of_year = as_of_year;
+    parsed.as_of_month = as_of_month;
+    parsed.as_of_day = as_of_day;
     parsed.valid = true;
     parsed.label = display_label;
     parsed.value = static_cast<int>(std::lround(price));

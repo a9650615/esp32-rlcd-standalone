@@ -119,8 +119,24 @@ void render_market(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
       // figures above are real, but drawing a flat repeat of the close would
       // read as "the market did not move" rather than "no intraday data
       // exists". Skip the chart, grid, and axis labels; say so instead.
-      label(parent, text(Text::NoIntradayData), chart_placeholder_rect(chart),
-            small_font(), LV_TEXT_ALIGN_CENTER);
+      // Naming the session is the point. A closed market is the normal
+      // weekend state, and a page showing Thursday's close with no date
+      // invites reading it as today's - the figures are real either way, but
+      // only one of those is honest about when.
+      const Rect placeholder = chart_placeholder_rect(chart);
+      const std::string as_of = market_as_of_text(market);
+      if (as_of.empty()) {
+        label(parent, text(Text::NoIntradayData), placeholder, small_font(),
+              LV_TEXT_ALIGN_CENTER);
+      } else {
+        label(parent, as_of.c_str(),
+              {placeholder.x, placeholder.y - 12, placeholder.width, 30},
+              medium_font(), LV_TEXT_ALIGN_CENTER);
+        label(parent, text(Text::NoIntradayData),
+              {placeholder.x, placeholder.y + 20, placeholder.width,
+               placeholder.height - 20},
+              small_font(), LV_TEXT_ALIGN_CENTER);
+      }
     }
   }
 

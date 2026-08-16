@@ -28,6 +28,11 @@ struct IndexQuote {
   // repeat of `value` otherwise (see parse_yahoo_quote below). Never
   // interpolated/invented points.
   std::array<int, 8> samples{};
+  // The session these figures are from, from the source's own timestamp.
+  // Zero when it did not supply one.
+  uint16_t as_of_year = 0;
+  uint8_t as_of_month = 0;
+  uint8_t as_of_day = 0;
   // False when `samples` is a flat repeat of `value` rather than a real
   // series. The UI must not draw a chart in that case: the numbers are real
   // but the shape would not be.

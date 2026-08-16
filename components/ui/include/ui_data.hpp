@@ -222,6 +222,23 @@ inline const char* forecast_condition_short(const std::string& condition) {
   return "";
 }
 
+// "CLOSE  14 Aug" - the session the figures are from. Empty when the source
+// did not date them, so the caller draws nothing rather than a placeholder
+// date, which would be the one thing worse than no date at all.
+inline std::string market_as_of_text(const app_core::MarketData& market) {
+  if (market.as_of_month == 0 || market.as_of_day == 0) return {};
+  static constexpr const char* kMonths[] = {"Jan", "Feb", "Mar", "Apr",
+                                            "May", "Jun", "Jul", "Aug",
+                                            "Sep", "Oct", "Nov", "Dec"};
+  if (market.as_of_month > 12) return {};
+  char buffer[32];
+  std::snprintf(buffer, sizeof(buffer), "%s  %u %s",
+                text(Text::MarketClose),
+                static_cast<unsigned>(market.as_of_day),
+                kMonths[market.as_of_month - 1]);
+  return buffer;
+}
+
 struct SettingsLayout {
   Rect title;
   // One row per SettingsItem. Fixed-size rather than computed per item so the
