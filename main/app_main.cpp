@@ -10,6 +10,9 @@
 #include "net_time.hpp"
 #include "ota.hpp"
 #include "ota_confirm.hpp"
+#include <nvs.h>
+#include <nvs_flash.h>
+
 #include "ota_pull.hpp"
 #include "ota_release.hpp"
 #include "ota_session.hpp"
@@ -198,6 +201,56 @@ void ota_guard_task(void*) {
 // task because the check is a blocking HTTPS round trip and the caller is the
 // LVGL thread - doing it inline would freeze the display for the duration and,
 // on a slow network, trip the watchdog.
+constexpr char kUiNamespace[] = "ui_prefs";
+constexpr char kLanguageKey[] = "lang";
+
+// Read before the first render, so a device set to Chinese comes back in
+// Chinese instead of showing a frame of English and then flipping.
+//
+// Deliberately does not erase-and-retry on a full or version-mismatched NVS
+// partition the way nvs_store_init does: that decision belongs in one place,
+// and it runs a moment later in wifi_provision::start(). A boot that finds NVS
+// unusable falls back to English for that boot and picks the setting up on the
+// next one, which is a better trade than two components racing to erase.
+ui::Language load_language() {
+  if (nvs_flash_init() != ESP_OK) return ui::Language::English;
+  nvs_handle_t handle;
+  if (nvs_open(kUiNamespace, NVS_READONLY, &handle) != ESP_OK) {
+    return ui::Language::English;
+  }
+  uint8_t stored = 0;
+  const esp_err_t found = nvs_get_u8(handle, kLanguageKey, &stored);
+  nvs_close(handle);
+  // The range check is not paranoia: firmware that shipped more languages
+  // could have written a value this build has no row for, and the enum is an
+  // index into the string table.
+  if (found != ESP_OK ||
+      stored >= static_cast<uint8_t>(ui::Language::Count)) {
+    return ui::Language::English;
+  }
+  ESP_LOGI(kTag, "language restored from NVS: %u", stored);
+  return static_cast<ui::Language>(stored);
+}
+
+// Runs on the LVGL thread, from the settings row that cycles the language. An
+// NVS commit is a flash write of a few tens of milliseconds - visible as one
+// slow frame on a panel that takes longer than that to refresh anyway, and far
+// simpler than handing a one-byte write to its own task.
+void store_language(ui::Language value) {
+  nvs_handle_t handle;
+  if (nvs_open(kUiNamespace, NVS_READWRITE, &handle) != ESP_OK) {
+    ESP_LOGW(kTag, "language not saved: NVS unavailable");
+    return;
+  }
+  esp_err_t result = nvs_set_u8(handle, kLanguageKey,
+                                static_cast<uint8_t>(value));
+  if (result == ESP_OK) result = nvs_commit(handle);
+  nvs_close(handle);
+  if (result != ESP_OK) {
+    ESP_LOGW(kTag, "language not saved: %s", esp_err_to_name(result));
+  }
+}
+
 // Where the last check left its download URL. Written by the check task and
 // read by the LVGL thread when the install row is selected, so it is guarded
 // rather than merely assumed to be quiescent between the two.
@@ -557,6 +610,13 @@ extern "C" void app_main() {
   if (result != ESP_OK) fatal_loop("button initialization failed", result);
   ESP_LOGI(kTag, "startup diagnostics buttons=ready GPIO0=input/pull-up");
 
+  // Before start(), so the first frame is already in the right language.
+  // The store handler is registered after the load on purpose: set_language
+  // only notifies on an actual change, and registering first would have the
+  // restore write straight back what it just read.
+  ui::set_language(load_language());
+  ui::set_language_store_handler(&store_language);
+
   if (!ui::start(snapshot, clock, !rtc_ok)) {
     fatal_loop("UI lifecycle initialization failed", ESP_FAIL);
   }
@@ -568,6 +628,9 @@ extern "C" void app_main() {
   ota::set_progress_handler(&wifi_provision::set_ota);
   ui::set_setup_gesture_handler(&wifi_provision::toggle_setup);
   ui::set_update_handler(&run_update_action);
+  // Lets GET /shot answer with what is on the panel right now. No-op in a
+  // release build, where the route does not exist.
+  wifi_provision::set_screenshot_provider(&board::framebuffer_snapshot);
   ota::set_confirm_prompt_handler(&show_update_prompt);
   result = wifi_provision::start(snapshot);
   if (result != ESP_OK) {

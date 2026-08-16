@@ -8,7 +8,9 @@
 #include <esp_timer.h>
 #include <lwip/sockets.h>
 #include <lwip/inet.h>
+#include <mbedtls/base64.h>
 
+#include <algorithm>
 #include <cstring>
 
 #include "dns_server.h"
@@ -543,6 +545,70 @@ const httpd_uri_t kUpdatePost = {"/update", HTTP_POST, update_post_handler,
 const httpd_uri_t kOtaPost = {"/ota", HTTP_POST, ota_post_handler, nullptr};
 const httpd_uri_t kOtaUrlPost = {"/ota-url", HTTP_POST, ota_url_post_handler,
                                  nullptr};
+#ifndef NDEBUG
+// 400x300, 1 bit per pixel. Static rather than stack: this runs on the HTTP
+// task, and 15 KiB is more than it has.
+constexpr size_t kShotBytes = 400 * 300 / 8;
+constexpr size_t kShotChunk = 96;  // 96 raw bytes -> 128 base64 chars
+bool (*g_shot_provider)(uint8_t*, size_t) = nullptr;
+
+// The panel's current contents, in the same "SHOT <base64>" line format the
+// once-per-boot log dump uses, so scripts/decode-screenshots.py reads either
+// source without knowing which it got.
+//
+// On demand rather than once per boot, because the boot-time dump is only
+// reachable by rebooting the board - which, with no cable attached, means
+// pushing firmware just to see a layout.
+esp_err_t shot_get_handler(httpd_req_t* req) {
+  // The setup page prints the portal password on the panel. A screenshot route
+  // that answered during setup would hand that password to anyone on the LAN,
+  // which is the one thing the password exists to prevent. Non-empty means
+  // setup is active - see current_portal_password.
+  if (!current_portal_password().empty()) {
+    ESP_LOGW(kTag, "GET /shot -> refused while the setup page is showing");
+    httpd_resp_send_err(req, HTTPD_403_FORBIDDEN,
+                        "Refused: the setup page shows the portal password.");
+    return ESP_OK;
+  }
+  if (g_shot_provider == nullptr) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                        "No screenshot provider registered");
+    return ESP_OK;
+  }
+
+  static uint8_t raw[kShotBytes];
+  if (!g_shot_provider(raw, sizeof(raw))) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                        "Framebuffer not readable yet");
+    return ESP_OK;
+  }
+
+  httpd_resp_set_type(req, "text/plain");
+  httpd_resp_sendstr_chunk(req, "SHOT BEGIN Live 400x300\n");
+  for (size_t offset = 0; offset < sizeof(raw); offset += kShotChunk) {
+    const size_t chunk = std::min(kShotChunk, sizeof(raw) - offset);
+    unsigned char encoded[kShotChunk * 4 / 3 + 8];
+    size_t written = 0;
+    if (mbedtls_base64_encode(encoded, sizeof(encoded), &written, raw + offset,
+                              chunk) != 0) {
+      // Abandon the chunked response rather than finish it: a truncated body
+      // that ends cleanly would decode into a picture missing its bottom.
+      ESP_LOGE(kTag, "GET /shot -> encode failed at %u", (unsigned)offset);
+      return ESP_FAIL;
+    }
+    encoded[written] = '\0';
+    httpd_resp_sendstr_chunk(req, "SHOT ");
+    httpd_resp_sendstr_chunk(req, reinterpret_cast<char*>(encoded));
+    httpd_resp_sendstr_chunk(req, "\n");
+  }
+  httpd_resp_sendstr_chunk(req, "SHOT END Live\n");
+  httpd_resp_sendstr_chunk(req, nullptr);
+  return ESP_OK;
+}
+
+const httpd_uri_t kShotGet = {"/shot", HTTP_GET, shot_get_handler, nullptr};
+#endif
+
 const httpd_uri_t kRootGet = {"/", HTTP_GET, root_get_handler, nullptr};
 const httpd_uri_t kRootPost = {"/", HTTP_POST, root_post_handler, nullptr};
 
@@ -571,7 +637,11 @@ void portal_start() {
   }
 
   const httpd_uri_t* routes[] = {&kRootGet,   &kRootPost,  &kOtaPost,
-                                 &kOtaUrlPost, &kUpdateGet, &kUpdatePost};
+                                 &kOtaUrlPost, &kUpdateGet, &kUpdatePost,
+#ifndef NDEBUG
+                                 &kShotGet,
+#endif
+  };
   for (const httpd_uri_t* route : routes) {
     const esp_err_t result = httpd_register_uri_handler(server_, route);
     if (result != ESP_OK) {
@@ -584,6 +654,15 @@ void portal_start() {
 
   dns_server_config_t dns_config = DNS_SERVER_CONFIG_SINGLE("*", "WIFI_AP_DEF");
   dns_ = start_dns_server(&dns_config);
+}
+
+void set_screenshot_provider(bool (*provider)(uint8_t* out, size_t length)) {
+#ifndef NDEBUG
+  g_shot_provider = provider;
+#else
+  // Release builds do not register the route, so there is nothing to answer.
+  (void)provider;
+#endif
 }
 
 void portal_stop() {

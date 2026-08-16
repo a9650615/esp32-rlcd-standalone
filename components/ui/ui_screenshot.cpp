@@ -5,6 +5,8 @@
 #include <cstdio>
 
 #include <esp_log.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <mbedtls/base64.h>
 
 #include "lvgl_port.hpp"
@@ -45,9 +47,23 @@ void dump_frame_once(app_core::PageId page, const char* name) {
       return;
     }
     encoded[written] = '\0';
-    // printf rather than ESP_LOG: no timestamp or tag to strip back off, so
-    // the decoder can take the payload lines verbatim.
-    std::printf("SHOT %s\n", reinterpret_cast<char*>(encoded));
+    // ESP_LOG, not printf. printf goes to serial only; net_log mirrors the log
+    // sink, so a frame emitted with printf is unreachable the moment the USB
+    // cable comes off - which is exactly when a picture of the panel is the
+    // only way to see it. decode-screenshots.py searches rather than anchors,
+    // so the tag and timestamp in front of the payload cost nothing.
+    ESP_LOGW(kTag, "SHOT %s", reinterpret_cast<char*>(encoded));
+    // net_log takes its ring mutex with a zero-tick try-lock, so a log line
+    // that arrives while the sender task holds it is dropped rather than
+    // blocking the caller - the right trade for logging in general, and fatal
+    // for the one caller that emits 157 lines back to back. Over the network
+    // that cost exactly one line of a frame, which the decoder correctly
+    // refused to turn into a picture. Yielding lets the sender drain.
+    //
+    // This stalls the LVGL thread for roughly a third of a second. It is a
+    // debug build only, once per page per boot, and the alternative is a
+    // screenshot tool that silently returns four pages out of five.
+    vTaskDelay(pdMS_TO_TICKS(2));
     offset += chunk;
   }
   ESP_LOGW(kTag, "SHOT END %s", name);

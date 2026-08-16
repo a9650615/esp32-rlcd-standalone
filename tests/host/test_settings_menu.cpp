@@ -153,3 +153,29 @@ HOST_TEST(every_page_spells_a_temperature_the_same_way) {
   // Below zero the sign must survive the format, not be eaten by the width.
   EXPECT_TRUE(ui::temperature_text(-4.5f, 1) == "-4.5°C");
 }
+
+HOST_TEST(language_is_persisted_only_when_it_actually_changes) {
+  static int writes = 0;
+  static ui::Language last = ui::Language::English;
+  writes = 0;
+  ui::set_language(ui::Language::English);
+  ui::set_language_store_handler(
+      [](ui::Language value) { ++writes; last = value; });
+
+  // Selecting the language already in force must not spend a flash write.
+  ui::set_language(ui::Language::English);
+  EXPECT_EQ(writes, 0);
+
+  ui::set_language(ui::Language::TraditionalChinese);
+  EXPECT_EQ(writes, 1);
+  EXPECT_TRUE(last == ui::Language::TraditionalChinese);
+
+  // Out of range is refused rather than stored - the enum indexes the string
+  // table, and a value with no row would read off the end of it.
+  ui::set_language(ui::Language::Count);
+  EXPECT_EQ(writes, 1);
+  EXPECT_TRUE(ui::language() == ui::Language::TraditionalChinese);
+
+  ui::set_language_store_handler(nullptr);
+  ui::set_language(ui::Language::English);
+}

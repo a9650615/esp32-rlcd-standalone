@@ -97,6 +97,18 @@ enum class Text : uint16_t {
 Language language();
 void set_language(Language value);
 
+// Registers where a language change is written so it survives a reboot.
+//
+// A function pointer rather than a call into NVS, for the reason every other
+// indirection in this file exists: this translation unit is compiled by the
+// host tests, which have no flash and must not acquire one. Null until main
+// registers it, and null forever on the host, where set_language then does
+// exactly what it did before.
+//
+// Called only when the value actually changes - cycling back to the language
+// already in force writes nothing.
+void set_language_store_handler(void (*handler)(Language value));
+
 // Never returns nullptr. A Text with no translation yet falls back to the
 // English string rather than rendering blank, so an untranslated entry looks
 // like an oversight instead of a broken screen.

@@ -77,16 +77,66 @@ Treat the ST7305 output as a 1-bit pixel surface, not a scaled web mockup. Use i
 - Labels are `LV_LABEL_LONG_DOT`, never `LONG_CLIP`. Clipping deletes characters silently, which on a panel that otherwise refuses to show unmeasured numbers is the same class of defect: `Up to date` clipped to `pdate to date` reads as a message rather than as damage. Debug builds log every overflow with its measured and available widths, so a too-narrow box is a line of serial output rather than something to notice by eye.
 - A CJK glyph is full-width - exactly 14px at font 14 - against roughly 7px for average Latin. Every box here was sized from Latin metrics, so translated strings meet the edges far sooner. The tight ones are the Setup text column (168px usable) and the market sidebar cell (108px, 66px for a value once the icon gutter is taken).
 
-## Look at what you changed
+## Working without a cable
 
-Debug builds photograph themselves. Each page emits its frame over serial once per boot, and `scripts/decode-screenshots.py` turns a capture into PNGs:
+This board is developed remotely: firmware by push OTA, diagnosis by network
+log, layout by screenshot endpoint. Nothing below needs USB.
 
 ```bash
-PORT="$(./scripts/find-board-port.sh)"
-# any serial capture works - see the non-interactive recipe below
-python capture.py "$PORT" 100 > shots.log
-python3 scripts/decode-screenshots.py shots.log out/
+./scripts/remote.sh ip            # resolve by MAC, not by remembering an address
+./scripts/remote.sh logs 60       # stream the log port for 60 s
+./scripts/remote.sh shot out/     # PNG of the panel right now
+./scripts/remote.sh push          # build/layout_carousel.bin -> the board
 ```
+
+`push` still needs one press on the board to accept the offer. That prompt is
+the only authorisation a push has; do not add a way past it.
+
+Three traps this arrangement has already hit:
+
+- **`timeout` is GNU coreutils and macOS does not ship it.** `timeout N nc ...`
+  fails as "command not found" with the whole line quoted back, which reads like
+  a syntax error. `nc -w` is not the fix either - it measures idle time, which
+  never elapses against a board that logs every few seconds. Background the
+  reader and kill it.
+- **net_log takes its ring mutex with a zero-tick try-lock**, so a line that
+  arrives while the sender holds it is dropped rather than blocking the caller.
+  That is right for logging and wrong for the screenshot dump, which emits 157
+  lines back to back - it cost exactly one line of a frame, and the decoder
+  correctly refused to make a picture of it. The dump yields between lines now.
+- **`find-board-port.sh` is a USB tool and stops the application** (see below).
+  Never reach for it to answer "where is the board" - `remote.sh ip` reads the
+  ARP table and sweeps the subnet if the entry has aged out.
+
+`CONFIG_NET_LOG_ENABLE=y` lives in `sdkconfig.defaults`, not in the component's
+Kconfig default, which stays `n`. It streams every log line unauthenticated to
+anyone on the LAN. The rule that keeps that survivable predates it and must
+hold: the Wi-Fi password and the setup-page password are never logged.
+
+Changing `sdkconfig.defaults` alone changes nothing - ESP-IDF only reads it when
+`sdkconfig` does not exist. Delete `sdkconfig` and rebuild, then confirm the
+value actually landed in the generated file before believing the build has it.
+
+## Look at what you changed
+
+Debug builds photograph themselves, and the picture comes back over the network:
+
+```bash
+./scripts/remote.sh shot out/     # PNG of what is on the panel right now
+```
+
+That is `GET /shot`, answered on demand. There is also a once-per-boot dump of
+every page into the log stream, which is what to read when the question is
+about a page you cannot get the carousel to sit on, or about boot order. Both
+emit the same `SHOT <base64>` lines, and `scripts/decode-screenshots.py` reads
+either without being told which.
+
+Two things about the boot-time dump that each cost a cycle to rediscover: the
+page already on screen at boot does not emit until the carousel brings it back
+around, so a capture shorter than ~90 s silently returns a subset that reads as
+"those pages are broken"; and `/shot` returns **403 while the setup page is
+showing**, deliberately, because that page prints the portal password and a
+screenshot route that answered would hand it to the whole LAN.
 
 Use it for anything about arrangement: clipping, overlap, alignment, a value that never arrived, a page still carrying another page's content. Three defects that no geometry check could see were found in the first two captures - a temperature rendered in a digits-only font and coming out as an empty box, a sensor page still drawing a market sidebar, and seven forecast columns all truncated to `Thun...`.
 

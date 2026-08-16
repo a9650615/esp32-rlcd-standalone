@@ -37,4 +37,17 @@ void set_us_market(const app_core::MarketData& market);
 void set_clock(const app_core::ClockData& clock);
 void set_ota(const app_core::OtaData& ota);
 
+// Registers what GET /shot returns: the panel's current framebuffer, 1 bit per
+// pixel, 400x300. board::framebuffer_snapshot has exactly this shape, so main
+// registers it directly rather than wrapping it.
+//
+// An indirection rather than a call into board_rlcd, for the same reason
+// set_ota is one in the other direction: this component owns the network, not
+// the display, and a networking component that reaches into the panel driver
+// inverts the layering the rest of the file is careful about.
+//
+// Debug builds only - the route is not registered at all in a release build,
+// so a device in the field does not serve pictures of its screen to the LAN.
+void set_screenshot_provider(bool (*provider)(uint8_t* out, size_t length));
+
 }  // namespace wifi_provision

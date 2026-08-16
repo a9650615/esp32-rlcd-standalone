@@ -92,13 +92,20 @@ static_assert(sizeof(kRows) / sizeof(kRows[0]) ==
               "every Text needs exactly one row, in enum order");
 
 Language g_language = Language::English;
+void (*g_language_store)(Language) = nullptr;
 
 }  // namespace
 
 Language language() { return g_language; }
 
 void set_language(Language value) {
-  if (value < Language::Count) g_language = value;
+  if (value >= Language::Count || value == g_language) return;
+  g_language = value;
+  if (g_language_store != nullptr) g_language_store(value);
+}
+
+void set_language_store_handler(void (*handler)(Language value)) {
+  g_language_store = handler;
 }
 
 const char* text_in(Language language, Text id) {

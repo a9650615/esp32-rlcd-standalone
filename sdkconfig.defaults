@@ -53,6 +53,25 @@ CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
 # sdkconfig.defaults trap in the board skill).
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 
+# Development on this board is now done without a USB cable: firmware arrives
+# by push OTA and the only way to see what happened is this. It streams every
+# log line - and, in a debug build, the screenshot frames - to a plaintext
+# unauthenticated TCP port, so anyone on the LAN who connects can read them.
+#
+# The Kconfig default stays `n` deliberately; this line is the developer's
+# build turning it on, not the component changing its mind. Turn it off for
+# anything left running on a network you do not control:
+#   idf.py menuconfig -> CONFIG_NET_LOG_ENABLE=n
+#
+# The rule that keeps this survivable predates it: the Wi-Fi password and the
+# setup-page password are never logged. That was a "someone needs a USB cable"
+# mistake before and is an "anyone on the LAN" one now.
+CONFIG_NET_LOG_ENABLE=y
+# 32 KiB holds barely one 400x300 frame (~23 KiB once base64'd and prefixed),
+# so a second page would evict the first before anyone connected. PSRAM, and
+# there are 8 MB of it.
+CONFIG_NET_LOG_RING_BYTES=131072
+
 # Battery divider trim for this specific board, from its own readings rather
 # than a multimeter: 44 samples across several hours on USB spanned 4071-4092
 # mV, a 21 mV plateau, which is a cell that has finished charging. A CC/CV
