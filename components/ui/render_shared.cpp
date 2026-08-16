@@ -26,12 +26,12 @@ void context_host_deleted(lv_event_t* event) {
   context->host = nullptr;
   context->root = nullptr;
   context->clock_label = nullptr;
-  context->network_label = nullptr;
-  context->battery_label = nullptr;
+  context->network_icon = {};
+  context->battery_icon_parts = {};
   context->setup_status_label = nullptr;
   context->staging_clock_label = nullptr;
-  context->staging_network_label = nullptr;
-  context->staging_battery_label = nullptr;
+  context->staging_network_icon = {};
+  context->staging_battery_icon = {};
   context->staging_setup_status_label = nullptr;
   context->initialized = false;
 }
@@ -162,12 +162,12 @@ bool init_context(UiContext& context, lv_obj_t* host) {
   context.host = host;
   context.root = nullptr;
   context.clock_label = nullptr;
-  context.network_label = nullptr;
-  context.battery_label = nullptr;
+  context.network_icon = {};
+  context.battery_icon_parts = {};
   context.setup_status_label = nullptr;
   context.staging_clock_label = nullptr;
-  context.staging_network_label = nullptr;
-  context.staging_battery_label = nullptr;
+  context.staging_network_icon = {};
+  context.staging_battery_icon = {};
   context.staging_setup_status_label = nullptr;
   context.initialized = true;
   lv_obj_add_event_cb(host, context_host_deleted, LV_EVENT_DELETE, &context);
@@ -181,20 +181,20 @@ void reset_context(UiContext& context) {
   }
   if (context.root != nullptr) {
     context.clock_label = nullptr;
-    context.network_label = nullptr;
-    context.battery_label = nullptr;
+    context.network_icon = {};
+    context.battery_icon_parts = {};
     context.setup_status_label = nullptr;
     lv_obj_delete(context.root);
   }
   context.host = nullptr;
   context.root = nullptr;
   context.clock_label = nullptr;
-  context.network_label = nullptr;
-  context.battery_label = nullptr;
+  context.network_icon = {};
+  context.battery_icon_parts = {};
   context.setup_status_label = nullptr;
   context.staging_clock_label = nullptr;
-  context.staging_network_label = nullptr;
-  context.staging_battery_label = nullptr;
+  context.staging_network_icon = {};
+  context.staging_battery_icon = {};
   context.staging_setup_status_label = nullptr;
   context.initialized = false;
 }
@@ -330,20 +330,18 @@ void render_tray(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
             LV_TEXT_ALIGN_LEFT);
   if (context != nullptr && !home) context->staging_clock_label = clock_label;
 
-  const std::string network_text = tray_network_text(snapshot.setup);
-  lv_obj_t* network_label = label(parent, network_text.c_str(), cells.network,
-                                  small_font(), LV_TEXT_ALIGN_CENTER);
-  if (context != nullptr) context->staging_network_label = network_label;
-
-  // Unread battery (valid == false) renders a blank cell rather than a
-  // misleading "0%" - the board may simply not have sampled it yet. The
-  // label is always created (even when blank) so its lv_obj_t* pointer stays
-  // valid for the label-only repaint path: a later battery sample just
-  // changes this label's text, no page rebuild.
-  const std::string battery_text = tray_battery_text(snapshot.battery);
-  lv_obj_t* battery_label = label(parent, battery_text.c_str(), cells.battery,
-                                  small_font(), LV_TEXT_ALIGN_RIGHT);
-  if (context != nullptr) context->staging_battery_label = battery_label;
+  // Shapes, not words. "WIFI"/"NO WIFI"/"BAT 91%" spent most of the tray on
+  // two facts a glance can carry, and the exact charge figure now lives on the
+  // settings page where it is the number a calibration is compared against.
+  const WifiIconParts wifi =
+      wifi_icon(parent, cells.network, snapshot.setup.connected);
+  const BatteryIconParts battery =
+      battery_icon(parent, cells.battery, snapshot.battery.percent,
+                   snapshot.battery.valid);
+  if (context != nullptr) {
+    context->staging_network_icon = wifi;
+    context->staging_battery_icon = battery;
+  }
 
   divider(parent, {bounds.x, bounds.y + kSystemTrayHeight, bounds.width,
                    kSeparatorWidth});
@@ -381,8 +379,8 @@ lv_obj_t* render_page(UiContext& context,
 
   const Rect local_bounds{0, 0, bounds.width, bounds.height};
   context.staging_clock_label = nullptr;
-  context.staging_network_label = nullptr;
-  context.staging_battery_label = nullptr;
+  context.staging_network_icon = {};
+  context.staging_battery_icon = {};
   context.staging_setup_status_label = nullptr;
 
   // Single site that decides whether a page carries the tray and, if so,
@@ -459,19 +457,19 @@ lv_obj_t* render_page(UiContext& context,
   lv_obj_delete(staging_screen);
   if (context.root != nullptr && context.root != replacement) {
     context.clock_label = nullptr;
-    context.network_label = nullptr;
-    context.battery_label = nullptr;
+    context.network_icon = {};
+    context.battery_icon_parts = {};
     context.setup_status_label = nullptr;
     lv_obj_delete(context.root);
   }
   context.root = replacement;
   context.clock_label = context.staging_clock_label;
-  context.network_label = context.staging_network_label;
-  context.battery_label = context.staging_battery_label;
+  context.network_icon = context.staging_network_icon;
+  context.battery_icon_parts = context.staging_battery_icon;
   context.setup_status_label = context.staging_setup_status_label;
   context.staging_clock_label = nullptr;
-  context.staging_network_label = nullptr;
-  context.staging_battery_label = nullptr;
+  context.staging_network_icon = {};
+  context.staging_battery_icon = {};
   context.staging_setup_status_label = nullptr;
   lv_obj_clear_flag(replacement, LV_OBJ_FLAG_HIDDEN);
 #ifndef NDEBUG
@@ -496,10 +494,11 @@ bool update_visible_fields(UiContext& context,
                            const app_core::AppSnapshot& snapshot) {
   if (!context_ready(context)) return false;
   update_visible_clock(context, snapshot);
-  set_label_text_if_changed(context.network_label,
-                            tray_network_text(snapshot.setup).c_str());
-  set_label_text_if_changed(context.battery_label,
-                            tray_battery_text(snapshot.battery).c_str());
+  // In place, like the label path it replaces: a battery sample every 30s must
+  // not cost a page rebuild, which is a visible full repaint on this panel.
+  set_wifi_icon_state(context.network_icon, snapshot.setup.connected);
+  set_battery_icon_level(context.battery_icon_parts, snapshot.battery.percent,
+                         snapshot.battery.valid);
   set_setup_status_if_changed(context.setup_status_label,
                               setup_status_text(snapshot.setup.status),
                               snapshot.setup.error);

@@ -40,8 +40,15 @@ void apply_surface(lv_obj_t* object) {
   lv_obj_clear_flag(object, LV_OBJ_FLAG_SCROLLABLE);
 }
 
+lv_obj_t* label_wrapped(lv_obj_t* parent, const char* text, Rect bounds,
+                        const lv_font_t* font, lv_text_align_t align) {
+  lv_obj_t* object = label(parent, text, bounds, font, align, true);
+  if (object != nullptr) lv_label_set_long_mode(object, LV_LABEL_LONG_WRAP);
+  return object;
+}
+
 lv_obj_t* label(lv_obj_t* parent, const char* text, Rect bounds,
-                const lv_font_t* font, lv_text_align_t align) {
+                const lv_font_t* font, lv_text_align_t align, bool wraps) {
   lv_obj_t* object = lv_label_create(parent);
   if (object == nullptr) return nullptr;
   apply_surface(object);
@@ -77,7 +84,10 @@ lv_obj_t* label(lv_obj_t* parent, const char* text, Rect bounds,
   // This puts every instance in the serial log with its measured and available
   // widths, so a layout that no longer fits its text can be found the same way
   // an out-of-bounds object is - by capture, not by eye.
-  const char* measured = text == nullptr ? "" : text;
+  // A wrapping label is not clipped by being wider than its box - that is the
+  // point of wrapping - so it is excluded rather than reported. The caller
+  // says so up front instead of the check guessing from the box height.
+  const char* measured = (text == nullptr || wraps) ? "" : text;
   if (measured[0] != '\0') {
     const int32_t width = lv_text_get_width(
         measured, static_cast<uint32_t>(std::strlen(measured)),
@@ -237,6 +247,81 @@ void humidity_icon(lv_obj_t* parent, Rect bounds, bool inverse) {
                inverse);
   line_segment(parent, center_x + 4, bounds.y + 2, 2, bounds.height - 4,
                inverse);
+}
+
+// Three ascending bars, filled when the station holds an address and hollow
+// when it does not. No diagonal is available on this renderer, so a crossed-out
+// or curved wifi glyph is not on the table; filled-versus-hollow is the one
+// distinction that survives at 18px on a reflective panel.
+//
+// Returns the bars so the caller can restyle them in place. Rebuilding the
+// page to change a connection indicator would repaint the whole panel, which
+// is visible here.
+WifiIconParts wifi_icon(lv_obj_t* parent, Rect bounds, bool connected) {
+  WifiIconParts parts{};
+  const int gap = 2;
+  const int bar_width = (bounds.width - 2 * gap) / 3;
+  for (int i = 0; i < 3; ++i) {
+    const int height = bounds.height * (i + 2) / 4;
+    lv_obj_t* bar = line_segment(parent, bounds.x + i * (bar_width + gap),
+                                 bounds.bottom() - height, bar_width, height,
+                                 false);
+    if (bar != nullptr) {
+      lv_obj_set_style_border_width(bar, 1, 0);
+      lv_obj_set_style_border_color(bar, lv_color_black(), 0);
+    }
+    parts.bars[i] = bar;
+  }
+  set_wifi_icon_state(parts, connected);
+  return parts;
+}
+
+void set_wifi_icon_state(const WifiIconParts& parts, bool connected) {
+  for (lv_obj_t* bar : parts.bars) {
+    if (bar == nullptr) continue;
+    lv_obj_set_style_bg_color(bar, connected ? lv_color_black()
+                                             : lv_color_white(), 0);
+  }
+}
+
+// Outline plus a terminal nub, with an inner bar whose width tracks the
+// charge. An invalid reading leaves the body empty rather than drawing 0%,
+// which would be a number nobody measured.
+BatteryIconParts battery_icon(lv_obj_t* parent, Rect bounds, uint8_t percent,
+                              bool valid) {
+  BatteryIconParts parts{};
+  const int nub_width = 3;
+  const int body_width = bounds.width - nub_width - 1;
+  lv_obj_t* body = lv_obj_create(parent);
+  if (body != nullptr) {
+    apply_surface(body);
+    lv_obj_set_pos(body, bounds.x, bounds.y);
+    lv_obj_set_size(body, body_width, bounds.height);
+    lv_obj_set_style_border_width(body, 1, 0);
+    lv_obj_set_style_border_color(body, lv_color_black(), 0);
+    lv_obj_set_style_radius(body, 1, 0);
+  }
+  line_segment(parent, bounds.x + body_width + 1,
+               bounds.y + bounds.height / 4, nub_width, bounds.height / 2,
+               false);
+  parts.fill = line_segment(parent, bounds.x + 2, bounds.y + 2, 1,
+                            bounds.height - 4, false);
+  parts.body_width = body_width;
+  set_battery_icon_level(parts, percent, valid);
+  return parts;
+}
+
+void set_battery_icon_level(const BatteryIconParts& parts, uint8_t percent,
+                            bool valid) {
+  if (parts.fill == nullptr) return;
+  if (!valid) {
+    lv_obj_set_style_bg_opa(parts.fill, LV_OPA_TRANSP, 0);
+    return;
+  }
+  lv_obj_set_style_bg_opa(parts.fill, LV_OPA_COVER, 0);
+  const int usable = parts.body_width - 4;
+  const int filled = usable * (percent > 100 ? 100 : percent) / 100;
+  lv_obj_set_width(parts.fill, filled < 1 ? 1 : filled);
 }
 
 void button_hints(lv_obj_t* parent, Rect bounds, InputHints hints) {

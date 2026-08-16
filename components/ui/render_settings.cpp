@@ -20,6 +20,13 @@ std::string row_value(SettingsItem item,
     case SettingsItem::Language:
       return language_name(ui::language());
     case SettingsItem::CheckUpdates:
+      // No value of its own: the result of a check goes in the full-width row
+      // below the list, because it is a sentence rather than a figure.
+      //
+      // This case was left empty when that moved, and an empty case falls
+      // through - so the update row started showing the battery's millivolts.
+      // The explicit return is what stops it.
+      return {};
     case SettingsItem::Battery: {
       // Millivolts first: that is the number a multimeter is compared against.
       // The percentage follows so the row is still readable as a battery
@@ -95,11 +102,8 @@ void render_settings(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
   // Its own full-width row, wrapping rather than clipping: this is the one
   // string on the page whose length is not under this code's control.
   if (!status.empty()) {
-    lv_obj_t* status_obj = label(parent, status.c_str(), layout.status,
-                                 font_small(), LV_TEXT_ALIGN_LEFT);
-    if (status_obj != nullptr) {
-      lv_label_set_long_mode(status_obj, LV_LABEL_LONG_WRAP);
-    }
+    label_wrapped(parent, status.c_str(), layout.status, font_small(),
+                  LV_TEXT_ALIGN_LEFT);
   }
 }
 

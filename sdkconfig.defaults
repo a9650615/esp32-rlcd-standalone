@@ -52,3 +52,13 @@ CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
 # sdkconfig and rebuild, then confirm the value landed (see the
 # sdkconfig.defaults trap in the board skill).
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
+# Battery divider trim for this specific board, from its own readings rather
+# than a multimeter: 44 samples across several hours on USB spanned 4071-4092
+# mV, a 21 mV plateau, which is a cell that has finished charging. A CC/CV
+# charger terminates a single Li-ion cell at 4200 mV to about a percent, so the
+# divider reads roughly 3% low: 1000 * 4200 / 4076.
+#
+# Set per board. It matters most for the overvoltage warning - a reading 3% low
+# turns a real 4300 mV into 4170 and the threshold never fires.
+CONFIG_BATTERY_CALIBRATION_PERMILLE=1030

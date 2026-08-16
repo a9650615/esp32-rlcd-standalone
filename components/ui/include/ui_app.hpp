@@ -67,13 +67,16 @@ struct UiContext {
   std::string settings_status;
 
   lv_obj_t* clock_label = nullptr;
-  lv_obj_t* network_label = nullptr;
-  lv_obj_t* battery_label = nullptr;
+  // The tray indicators are shapes now, not labels, so what the cheap update
+  // path needs is their mutable parts rather than a text pointer.
+  WifiIconParts network_icon{};
+  BatteryIconParts battery_icon_parts{};
+  WifiIconParts staging_network_icon{};
+  BatteryIconParts staging_battery_icon{};
   lv_obj_t* setup_status_label = nullptr;
   // Staging-only registrations used during atomic replacement.
   lv_obj_t* staging_clock_label = nullptr;
-  lv_obj_t* staging_network_label = nullptr;
-  lv_obj_t* staging_battery_label = nullptr;
+
   lv_obj_t* staging_setup_status_label = nullptr;
   bool initialized = false;
 };

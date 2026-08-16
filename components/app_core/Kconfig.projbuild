@@ -8,7 +8,22 @@ config BATTERY_CALIBRATION_PERMILLE
     int "Battery divider calibration (permille of the nominal 3x divider)"
     default 1000
     help
-        Real dividers run a few percent off nominal. To calibrate: read the
-        reported battery millivolts, measure the actual cell voltage with a
-        multimeter across the battery terminals, then set this to
-        1000 * multimeter_mV / reported_mV. 1000 applies no trim.
+        Real dividers run a few percent off nominal. 1000 applies no trim.
+
+        With a multimeter: read the reported millivolts (Settings shows them),
+        measure across the cell terminals with USB unplugged - charging holds
+        the terminal voltage up - and set this to
+        1000 * multimeter_mV / reported_mV.
+
+        Without one, a fully charged cell is its own reference. A CC/CV charger
+        terminates a single Li-ion cell at 4200 mV, to about a percent, so:
+        leave the board on USB until the reported figure stops rising and holds
+        steady for an hour or more, then set this to 4200000 / reported_mV.
+        Confirm it really has plateaued before trusting it - a cell still
+        charging is not at 4200 and would calibrate this the wrong way.
+
+        The ADC itself already uses the chip's factory curve-fitting
+        calibration, so this trims the divider ratio only, and the honest
+        expectation is a couple of percent rather than precision. That is
+        enough for the percentage; it matters most for the overvoltage
+        thresholds, which a reading that is low by 3% would never reach.

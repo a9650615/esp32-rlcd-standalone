@@ -43,3 +43,9 @@ if(Python3_Interpreter_FOUND)
         VERBATIM)
     add_dependencies(${COMPONENT_LIB} check_cjk_font)
 endif()
+
+# An empty case falling into the next one silently put the battery's millivolts
+# on the update row. The switches here map enums to display strings, where a
+# fallthrough is nearly always a missing return rather than an intention, so
+# make the compiler say so.
+target_compile_options(${COMPONENT_LIB} PRIVATE -Wimplicit-fallthrough)

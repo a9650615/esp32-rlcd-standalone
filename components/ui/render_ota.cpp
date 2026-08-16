@@ -71,10 +71,8 @@ void render_ota(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
   }
 
   if (!ota.detail.empty()) {
-    lv_obj_t* detail =
-        label(parent, ota.detail.c_str(), layout.detail, small_font(),
-              LV_TEXT_ALIGN_CENTER);
-    if (detail != nullptr) lv_label_set_long_mode(detail, LV_LABEL_LONG_WRAP);
+    label_wrapped(parent, ota.detail.c_str(), layout.detail, small_font(),
+                  LV_TEXT_ALIGN_CENTER);
   }
 }
 

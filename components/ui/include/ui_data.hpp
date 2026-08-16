@@ -426,6 +426,15 @@ struct SystemTrayLayout {
   Rect battery;
 };
 
+// Both indicators live at the right end, leaving the middle empty. They were
+// words - "WIFI", "NO WIFI", "BAT 91%" - which is a lot of the tray spent on
+// two facts that a shape carries at a glance. The exact charge figure moved to
+// the settings page, where it is the number a calibration is compared against.
+inline constexpr int kTrayWifiIconWidth = 18;
+inline constexpr int kTrayIconHeight = 14;
+inline constexpr int kTrayBatteryIconWidth = 30;
+inline constexpr int kTrayIconGap = 8;
+
 // Sized to match the previous mast band (28) plus its trailing gap (8) so
 // the reduced content area on data pages is pixel-identical to before -
 // only the addition of an explicit separator changes that 8 into 1 + 7.
@@ -459,13 +468,13 @@ constexpr SystemTrayLayout system_tray_layout(const Rect bounds,
   const int leading_width =
       wide_leading ? kSystemTrayDateWidth : kSystemTrayTimeWidth;
   const Rect time{bounds.x, bounds.y, leading_width, kSystemTrayTimeHeight};
-  const Rect battery{bounds.right() - kSystemTrayBatteryWidth,
-                     bounds.y + kSystemTrayCellY, kSystemTrayBatteryWidth,
-                     kSystemTrayCellHeight};
-  const int network_x = time.right() + kSystemTrayCellGap;
-  const int network_width = battery.x - kSystemTrayCellGap - network_x;
-  const Rect network{network_x, bounds.y + kSystemTrayCellY, network_width,
-                     kSystemTrayCellHeight};
+  // Icon cells now, both flush right: battery last, wifi immediately left of
+  // it, and whatever is between them and the leading cell stays empty.
+  const int icon_y = bounds.y + (kSystemTrayHeight - kTrayIconHeight) / 2;
+  const Rect battery{bounds.right() - kTrayBatteryIconWidth, icon_y,
+                     kTrayBatteryIconWidth, kTrayIconHeight};
+  const Rect network{battery.x - kTrayIconGap - kTrayWifiIconWidth, icon_y,
+                     kTrayWifiIconWidth, kTrayIconHeight};
   return {time, network, battery};
 }
 

@@ -149,12 +149,36 @@ constexpr int text_outline_width(const int font_line_height) {
   return font_line_height <= 16 ? kTextStrokeWidth : 0;
 }
 
+// Tray indicators, as plain data so UiContext can hold them in the LVGL-free
+// host build. Both drawing calls return their mutable parts so a state change
+// is applied in place: rebuilding the page to move a battery bar would repaint
+// the whole reflective panel, which is what the cheap update path exists to
+// avoid.
+struct WifiIconParts {
+  lv_obj_t* bars[3]{};
+};
+
+struct BatteryIconParts {
+  lv_obj_t* fill = nullptr;
+  int body_width = 0;
+};
+
 #ifndef UI_THEME_GEOMETRY_ONLY
 
 void apply_surface(lv_obj_t* object);
+// `wraps` only suppresses the debug overflow warning; it does not change the
+// long mode. Prefer label_wrapped below, which does both.
 lv_obj_t* label(lv_obj_t* parent, const char* text, Rect bounds,
                 const lv_font_t* font = nullptr,
-                lv_text_align_t align = LV_TEXT_ALIGN_LEFT);
+                lv_text_align_t align = LV_TEXT_ALIGN_LEFT,
+                bool wraps = false);
+
+// A label that wraps instead of ellipsising. One call rather than the
+// create-then-set-long-mode pair, which had to be written four times and got
+// the overflow warning wrong every time.
+lv_obj_t* label_wrapped(lv_obj_t* parent, const char* text, Rect bounds,
+                        const lv_font_t* font = nullptr,
+                        lv_text_align_t align = LV_TEXT_ALIGN_LEFT);
 lv_obj_t* divider(lv_obj_t* parent, Rect bounds);
 lv_obj_t* line_segment(lv_obj_t* parent, int x, int y, int width, int height,
                        bool inverse = false);
@@ -164,6 +188,13 @@ void temperature_icon(lv_obj_t* parent, Rect bounds, bool inverse = false);
 void humidity_icon(lv_obj_t* parent, Rect bounds, bool inverse = false);
 // Fills the bottom band on pages where the buttons do something other than
 // turn pages. A no-op when hints.visible is false.
+WifiIconParts wifi_icon(lv_obj_t* parent, Rect bounds, bool connected);
+void set_wifi_icon_state(const WifiIconParts& parts, bool connected);
+BatteryIconParts battery_icon(lv_obj_t* parent, Rect bounds, uint8_t percent,
+                              bool valid);
+void set_battery_icon_level(const BatteryIconParts& parts, uint8_t percent,
+                            bool valid);
+
 void button_hints(lv_obj_t* parent, Rect bounds, InputHints hints);
 void page_dots(lv_obj_t* parent, std::size_t page_index,
                std::size_t page_count, Rect bounds);

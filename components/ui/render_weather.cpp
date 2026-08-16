@@ -41,8 +41,12 @@ void render_weather(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
   // panel. Still clears the divider at bounds.y+70 with room to spare.
   weather_icon(parent, {bounds.x + 8, bounds.y + 8, 48, 46},
               weather_icon_kind_for_condition(current.condition));
-  label(parent, current.condition.c_str(),
-        {bounds.x + 66, bounds.y + 4, 156, 35}, hero_font());
+  // Wraps rather than ellipsising: this is the page's headline and the two
+  // longest WMO wordings - "Partly Cloudy" at 193px, "Thunderstorm" - do not
+  // fit the 154px box on one line. There is vertical room here; the forecast
+  // columns below are the place where shortening was the only option.
+  label_wrapped(parent, current.condition.c_str(),
+                {bounds.x + 66, bounds.y + 4, 156, 35}, hero_font());
   label(parent, current.location.c_str(),
         {bounds.x + 68, bounds.y + 41, 131, 20}, medium_font());
   char current_line[48];
