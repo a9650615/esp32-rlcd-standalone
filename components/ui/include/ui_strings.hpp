@@ -40,6 +40,7 @@ enum class Text : uint16_t {
   SettingsLanguage,
   SettingsCheckUpdates,
   SettingsWifiSetup,
+  SettingsBattery,
   SettingsChecking,
 
   HintNextItem,
@@ -70,8 +71,9 @@ enum class Text : uint16_t {
   StatusOvervoltage,
   StatusDry,
   StatusHumid,
+  ChartOpen,
   ChartMid,
-  ChartNow,
+  ChartClose,
   SetupWifiPrefix,
   SetupPagePwPrefix,
   SetupConnecting,

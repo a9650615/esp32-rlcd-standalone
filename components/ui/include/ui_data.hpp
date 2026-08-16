@@ -225,6 +225,22 @@ inline const char* forecast_condition_short(const std::string& condition) {
 // "CLOSE  14 Aug" - the session the figures are from. Empty when the source
 // did not date them, so the caller draws nothing rather than a placeholder
 // date, which would be the one thing worse than no date at all.
+// "14 Aug", or empty when the source did not date its figures.
+inline std::string market_as_of_short(const app_core::MarketData& market) {
+  if (market.as_of_month == 0 || market.as_of_day == 0 ||
+      market.as_of_month > 12) {
+    return {};
+  }
+  static constexpr const char* kMonths[] = {"Jan", "Feb", "Mar", "Apr",
+                                            "May", "Jun", "Jul", "Aug",
+                                            "Sep", "Oct", "Nov", "Dec"};
+  char buffer[16];
+  std::snprintf(buffer, sizeof(buffer), "%u %s",
+                static_cast<unsigned>(market.as_of_day),
+                kMonths[market.as_of_month - 1]);
+  return buffer;
+}
+
 inline std::string market_as_of_text(const app_core::MarketData& market) {
   if (market.as_of_month == 0 || market.as_of_day == 0) return {};
   static constexpr const char* kMonths[] = {"Jan", "Feb", "Mar", "Apr",
@@ -243,7 +259,7 @@ struct SettingsLayout {
   Rect title;
   // One row per SettingsItem. Fixed-size rather than computed per item so the
   // rows cannot shift as values change length underneath them.
-  Rect rows[4];
+  Rect rows[5];
   Rect value_column;
   // Full width, below the list. The update check reports things like "Up to
   // date (latest is v0.1.2)", which has no chance in the value column and was
@@ -269,7 +285,7 @@ constexpr SettingsLayout settings_layout(const Rect bounds) {
   SettingsLayout layout{};
   layout.title = title;
   int y = title.bottom() + kSettingsTitleGap;
-  for (int i = 0; i < 4; ++i) {
+  for (int i = 0; i < 5; ++i) {
     layout.rows[i] = Rect{bounds.x, y, bounds.width, kSettingsRowHeight};
     y += kSettingsRowHeight + kSettingsRowGap;
   }
@@ -284,7 +300,7 @@ constexpr SettingsLayout settings_layout(const Rect bounds) {
 constexpr bool settings_layout_fits(const Rect content) {
   const SettingsLayout layout = settings_layout(content);
   if (!rect_within(content, layout.title)) return false;
-  for (int i = 0; i < 4; ++i) {
+  for (int i = 0; i < 5; ++i) {
     if (!rect_within(content, layout.rows[i])) return false;
   }
   if (!rect_within(content, layout.status)) return false;

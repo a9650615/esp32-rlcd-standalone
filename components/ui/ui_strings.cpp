@@ -41,6 +41,7 @@ constexpr Row kRows[] = {
     {"Language", "語言"},
     {"Check for updates", "檢查更新"},
     {"Wi-Fi setup", "Wi-Fi 設定"},
+    {"Battery", "電池"},
     {"Checking...", "檢查中..."},
 
     {"Next", "下一項"},
@@ -67,8 +68,9 @@ constexpr Row kRows[] = {
     {"OVERVOLTAGE", "電壓過高"},
     {"DRY", "偏乾"},
     {"WET", "偏濕"},
+    {"OPEN", "開盤"},
     {"MID", "盤中"},
-    {"NOW", "現在"},
+    {"CLOSE", "收盤"},
     {"WIFI: ", "熱點: "},
     {"PAGE PW: ", "頁面密碼: "},
     {"Connecting...", "連線中..."},

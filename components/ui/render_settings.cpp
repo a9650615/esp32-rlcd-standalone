@@ -2,13 +2,16 @@
 
 #include <esp_app_desc.h>
 
+#include <cstdio>
+
 namespace ui {
 namespace {
 
 // The value shown to the right of a row's label. Empty for rows that are an
 // action rather than a setting - "check for updates" has no current value, and
 // inventing one would make it look like a reading.
-std::string row_value(SettingsItem item) {
+std::string row_value(SettingsItem item,
+                      const app_core::BatteryData& battery) {
   switch (item) {
     case SettingsItem::Firmware: {
       const esp_app_desc_t* desc = esp_app_get_description();
@@ -17,6 +20,17 @@ std::string row_value(SettingsItem item) {
     case SettingsItem::Language:
       return language_name(ui::language());
     case SettingsItem::CheckUpdates:
+    case SettingsItem::Battery: {
+      // Millivolts first: that is the number a multimeter is compared against.
+      // The percentage follows so the row is still readable as a battery
+      // level, and both are marked absent rather than shown as zero when the
+      // divider reads below a plausible cell voltage.
+      if (!battery.valid) return "--";
+      char buffer[24];
+      std::snprintf(buffer, sizeof(buffer), "%d mV  %u%%", battery.millivolts,
+                    static_cast<unsigned>(battery.percent));
+      return buffer;
+    }
     case SettingsItem::WifiSetup:
     case SettingsItem::Count:
       break;
@@ -35,7 +49,6 @@ void render_settings(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
                      std::size_t page_count, UiContext* context) {
   (void)page_index;
   (void)page_count;
-  (void)snapshot;
   apply_surface(parent);
   const SettingsLayout layout = settings_layout(bounds);
 
@@ -69,7 +82,7 @@ void render_settings(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
     // the text disappears in dim rooms.
     if (is_focused) apply_setup_status_style(label_obj, true);
 
-    const std::string value = row_value(item);
+    const std::string value = row_value(item, snapshot.battery);
     if (!value.empty()) {
       const Rect value_rect{row.right() - kSettingsValueWidth, row.y,
                             kSettingsValueWidth, row.height};

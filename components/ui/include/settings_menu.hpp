@@ -16,6 +16,13 @@ enum class SettingsItem : uint8_t {
   Language,
   CheckUpdates,
   WifiSetup,
+  // Raw millivolts beside the percentage. Display only, and here rather than
+  // on a data page because it exists for one job: comparing the board's
+  // reading against a multimeter so CONFIG_BATTERY_CALIBRATION_PERMILLE can be
+  // set. Until that is done the percentage and the overvoltage thresholds are
+  // both untrustworthy, and digging the figure out of a serial log is enough
+  // friction that the calibration does not happen.
+  Battery,
   Count,
 };
 

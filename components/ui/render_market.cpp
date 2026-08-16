@@ -63,8 +63,32 @@ void render_market(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
   const MarketLayout layout = market_layout(bounds);
   const Rect primary = layout.primary;
 
+  // The title and the date split the row. They used to share one rect, and
+  // because every label paints an opaque background the date simply covered
+  // the title - the exact failure the board skill warns against fixing with
+  // paint order.
+  const int header_width = primary.width - 16;
+  const Rect title_rect{primary.x + 8, primary.y + 4, header_width * 3 / 5, 18};
+  const Rect date_rect{title_rect.right(), primary.y + 4,
+                       header_width - title_rect.width, 18};
   label(parent, us_market ? text(Text::TitleUsMarket) : text(Text::TitleTaiwanMarket),
-        {primary.x + 8, primary.y + 4, primary.width - 16, 18}, small_font());
+        title_rect, small_font());
+
+  // The session these figures come from, on every market page and in every
+  // state. The US page has an intraday series and so draws a chart, which
+  // implies "now" more strongly than a bare number does - and outside trading
+  // hours that chart is last session's. Dating it is the difference between a
+  // stale reading and a lie.
+  //
+  // Shown unconditionally rather than only when the date differs from today's:
+  // deciding that needs the device's date against the exchange's, in different
+  // timezones, and a wrong answer there fails silently in the direction of
+  // saying nothing. One short line costs less than the comparison.
+  const std::string as_of = market_as_of_short(market);
+  if (market.valid && !as_of.empty()) {
+    label(parent, as_of.c_str(), date_rect, small_font(),
+          LV_TEXT_ALIGN_RIGHT);
+  }
 
   if (!market.valid) {
     // No fabricated primary_value/percent/chart below the title - see
@@ -103,14 +127,14 @@ void render_market(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
       dotted_grid(parent, chart);
       polyline(parent, normalize_chart_samples(market.intraday_samples, chart),
                chart);
-      label(parent, "09:00",
+      label(parent, text(Text::ChartOpen),
             {chart.x, chart.bottom() + 1, chart.width / 3, axis_height},
             small_font());
       label(parent, text(Text::ChartMid),
             {chart.x + chart.width / 3, chart.bottom() + 1, chart.width / 3,
              axis_height},
             small_font(), LV_TEXT_ALIGN_CENTER);
-      label(parent, text(Text::ChartNow),
+      label(parent, text(Text::ChartClose),
             {chart.x + 2 * chart.width / 3, chart.bottom() + 1,
              chart.width / 3, axis_height},
             small_font(), LV_TEXT_ALIGN_RIGHT);
