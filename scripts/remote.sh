@@ -109,7 +109,12 @@ case "${1:-}" in
     [[ -f "$bin" ]] || { echo "no build at $bin - run idf.py build" >&2; exit 1; }
     ip="$(board_ip)"
     echo "offering $(wc -c < "$bin" | tr -d ' ') bytes to $ip" >&2
-    echo "the board is showing the offer now: BOOT accepts, KEY cancels" >&2
+    # Hedged, because this side cannot tell which way the board was built:
+    # with CONFIG_OTA_ALLOW_UNCONFIRMED_PUSH it installs immediately, without
+    # it it waits five minutes for BOOT. Stating one of those as fact leaves
+    # somebody either waiting for a prompt that never appears or walking away
+    # from one that does.
+    echo "if the board asks, BOOT accepts and KEY cancels" >&2
     # --max-time covers the confirmation window plus the transfer. The board
     # holds the request open until someone answers.
     #
