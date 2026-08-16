@@ -184,6 +184,34 @@ bool decode_pcf85063(const uint8_t* registers, std::size_t length,
   return true;
 }
 
+bool encode_pcf85063(const RtcDateTime& clock, uint8_t* registers,
+                     std::size_t length) {
+  if (registers == nullptr || length < 7) return false;
+  if (clock.year < 2000 || clock.year > 2099) return false;
+  if (clock.month < 1 || clock.month > 12) return false;
+  if (clock.day < 1 || clock.day > days_in_month_impl(clock.year, clock.month)) {
+    return false;
+  }
+  if (clock.hour > 23 || clock.minute > 59 || clock.second > 59) return false;
+
+  const auto to_bcd = [](uint8_t value) -> uint8_t {
+    return static_cast<uint8_t>(((value / 10) << 4) | (value % 10));
+  };
+  // Bit 7 of the seconds register is the oscillator-stop flag. Writing it as 0
+  // is what tells the chip its time is trustworthy again; leaving it set would
+  // store the right time and still report it as invalid on the next read.
+  registers[0] = static_cast<uint8_t>(to_bcd(clock.second) & 0x7F);
+  registers[1] = to_bcd(clock.minute);
+  registers[2] = to_bcd(clock.hour);
+  registers[3] = to_bcd(clock.day);
+  // Weekday is not carried in RtcDateTime and nothing reads it back - decode
+  // discards it too. Zero rather than a computed value nobody checks.
+  registers[4] = 0;
+  registers[5] = to_bcd(clock.month);
+  registers[6] = to_bcd(static_cast<uint8_t>(clock.year - 2000));
+  return true;
+}
+
 int battery_millivolts_scaled(int adc_millivolts, int calibration_permille) {
   return adc_millivolts * 3 * calibration_permille / 1000;
 }

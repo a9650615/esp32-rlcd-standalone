@@ -36,6 +36,20 @@ struct RtcDateTime {
 
 uint8_t days_in_month(uint16_t year, uint8_t month);
 RtcDateTime advance_rtc_datetime(RtcDateTime start, uint64_t elapsed_seconds);
+// Inverse of decode_pcf85063: seven registers starting at VL_SECONDS, ready to
+// write straight to the chip.
+//
+// Writing the seconds register clears the oscillator-stop flag in bit 7, which
+// is the whole point. A PCF85063 sets that bit when it has lost its
+// timekeeping and never clears it on its own, so a chip that has never been
+// written reads as invalid forever - which is what made this board fall back
+// to its build timestamp on every boot despite having a working RTC on the
+// bus.
+//
+// Returns false rather than writing nonsense if the date is out of range.
+bool encode_pcf85063(const RtcDateTime& clock, uint8_t* registers,
+                     std::size_t length);
+
 bool decode_pcf85063(const uint8_t* registers, std::size_t length,
                      RtcDateTime& decoded);
 

@@ -198,3 +198,35 @@ HOST_TEST(recent_temperatures_returns_the_newest_readings_oldest_first) {
   EXPECT_EQ(static_cast<int>(
                 app_core::history_recent_temperatures(blob, nullptr, 8)), 0);
 }
+
+HOST_TEST(pcf85063_encoding_round_trips_and_clears_the_stop_flag) {
+  const app_core::RtcDateTime original{2026, 8, 16, 23, 41, 7};
+  uint8_t registers[7] = {};
+  EXPECT_TRUE(app_core::encode_pcf85063(original, registers,
+                                        sizeof(registers)));
+
+  // Bit 7 of seconds is the oscillator-stop flag. If encoding ever set it, the
+  // chip would store the correct time and still report itself invalid on the
+  // next read - which is the exact failure this whole path exists to end.
+  EXPECT_EQ(static_cast<int>(registers[0] & 0x80), 0);
+
+  app_core::RtcDateTime decoded{};
+  EXPECT_TRUE(app_core::decode_pcf85063(registers, sizeof(registers),
+                                        decoded));
+  EXPECT_EQ(static_cast<int>(decoded.year), 2026);
+  EXPECT_EQ(static_cast<int>(decoded.month), 8);
+  EXPECT_EQ(static_cast<int>(decoded.day), 16);
+  EXPECT_EQ(static_cast<int>(decoded.hour), 23);
+  EXPECT_EQ(static_cast<int>(decoded.minute), 41);
+  EXPECT_EQ(static_cast<int>(decoded.second), 7);
+
+  // Out of range is refused rather than written as garbage the chip would
+  // then hand back as a confident-looking wrong date.
+  const app_core::RtcDateTime bad_day{2026, 2, 30, 0, 0, 0};
+  EXPECT_TRUE(!app_core::encode_pcf85063(bad_day, registers,
+                                         sizeof(registers)));
+  const app_core::RtcDateTime bad_year{1999, 1, 1, 0, 0, 0};
+  EXPECT_TRUE(!app_core::encode_pcf85063(bad_year, registers,
+                                         sizeof(registers)));
+  EXPECT_TRUE(!app_core::encode_pcf85063(original, registers, 3));
+}

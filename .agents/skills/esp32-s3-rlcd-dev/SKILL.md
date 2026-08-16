@@ -95,12 +95,22 @@ restored from NVS, boot ordering, the first frame rendered. It is POST, not GET,
 so a prefetch cannot fire it, and like `/shot` it does not exist in a release
 build.
 
-`push` goes to **port 8032**, not 80. The upload handler blocks - for the whole
-confirmation window and then for the transfer - and esp_http_server runs one
-task serially, so sharing a port meant one unanswered push took every other
-route down with it: no screenshot, no restart, not the root page, for five
-minutes, with requests made during it queueing invisibly and then appearing to
-hang. Do not move /ota back onto the main server.
+The upload handler blocks - for the confirmation window and then for the
+transfer - and esp_http_server runs one task serially, so while it waits the
+board answers nothing: no screenshot, no restart, not the root page, and
+requests made during it queue invisibly and then appear to hang.
+
+Moving /ota to a second listener on its own port was tried and **rolled back by
+the board twice**. Two servers at esp_http_server's default of 7 sockets each
+is 14 of CONFIG_LWIP_MAX_SOCKETS before net_log takes 2 and a TLS fetch takes
+more; raising the pool to 24 and capping the second server at 4 did not save it
+either, so the cause is not established. Do not retry it without first landing
+`esp_reset_reason()` logging - the failure is invisible otherwise, because a
+panic bypasses the log sink and the reboot takes the ring with it.
+
+What makes the blocking tolerable is `CONFIG_OTA_ALLOW_UNCONFIRMED_PUSH`: with
+no confirmation to wait for, the block is one 1.5 MB transfer rather than five
+minutes. Turning confirmation back on brings the five-minute blackout back.
 
 Whether a push needs a button press depends on
 `CONFIG_OTA_ALLOW_UNCONFIRMED_PUSH`, which this repo's `sdkconfig.defaults`

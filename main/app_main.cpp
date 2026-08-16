@@ -100,6 +100,45 @@ bool read_rtc(app_core::RtcDateTime& clock) {
   return true;
 }
 
+// Puts network time into the RTC so the next boot does not need a network.
+//
+// Nothing wrote this chip before, which is why every boot logged "RTC absent
+// or invalid": bit 7 of the seconds register is the oscillator-stop flag, the
+// PCF85063 sets it when it has lost timekeeping, and it clears only on a
+// write. A chip that has never been written therefore reads as invalid
+// forever, and the board fell back to its build timestamp - which is how a
+// freshly flashed device shows the time the firmware was compiled.
+bool write_rtc(const app_core::RtcDateTime& clock) {
+  uint8_t registers[7]{};
+  if (!app_core::encode_pcf85063(clock, registers, sizeof(registers))) {
+    ESP_LOGW(kTag, "RTC write refused: %04u-%02u-%02u %02u:%02u:%02u is out of range",
+             clock.year, clock.month, clock.day, clock.hour, clock.minute,
+             clock.second);
+    return false;
+  }
+  if (board::board_i2c_init() != ESP_OK) return false;
+  i2c_master_dev_handle_t device = nullptr;
+  if (board::board_i2c_add_device(kRtcAddress, 100'000, device) != ESP_OK) {
+    return false;
+  }
+  // Register pointer followed by the seven values, in one transaction: the
+  // chip auto-increments, and splitting it would let the seconds roll over
+  // between writes.
+  uint8_t payload[8];
+  payload[0] = kRtcSecondsRegister;
+  std::memcpy(payload + 1, registers, sizeof(registers));
+  const esp_err_t result =
+      i2c_master_transmit(device, payload, sizeof(payload), 100);
+  if (result != ESP_OK) {
+    ESP_LOGW(kTag, "RTC write failed: %s", esp_err_to_name(result));
+    return false;
+  }
+  ESP_LOGI(kTag, "RTC set from network time: %04u-%02u-%02u %02u:%02u:%02u",
+           clock.year, clock.month, clock.day, clock.hour, clock.minute,
+           clock.second);
+  return true;
+}
+
 [[noreturn]] void fatal_loop(const char* reason, esp_err_t error) {
   ESP_LOGE(kTag, "fatal: %s (%s); startup stopped", reason,
            esp_err_to_name(error));
@@ -675,14 +714,30 @@ void format_clock(const app_core::RtcDateTime& clock, app_core::ClockData& out) 
 // the RTC/compile-time fallback clock (and its own honest source string)
 // exactly as already set at startup.
 [[noreturn]] void net_time_monitor_task(void*) {
+  // Once on the first successful sync, then daily. The point is not to keep
+  // the RTC in step second by second - it is to leave a trustworthy time in
+  // the chip so a boot with no network still knows what time it is. Daily
+  // re-writes keep the crystal's drift from accumulating across the months a
+  // device like this stays powered.
+  bool rtc_written = false;
+  uint32_t since_rtc_write_ms = 0;
+  constexpr uint32_t kRtcRefreshMs = 24 * 60 * 60 * 1000;
   for (;;) {
     app_core::RtcDateTime clock{};
     if (net_time::synced() && net_time::now(clock)) {
       app_core::ClockData data;
       format_clock(clock, data);
       wifi_provision::set_clock(data);
+
+      if (!rtc_written || since_rtc_write_ms >= kRtcRefreshMs) {
+        if (write_rtc(clock)) {
+          rtc_written = true;
+          since_rtc_write_ms = 0;
+        }
+      }
     }
     vTaskDelay(pdMS_TO_TICKS(kNetTimeCheckPeriodMs));
+    since_rtc_write_ms += kNetTimeCheckPeriodMs;
   }
 }
 

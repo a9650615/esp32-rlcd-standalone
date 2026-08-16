@@ -42,23 +42,22 @@ constexpr uint32_t kOtaConfirmTimeoutMs = 5 * 60'000;
 
 httpd_handle_t server_ = nullptr;
 
-// The firmware upload gets its own server on its own port, because its handler
-// blocks - for the whole confirmation window, and then for the length of a
-// 1.5 MB transfer.
+// NOTE: the upload handler blocks - for the confirmation window, then for the
+// transfer - and esp_http_server runs one task serially, so while it waits the
+// board answers nothing at all.
 //
-// esp_http_server processes requests serially on one task, so while /ota waits
-// for somebody to press a button the board answers nothing at all: no
-// screenshot, no restart, not the root page. One unanswered push took the
-// entire HTTP surface down for five minutes, and every request made during it
-// queued invisibly and then appeared to hang. On a board with no cable that
-// reads as a dead device.
+// A second listener on its own port was tried and rolled back twice: two
+// servers at esp_http_server's default of 7 sockets each is 14 of
+// CONFIG_LWIP_MAX_SOCKETS before net_log takes 2 and a TLS fetch takes more,
+// and running the table dry fails in whichever subsystem asks next rather than
+// in the one that spent them. Raising the pool to 24 and capping the second
+// server at 4 did not save it either, so the cause is not established and the
+// change is out until it is.
 //
-// Shortening the window would have traded away the thing it was lengthened
-// for - being able to start a push and then walk to the board. Giving the
-// blocking route its own task costs one more listener and keeps diagnostics
-// answering while an offer is on screen.
-constexpr uint16_t kUploadPort = 8032;
-httpd_handle_t upload_server_ = nullptr;
+// What makes it tolerable meanwhile is CONFIG_OTA_ALLOW_UNCONFIRMED_PUSH: with
+// no confirmation to wait for, the block is the length of a 1.5 MB transfer
+// rather than five minutes. Turning the confirmation back on brings the
+// five-minute blackout back with it.
 dns_server_handle_t dns_ = nullptr;
 
 const char* current_app_version() {
@@ -755,7 +754,7 @@ void portal_start() {
     return;
   }
 
-  const httpd_uri_t* routes[] = {&kRootGet,    &kRootPost,
+  const httpd_uri_t* routes[] = {&kRootGet,    &kRootPost,  &kOtaPost,
                                  &kOtaUrlPost, &kUpdateGet, &kUpdatePost,
 #ifndef NDEBUG
                                  &kShotGet,    &kRestartPost,
@@ -770,43 +769,6 @@ void portal_start() {
   }
   httpd_register_err_handler(server_, HTTPD_404_NOT_FOUND,
                              &redirect_404_handler);
-
-  // Second listener, one route. Its own control block and task, so the block
-  // above stays answerable while this one is waiting on a button.
-  httpd_config_t upload_config = HTTPD_DEFAULT_CONFIG();
-  upload_config.server_port = kUploadPort;
-  // Must differ from the main server's, or the second bind fails with the
-  // first still holding the control socket.
-  ++upload_config.ctrl_port;
-  upload_config.max_uri_handlers = 2;
-  upload_config.lru_purge_enable = true;
-  // One route that one machine at a time uses. The default is 7, and two
-  // servers at 7 each is 14 of CONFIG_LWIP_MAX_SOCKETS before net_log's
-  // listener and client, let alone a TLS client for the weather or market
-  // fetch. Running the socket table dry starves whatever asks next, which is
-  // how a change to the update path turns into a failure somewhere unrelated.
-  upload_config.max_open_sockets = 4;
-  // The receive timeout has to outlast the confirmation window: the client
-  // holds the request open the whole time it is waiting for an answer.
-  upload_config.recv_wait_timeout = 30;
-  upload_config.send_wait_timeout = 30;
-  if (httpd_start(&upload_server_, &upload_config) == ESP_OK) {
-    const esp_err_t result =
-        httpd_register_uri_handler(upload_server_, &kOtaPost);
-    if (result != ESP_OK) {
-      ESP_LOGE(kTag, "upload route unavailable: %s", esp_err_to_name(result));
-    } else {
-      // Logged because the second server is the change most likely to run the
-      // board out of something, and a number here is what turns "it rolled
-      // back" into a diagnosis.
-      ESP_LOGI(kTag,
-               "firmware upload listening on port %u (free internal heap %u)",
-               kUploadPort,
-               static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)));
-    }
-  } else {
-    ESP_LOGE(kTag, "upload server failed to start; pushes will not be accepted");
-  }
 
   dns_server_config_t dns_config = DNS_SERVER_CONFIG_SINGLE("*", "WIFI_AP_DEF");
   dns_ = start_dns_server(&dns_config);
@@ -825,10 +787,6 @@ void portal_stop() {
   if (server_ != nullptr) {
     httpd_stop(server_);
     server_ = nullptr;
-  }
-  if (upload_server_ != nullptr) {
-    httpd_stop(upload_server_);
-    upload_server_ = nullptr;
   }
   if (dns_ != nullptr) {
     stop_dns_server(dns_);
