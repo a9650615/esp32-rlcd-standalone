@@ -13,10 +13,6 @@ namespace {
 std::string row_value(SettingsItem item,
                       const app_core::BatteryData& battery) {
   switch (item) {
-    case SettingsItem::Firmware: {
-      const esp_app_desc_t* desc = esp_app_get_description();
-      return desc != nullptr ? desc->version : "unknown";
-    }
     case SettingsItem::Language:
       return language_name(ui::language());
     case SettingsItem::CheckUpdates:
@@ -27,17 +23,6 @@ std::string row_value(SettingsItem item,
       // through - so the update row started showing the battery's millivolts.
       // The explicit return is what stops it.
       return {};
-    case SettingsItem::Battery: {
-      // Millivolts first: that is the number a multimeter is compared against.
-      // The percentage follows so the row is still readable as a battery
-      // level, and both are marked absent rather than shown as zero when the
-      // divider reads below a plausible cell voltage.
-      if (!battery.valid) return "--";
-      char buffer[24];
-      std::snprintf(buffer, sizeof(buffer), "%d mV  %u%%", battery.millivolts,
-                    static_cast<unsigned>(battery.percent));
-      return buffer;
-    }
     case SettingsItem::Runtime: {
       // Every branch that is not a measured projection says so rather than
       // printing a number. A runtime figure is the kind of thing that gets
@@ -59,6 +44,21 @@ std::string row_value(SettingsItem item,
       std::snprintf(buffer, sizeof(buffer), "%uh %02um", minutes / 60,
                     minutes % 60);
       return buffer;
+    }
+    case SettingsItem::Battery: {
+      // Millivolts first: that is the number a multimeter is compared against.
+      // The percentage follows so the row is still readable as a battery
+      // level, and both are marked absent rather than shown as zero when the
+      // divider reads below a plausible cell voltage.
+      if (!battery.valid) return "--";
+      char buffer[24];
+      std::snprintf(buffer, sizeof(buffer), "%d mV  %u%%", battery.millivolts,
+                    static_cast<unsigned>(battery.percent));
+      return buffer;
+    }
+    case SettingsItem::Firmware: {
+      const esp_app_desc_t* desc = esp_app_get_description();
+      return desc != nullptr ? desc->version : "unknown";
     }
     case SettingsItem::WifiSetup:
     case SettingsItem::Count:

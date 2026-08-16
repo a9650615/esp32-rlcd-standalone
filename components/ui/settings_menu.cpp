@@ -8,11 +8,6 @@ void SettingsMenu::focus_next() {
 
 SettingsAction SettingsMenu::activate() {
   switch (focused_) {
-    case SettingsItem::Firmware:
-      // Display only. Selecting the version row does nothing on purpose:
-      // there is no sensible action, and inventing one would make the row a
-      // trap for someone pressing their way down the list.
-      return SettingsAction::None;
     case SettingsItem::Language: {
       const auto next = static_cast<Language>(
           (static_cast<std::size_t>(ui::language()) + 1) %
@@ -20,17 +15,22 @@ SettingsAction SettingsMenu::activate() {
       set_language(next);
       return SettingsAction::LanguageChanged;
     }
+    case SettingsItem::WifiSetup:
+      return SettingsAction::EnterWifiSetup;
     case SettingsItem::CheckUpdates:
       // One row, two jobs: it asks until there is an answer, then it offers.
       // A separate install row would sit there inert most of the time and
       // still need the check to have run first.
       return update_offered_ ? SettingsAction::StartUpdateInstall
                              : SettingsAction::StartUpdateCheck;
-    case SettingsItem::WifiSetup:
-      return SettingsAction::EnterWifiSetup;
-    case SettingsItem::Battery:
     case SettingsItem::Runtime:
+    case SettingsItem::Battery:
       // Display only, like the firmware row.
+      return SettingsAction::None;
+    case SettingsItem::Firmware:
+      // Display only. Selecting the version row does nothing on purpose:
+      // there is no sensible action, and inventing one would make the row a
+      // trap for someone pressing their way down the list.
       return SettingsAction::None;
     case SettingsItem::Count:
       break;
@@ -40,18 +40,18 @@ SettingsAction SettingsMenu::activate() {
 
 Text settings_item_label(SettingsItem item) {
   switch (item) {
-    case SettingsItem::Firmware:
-      return Text::SettingsFirmware;
     case SettingsItem::Language:
       return Text::SettingsLanguage;
-    case SettingsItem::CheckUpdates:
-      return Text::SettingsCheckUpdates;
     case SettingsItem::WifiSetup:
       return Text::SettingsWifiSetup;
-    case SettingsItem::Battery:
-      return Text::SettingsBattery;
+    case SettingsItem::CheckUpdates:
+      return Text::SettingsCheckUpdates;
     case SettingsItem::Runtime:
       return Text::SettingsRuntime;
+    case SettingsItem::Battery:
+      return Text::SettingsBattery;
+    case SettingsItem::Firmware:
+      return Text::SettingsFirmware;
     case SettingsItem::Count:
       break;
   }

@@ -11,7 +11,7 @@
 // that stopped at the last row would be one you could never leave.
 HOST_TEST(settings_cursor_wraps_so_every_item_stays_reachable) {
   ui::SettingsMenu menu;
-  EXPECT_TRUE(menu.focused() == ui::SettingsItem::Firmware);
+  const ui::SettingsItem first = menu.focused();
 
   std::set<int> visited;
   for (std::size_t step = 0; step < ui::SettingsMenu::count(); ++step) {
@@ -21,16 +21,38 @@ HOST_TEST(settings_cursor_wraps_so_every_item_stays_reachable) {
   // Every item seen exactly once, and back at the start.
   EXPECT_EQ(static_cast<int>(visited.size()),
             static_cast<int>(ui::SettingsMenu::count()));
-  EXPECT_TRUE(menu.focused() == ui::SettingsItem::Firmware);
+  EXPECT_TRUE(menu.focused() == first);
+}
+
+// Locks in the operator-specified order itself, not just that some order is
+// self-consistent: frequently-used rows lead, rows nobody interacts with
+// trail, and the version row - which does nothing when selected - sinks
+// furthest of all, since with two physical buttons every row above the one
+// you want costs a press to walk past whether or not that row does anything.
+HOST_TEST(settings_items_are_ordered_by_how_often_they_are_actually_used) {
+  ui::SettingsMenu menu;
+  const ui::SettingsItem expected_order[] = {
+      ui::SettingsItem::Language,   ui::SettingsItem::WifiSetup,
+      ui::SettingsItem::CheckUpdates, ui::SettingsItem::Runtime,
+      ui::SettingsItem::Battery,    ui::SettingsItem::Firmware,
+  };
+  static_assert(sizeof(expected_order) / sizeof(expected_order[0]) ==
+                    ui::SettingsMenu::count(),
+                "update this test's expected order alongside SettingsItem");
+  for (const ui::SettingsItem expected : expected_order) {
+    EXPECT_TRUE(menu.focused() == expected);
+    menu.focus_next();
+  }
 }
 
 HOST_TEST(settings_menu_opens_at_the_top_every_time) {
   ui::SettingsMenu menu;
+  const ui::SettingsItem first = menu.focused();
   menu.focus_next();
   menu.focus_next();
-  EXPECT_TRUE(menu.focused() != ui::SettingsItem::Firmware);
+  EXPECT_TRUE(menu.focused() != first);
   menu.reset();
-  EXPECT_TRUE(menu.focused() == ui::SettingsItem::Firmware);
+  EXPECT_TRUE(menu.focused() == first);
 }
 
 HOST_TEST(settings_activation_only_acts_where_acting_makes_sense) {
@@ -38,13 +60,14 @@ HOST_TEST(settings_activation_only_acts_where_acting_makes_sense) {
   ui::SettingsMenu menu;
 
   // The version row is display-only; pressing select on it must be inert
-  // rather than doing something surprising.
-  EXPECT_TRUE(menu.focused() == ui::SettingsItem::Firmware);
+  // rather than doing something surprising. Sought by name, not reached by a
+  // fixed number of focus_next() calls, so this test does not silently
+  // start checking the wrong row if the menu's order changes again.
+  while (menu.focused() != ui::SettingsItem::Firmware) menu.focus_next();
   EXPECT_TRUE(menu.activate() == ui::SettingsAction::None);
   EXPECT_TRUE(ui::language() == ui::Language::English);
 
-  menu.focus_next();
-  EXPECT_TRUE(menu.focused() == ui::SettingsItem::Language);
+  while (menu.focused() != ui::SettingsItem::Language) menu.focus_next();
   EXPECT_TRUE(menu.activate() == ui::SettingsAction::LanguageChanged);
   EXPECT_TRUE(ui::language() == ui::Language::TraditionalChinese);
   // Cycles rather than latching, so the only control available can undo
@@ -52,10 +75,14 @@ HOST_TEST(settings_activation_only_acts_where_acting_makes_sense) {
   EXPECT_TRUE(menu.activate() == ui::SettingsAction::LanguageChanged);
   EXPECT_TRUE(ui::language() == ui::Language::English);
 
-  menu.focus_next();
+  while (menu.focused() != ui::SettingsItem::CheckUpdates) menu.focus_next();
   EXPECT_TRUE(menu.activate() == ui::SettingsAction::StartUpdateCheck);
-  menu.focus_next();
+  while (menu.focused() != ui::SettingsItem::WifiSetup) menu.focus_next();
   EXPECT_TRUE(menu.activate() == ui::SettingsAction::EnterWifiSetup);
+  while (menu.focused() != ui::SettingsItem::Runtime) menu.focus_next();
+  EXPECT_TRUE(menu.activate() == ui::SettingsAction::None);
+  while (menu.focused() != ui::SettingsItem::Battery) menu.focus_next();
+  EXPECT_TRUE(menu.activate() == ui::SettingsAction::None);
 }
 
 HOST_TEST(every_interface_string_exists_in_both_languages) {

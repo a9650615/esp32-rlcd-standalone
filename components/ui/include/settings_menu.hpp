@@ -7,25 +7,38 @@
 
 namespace ui {
 
+// Ordered by how often a row is actually acted on, not by topic: this menu
+// is walked with two physical buttons, so every row above the one you want
+// costs a press whether or not that row does anything - a dead row first is
+// a tax on every single visit. Actionable rows lead, in roughly descending
+// order of use; display-only rows (Runtime, Battery, Firmware) trail, in
+// roughly ascending order of "why anyone would look" - Runtime is read
+// often, Battery only during calibration, and Firmware's row does nothing
+// at all when selected (see its own comment below), so it sinks furthest.
 enum class SettingsItem : uint8_t {
-  // Shows the running version. Selecting it does nothing - it is here because
-  // "check for updates" is meaningless if you cannot see what you have.
-  Firmware,
   // Cycles through Language, applied immediately so the effect is visible on
-  // the very row that changed it.
+  // the very row that changed it. First: the most-used, most-obviously-live
+  // row in the menu.
   Language,
-  CheckUpdates,
   WifiSetup,
+  CheckUpdates,
+  // Projected time left, from the persisted discharge history rather than
+  // from the current reading. Display only, like Battery and Firmware below -
+  // but the one of the three someone actually comes here to read.
+  Runtime,
   // Raw millivolts beside the percentage. Display only, and here rather than
   // on a data page because it exists for one job: comparing the board's
   // reading against a multimeter so CONFIG_BATTERY_CALIBRATION_PERMILLE can be
   // set. Until that is done the percentage and the overvoltage thresholds are
   // both untrustworthy, and digging the figure out of a serial log is enough
-  // friction that the calibration does not happen.
+  // friction that the calibration does not happen. A diagnostic row, read far
+  // less often than Runtime, which is why it sits below it.
   Battery,
-  // Projected time left, from the persisted discharge history rather than
-  // from the current reading. Display only, like Firmware and Battery.
-  Runtime,
+  // Shows the running version. Selecting it does nothing - it is here because
+  // "check for updates" is meaningless if you cannot see what you have. Last,
+  // deliberately: nothing happens when you select it, so of every row in the
+  // menu this is the one a press should least often have to walk past.
+  Firmware,
   Count,
 };
 
@@ -81,7 +94,7 @@ class SettingsMenu {
   // wherever it was left days ago. The offer is cleared too: an update found
   // days ago should be re-checked rather than installed on trust.
   void reset() {
-    focused_ = SettingsItem::Firmware;
+    focused_ = SettingsItem::Language;
     update_offered_ = false;
   }
 
@@ -91,7 +104,7 @@ class SettingsMenu {
   bool update_offered() const { return update_offered_; }
 
  private:
-  SettingsItem focused_ = SettingsItem::Firmware;
+  SettingsItem focused_ = SettingsItem::Language;
   bool update_offered_ = false;
 };
 
