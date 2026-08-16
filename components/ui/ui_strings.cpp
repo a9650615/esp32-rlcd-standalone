@@ -1,5 +1,7 @@
 #include "ui_strings.hpp"
 
+#include <cstdio>
+
 #include <cstddef>
 
 namespace ui {
@@ -127,6 +129,13 @@ const char* language_name(Language value) {
       break;
   }
   return "";
+}
+
+std::string temperature_text(float celsius, int decimals) {
+  char buffer[16];
+  std::snprintf(buffer, sizeof(buffer), "%.*f°C", decimals,
+                static_cast<double>(celsius));
+  return buffer;
 }
 
 }  // namespace ui

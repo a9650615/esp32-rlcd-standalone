@@ -142,3 +142,14 @@ HOST_TEST(update_row_installs_only_what_a_check_actually_found) {
   while (menu.focused() != ui::SettingsItem::CheckUpdates) menu.focus_next();
   EXPECT_TRUE(menu.activate() == ui::SettingsAction::StartUpdateCheck);
 }
+
+HOST_TEST(every_page_spells_a_temperature_the_same_way) {
+  // The degree sign is two UTF-8 bytes, C2 B0, and LVGL's Montserrat carries
+  // U+00B0 - so this renders rather than becoming a box.
+  EXPECT_TRUE(ui::temperature_text(30.24f, 1) == "30.2°C");
+  // Decimals are a real difference, not a style one: a forecast high is not
+  // measured to a tenth.
+  EXPECT_TRUE(ui::temperature_text(27.6f, 0) == "28°C");
+  // Below zero the sign must survive the format, not be eaten by the width.
+  EXPECT_TRUE(ui::temperature_text(-4.5f, 1) == "-4.5°C");
+}

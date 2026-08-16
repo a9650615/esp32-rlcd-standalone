@@ -223,8 +223,9 @@ void render_home_tile(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
       break;
     case HomeTileKind::Weather:
       title = text(Text::TileWeather);
-      std::snprintf(value, sizeof(value), "%.0f C",
-                    snapshot.weather.current.temperature_c);
+      std::snprintf(value, sizeof(value), "%s",
+                    temperature_text(snapshot.weather.current.temperature_c, 0)
+                        .c_str());
       std::snprintf(detail, sizeof(detail), "%s%s%s",
                     snapshot.weather.alert ? text(Text::StatusAlert) : "",
                     snapshot.weather.current.condition.c_str(),
@@ -241,7 +242,8 @@ void render_home_tile(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
       break;
     case HomeTileKind::Indoor:
       title = text(Text::TileIndoor);
-      std::snprintf(value, sizeof(value), "%.1f C", snapshot.indoor.temperature_c);
+      std::snprintf(value, sizeof(value), "%s",
+                    temperature_text(snapshot.indoor.temperature_c, 1).c_str());
       std::snprintf(detail, sizeof(detail), "RH %u%%",
                     snapshot.indoor.humidity_percent);
       indoor = true;

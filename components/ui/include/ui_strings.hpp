@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 
 namespace ui {
 
@@ -107,5 +108,19 @@ const char* text_in(Language language, Text id);
 
 // Name of a language as written in that language, for the settings list.
 const char* language_name(Language value);
+
+// One spelling of a temperature for the whole firmware.
+//
+// Four sites had three between them - "28 C", "30.2 C", "30.2" with a degree
+// sign and no unit - so the same reading looked like a different kind of
+// number depending on which page you were on. The degree sign is available:
+// LVGL's Montserrat faces carry U+00B0 in their second cmap range, which is
+// why the sensor page could already use it while the others spelled it with a
+// space.
+//
+// `decimals` stays a parameter because it is a real difference: a forecast
+// high is not measured to a tenth and printing one would claim precision the
+// source does not have.
+std::string temperature_text(float celsius, int decimals);
 
 }  // namespace ui

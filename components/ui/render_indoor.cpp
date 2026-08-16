@@ -89,7 +89,8 @@ void render_indoor(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
   } else {
     char temperature[24];
     char humidity[24];
-    std::snprintf(temperature, sizeof(temperature), "%.1f°", snapshot.indoor.temperature_c);
+    std::snprintf(temperature, sizeof(temperature), "%s",
+                  temperature_text(snapshot.indoor.temperature_c, 1).c_str());
     std::snprintf(humidity, sizeof(humidity), "RH %u%%",
                   snapshot.indoor.humidity_percent);
     label(parent, temperature, {primary.x + 8, primary.y + 25, 190, 58},

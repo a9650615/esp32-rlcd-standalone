@@ -41,17 +41,22 @@ void render_weather(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
   // panel. Still clears the divider at bounds.y+70 with room to spare.
   weather_icon(parent, {bounds.x + 8, bounds.y + 8, 48, 46},
               weather_icon_kind_for_condition(current.condition));
-  // Wraps rather than ellipsising: this is the page's headline and the two
-  // longest WMO wordings - "Partly Cloudy" at 193px, "Thunderstorm" - do not
-  // fit the 154px box on one line. There is vertical room here; the forecast
-  // columns below are the place where shortening was the only option.
-  label_wrapped(parent, current.condition.c_str(),
-                {bounds.x + 66, bounds.y + 4, 156, 35}, hero_font());
+  // One line, widened to fit it. Wrapping was the previous answer and it was
+  // wrong: at 28px two lines need 56px and the box is 35px, so "Partly Cloudy"
+  // rendered as "Partly" with the top of the second line sliced off. There was
+  // no vertical room to give - the location sits at y+41 and the divider at
+  // y+70 - but there was horizontal room, because nothing occupies y+4..y+39
+  // out to the right edge. 264px takes the longest WMO wordings at 28px with
+  // room to spare, and LONG_DOT means anything longer still ellipsises inside
+  // its own row instead of bleeding into the one below.
+  label(parent, current.condition.c_str(),
+        {bounds.x + 66, bounds.y + 4, 264, 35}, hero_font());
   label(parent, current.location.c_str(),
         {bounds.x + 68, bounds.y + 41, 131, 20}, medium_font());
   char current_line[48];
-  std::snprintf(current_line, sizeof(current_line), "%.1f C   RAIN %u%%%s",
-                current.temperature_c, current.rain_probability_percent,
+  std::snprintf(current_line, sizeof(current_line), "%s   RAIN %u%%%s",
+                temperature_text(current.temperature_c, 1).c_str(),
+                current.rain_probability_percent,
                 weather.stale ? text(Text::StaleSuffix) : "");
   label(parent, current_line,
         {bounds.x + 205, bounds.y + 42, bounds.width - 213, 20}, small_font(),
