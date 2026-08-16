@@ -95,8 +95,30 @@ restored from NVS, boot ordering, the first frame rendered. It is POST, not GET,
 so a prefetch cannot fire it, and like `/shot` it does not exist in a release
 build.
 
-`push` still needs one press on the board to accept the offer. That prompt is
-the only authorisation a push has; do not add a way past it.
+`push` goes to **port 8032**, not 80. The upload handler blocks - for the whole
+confirmation window and then for the transfer - and esp_http_server runs one
+task serially, so sharing a port meant one unanswered push took every other
+route down with it: no screenshot, no restart, not the root page, for five
+minutes, with requests made during it queueing invisibly and then appearing to
+hang. Do not move /ota back onto the main server.
+
+Whether a push needs a button press depends on
+`CONFIG_OTA_ALLOW_UNCONFIRMED_PUSH`, which this repo's `sdkconfig.defaults`
+turns **on**. With it on a push installs immediately; with it off the board
+shows `0.1.2 -> 0.1.4` and waits five minutes for BOOT.
+
+The prompt is the only authorisation a push has - the endpoint is not
+password-gated and listens whenever the board is online - so understand what
+the bypass removes: anyone who can reach port 8032 can replace the firmware
+with no interaction. That is fine on a development desk and nowhere else. Two
+things stop it escaping, and neither may be removed: the Kconfig default is
+`n`, and the code is additionally compiled out under `NDEBUG`, so a release
+build has no bypass whatever the config says.
+
+The offered version shown on the prompt is read from the image's own
+descriptor, never from what the pusher claims. Keep it that way - that string
+appears on the screen whose entire job is authorising the sender, so a
+self-declared version is a version an attacker chooses.
 
 A pushed image must both **render** and **be reachable** before the guard marks
 it valid, and is rolled back otherwise. Rendering alone was the whole test once

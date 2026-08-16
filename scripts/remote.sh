@@ -17,6 +17,10 @@ project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # ports, for the same reason: other devices come and go on this network.
 board_mac="a4:cb:8f:df:88:d0"
 log_port="${RLCD_LOG_PORT:-3334}"
+# Firmware upload has its own listener. Its handler blocks for the whole
+# confirmation window, and on a single-threaded HTTP server that would take
+# every diagnostic route down with it.
+upload_port="${RLCD_UPLOAD_PORT:-8032}"
 
 board_ip() {
   if [[ -n "${RLCD_IP:-}" ]]; then
@@ -117,7 +121,7 @@ case "${1:-}" in
     # how a caller ends up believing firmware is running that never left the
     # machine.
     if ! curl --fail-with-body -sS --max-time 420 \
-         -X POST --data-binary "@$bin" "http://$ip/ota"; then
+         -X POST --data-binary "@$bin" "http://$ip:$upload_port/ota"; then
       echo >&2
       echo "push did NOT install - the board is still on its previous firmware" >&2
       exit 1

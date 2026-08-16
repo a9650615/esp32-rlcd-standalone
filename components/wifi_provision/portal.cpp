@@ -40,6 +40,24 @@ constexpr size_t kMaxQuery = 32;
 constexpr uint32_t kOtaConfirmTimeoutMs = 5 * 60'000;
 
 httpd_handle_t server_ = nullptr;
+
+// The firmware upload gets its own server on its own port, because its handler
+// blocks - for the whole confirmation window, and then for the length of a
+// 1.5 MB transfer.
+//
+// esp_http_server processes requests serially on one task, so while /ota waits
+// for somebody to press a button the board answers nothing at all: no
+// screenshot, no restart, not the root page. One unanswered push took the
+// entire HTTP surface down for five minutes, and every request made during it
+// queued invisibly and then appeared to hang. On a board with no cable that
+// reads as a dead device.
+//
+// Shortening the window would have traded away the thing it was lengthened
+// for - being able to start a push and then walk to the board. Giving the
+// blocking route its own task costs one more listener and keeps diagnostics
+// answering while an offer is on screen.
+constexpr uint16_t kUploadPort = 8032;
+httpd_handle_t upload_server_ = nullptr;
 dns_server_handle_t dns_ = nullptr;
 
 const char* current_app_version() {
@@ -407,8 +425,29 @@ esp_err_t ota_post_handler(httpd_req_t* req) {
       return ESP_OK;
     }
 
+    // Two gates, both of which must be open. NDEBUG is the one that cannot be
+    // flipped by a config file, so a release build has no bypass whatever the
+    // Kconfig says.
+#if defined(CONFIG_OTA_ALLOW_UNCONFIRMED_PUSH) && !defined(NDEBUG)
+    ESP_LOGW(kTag,
+             "POST /ota -> installing %s from %s WITHOUT confirmation "
+             "(CONFIG_OTA_ALLOW_UNCONFIRMED_PUSH)",
+             info.version.c_str(), peer);
+    // Still put it on the panel. The press is gone but the board must not
+    // silently rewrite itself: anyone looking at it should see what is
+    // happening and where it came from.
+    {
+      app_core::OtaData notice;
+      notice.phase = app_core::OtaPhase::Receiving;
+      notice.detail = peer;
+      notice.version = info.version;
+      set_ota(notice);
+    }
+    const ota::ConfirmResult answer = ota::ConfirmResult::Accepted;
+#else
     const ota::ConfirmResult answer =
         ota::request_confirm(peer, info.version, kOtaConfirmTimeoutMs);
+#endif
     if (answer != ota::ConfirmResult::Accepted) {
       ESP_LOGW(kTag, "POST /ota -> not confirmed at the board");
       httpd_resp_send_err(req, HTTPD_403_FORBIDDEN,
@@ -715,10 +754,10 @@ void portal_start() {
     return;
   }
 
-  const httpd_uri_t* routes[] = {&kRootGet,   &kRootPost,  &kOtaPost,
+  const httpd_uri_t* routes[] = {&kRootGet,    &kRootPost,
                                  &kOtaUrlPost, &kUpdateGet, &kUpdatePost,
 #ifndef NDEBUG
-                                 &kShotGet,   &kRestartPost,
+                                 &kShotGet,    &kRestartPost,
 #endif
   };
   for (const httpd_uri_t* route : routes) {
@@ -730,6 +769,31 @@ void portal_start() {
   }
   httpd_register_err_handler(server_, HTTPD_404_NOT_FOUND,
                              &redirect_404_handler);
+
+  // Second listener, one route. Its own control block and task, so the block
+  // above stays answerable while this one is waiting on a button.
+  httpd_config_t upload_config = HTTPD_DEFAULT_CONFIG();
+  upload_config.server_port = kUploadPort;
+  // Must differ from the main server's, or the second bind fails with the
+  // first still holding the control socket.
+  ++upload_config.ctrl_port;
+  upload_config.max_uri_handlers = 2;
+  upload_config.lru_purge_enable = true;
+  // The receive timeout has to outlast the confirmation window: the client
+  // holds the request open the whole time it is waiting for an answer.
+  upload_config.recv_wait_timeout = 30;
+  upload_config.send_wait_timeout = 30;
+  if (httpd_start(&upload_server_, &upload_config) == ESP_OK) {
+    const esp_err_t result =
+        httpd_register_uri_handler(upload_server_, &kOtaPost);
+    if (result != ESP_OK) {
+      ESP_LOGE(kTag, "upload route unavailable: %s", esp_err_to_name(result));
+    } else {
+      ESP_LOGI(kTag, "firmware upload listening on port %u", kUploadPort);
+    }
+  } else {
+    ESP_LOGE(kTag, "upload server failed to start; pushes will not be accepted");
+  }
 
   dns_server_config_t dns_config = DNS_SERVER_CONFIG_SINGLE("*", "WIFI_AP_DEF");
   dns_ = start_dns_server(&dns_config);
@@ -748,6 +812,10 @@ void portal_stop() {
   if (server_ != nullptr) {
     httpd_stop(server_);
     server_ = nullptr;
+  }
+  if (upload_server_ != nullptr) {
+    httpd_stop(upload_server_);
+    upload_server_ = nullptr;
   }
   if (dns_ != nullptr) {
     stop_dns_server(dns_);

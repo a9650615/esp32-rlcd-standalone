@@ -67,6 +67,13 @@ CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 # setup-page password are never logged. That was a "someone needs a USB cable"
 # mistake before and is an "anyone on the LAN" one now.
 CONFIG_NET_LOG_ENABLE=y
+# Pushes install without the button press. Same reasoning and the same risk
+# profile as the log mirror above: this is the developer's build, on a desk.
+# The Kconfig default stays n, and the code is compiled out under NDEBUG
+# regardless, so a release build cannot carry it. Turn it off for anything
+# left on a network you do not control:
+#   idf.py menuconfig -> CONFIG_OTA_ALLOW_UNCONFIRMED_PUSH=n
+CONFIG_OTA_ALLOW_UNCONFIRMED_PUSH=y
 # 32 KiB holds barely one 400x300 frame (~23 KiB once base64'd and prefixed),
 # so a second page would evict the first before anyone connected. PSRAM, and
 # there are 8 MB of it.

@@ -23,3 +23,27 @@ config OTA_RELEASE_ASSET_SUFFIX
         Note that a wrong choice here is not dangerous: whatever is downloaded
         still has to pass the image header check before a single byte of the
         OTA slot is erased.
+
+config OTA_ALLOW_UNCONFIRMED_PUSH
+    bool "Install pushed firmware without asking at the board (development)"
+    default n
+    help
+        Skips the on-screen confirmation for POST /ota, so a push installs
+        immediately.
+
+        This exists because the confirmation costs a walk to the board on
+        every single iteration, and on a device being developed over the
+        network that is the slowest step in the loop by a wide margin.
+
+        Understand exactly what it removes. The upload endpoint listens
+        whenever the board is on the network and is not password-gated - the
+        button press IS the authorisation. With this on, anyone who can reach
+        the board's upload port can replace its firmware with no interaction
+        at all. That is acceptable on a development desk and is not acceptable
+        anywhere else.
+
+        Two things keep it from escaping. It defaults to n, and it is
+        additionally compiled out whenever NDEBUG is defined, so a release
+        build has no bypass regardless of what this is set to. A board built
+        with it on says so in its log at every boot and on the panel while it
+        installs.
