@@ -230,6 +230,14 @@ struct OtaData {
   bool percent_known = false;
   // Short ASCII reason, only ever set alongside Failed or RolledBack.
   std::string detail;
+  // Version of the image being offered or written, read out of the image's own
+  // descriptor rather than declared by whoever sent it. Empty when unknown.
+  //
+  // It has to come from the image: this string appears on the screen where
+  // someone decides whether to install, and a version supplied by the pusher
+  // is a version an attacker on the LAN chooses. The 112-byte prefix carries
+  // it, so it costs nothing to take the authoritative one.
+  std::string version;
 };
 
 // True while the update state must own the screen outright. Deliberately

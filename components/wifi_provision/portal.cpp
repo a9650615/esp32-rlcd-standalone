@@ -15,6 +15,7 @@
 
 #include "dns_server.h"
 #include "ota_confirm.hpp"
+#include "ota_image.hpp"
 #include "ota_pull.hpp"
 #include "ota_release.hpp"
 #include "ota_session.hpp"
@@ -345,6 +346,11 @@ esp_err_t redirect_404_handler(httpd_req_t* req, httpd_err_code_t) {
 // is ota::Session's problem - it refuses to erase anything until the header
 // proves the upload is this project's firmware.
 esp_err_t ota_post_handler(httpd_req_t* req) {
+  // Held across the confirmation so the bytes already off the wire are fed to
+  // the Session once it exists. They must reach flash exactly once - the same
+  // rule PrefixInspector follows internally.
+  uint8_t preamble[ota::kImagePrefixBytes];
+  std::size_t preamble_len = 0;
   // Either the setup page's session password, or - when there is no session,
   // which is the normal state on the home network - somebody at the board
   // saying yes. The endpoint listens whenever the board is online so nothing
@@ -370,8 +376,39 @@ esp_err_t ota_post_handler(httpd_req_t* req) {
         }
       }
     }
+    // Read the descriptor before asking. The prompt is where someone decides
+    // whether to replace the firmware, and "something is being pushed from
+    // 192.168.3.111" is not enough to decide with - the version is, and the
+    // image carries it in its first 112 bytes.
+    //
+    // Safe to do before the answer: nothing is erased and nothing is written
+    // until a Session exists, and none exists yet. Reading is not committing.
+    //
+    // It also means a file that is not firmware at all is refused without
+    // putting a prompt on the panel for someone to walk over and answer.
+    while (preamble_len < ota::kImagePrefixBytes &&
+           preamble_len < req->content_len) {
+      const int received = httpd_req_recv(
+          req, reinterpret_cast<char*>(preamble) + preamble_len,
+          ota::kImagePrefixBytes - preamble_len);
+      if (received == HTTPD_SOCK_ERR_TIMEOUT) continue;
+      if (received <= 0) {
+        ESP_LOGE(kTag, "POST /ota -> transfer died before the header arrived");
+        return ESP_FAIL;
+      }
+      preamble_len += static_cast<std::size_t>(received);
+    }
+    const ota::ImageInfo info =
+        ota::inspect_image_prefix(preamble, preamble_len);
+    if (info.verdict != ota::ImageVerdict::Ok) {
+      const char* reason = ota::image_verdict_message(info.verdict);
+      ESP_LOGE(kTag, "POST /ota -> refused before prompting: %s", reason);
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, reason);
+      return ESP_OK;
+    }
+
     const ota::ConfirmResult answer =
-        ota::request_confirm(peer, kOtaConfirmTimeoutMs);
+        ota::request_confirm(peer, info.version, kOtaConfirmTimeoutMs);
     if (answer != ota::ConfirmResult::Accepted) {
       ESP_LOGW(kTag, "POST /ota -> not confirmed at the board");
       httpd_resp_send_err(req, HTTPD_403_FORBIDDEN,
@@ -391,6 +428,22 @@ esp_err_t ota_post_handler(httpd_req_t* req) {
   static constexpr std::size_t kChunkBytes = 4096;
   auto buffer = std::make_unique<uint8_t[]>(kChunkBytes);
   std::size_t remaining = req->content_len;
+
+  // Whatever was read to identify the image goes in first, in order, before
+  // anything still on the wire.
+  if (preamble_len > 0) {
+    const esp_err_t written = session.write(preamble, preamble_len);
+    if (written != ESP_OK) {
+      const char* reason = written == ESP_ERR_INVALID_VERSION
+                               ? ota::image_verdict_message(session.verdict())
+                               : esp_err_to_name(written);
+      ESP_LOGE(kTag, "POST /ota -> rejected: %s", reason);
+      report_ota_failure(reason);
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, reason);
+      return ESP_OK;
+    }
+    remaining -= preamble_len;
+  }
   while (remaining > 0) {
     const int received = httpd_req_recv(
         req, reinterpret_cast<char*>(buffer.get()),

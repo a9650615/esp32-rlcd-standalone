@@ -1,6 +1,10 @@
 #include "ui_app.hpp"
 #include "ui_fonts.hpp"
 
+#include <esp_app_desc.h>
+
+#include <cstdio>
+
 namespace ui {
 namespace {
 
@@ -53,11 +57,29 @@ void render_ota(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
   label(parent, text(ota_phase_text(ota.phase)), layout.phase,
         phase_font(), LV_TEXT_ALIGN_CENTER);
 
-  // Percentage only when a feeder actually knew the total size. Everything
-  // else on this panel already refuses to show a number it did not measure,
-  // and a progress bar that invents its own fill is the same lie in a
-  // friendlier shape.
-  if (ota.percent_known) {
+  // While the prompt is up the percentage row is free, and what belongs in it
+  // is the thing the decision is actually about: which version replaces which.
+  // "Something is being pushed from 192.168.3.111" is not enough to answer
+  // with. The offered version comes out of the image's own descriptor, never
+  // from whoever sent it - see OtaData::version.
+  if (app_core::ota_awaits_confirm(ota)) {
+    const esp_app_desc_t* running = esp_app_get_description();
+    char line[48];
+    if (!ota.version.empty() && running != nullptr) {
+      // "->" rather than an arrow glyph: this face is Montserrat plus a CJK
+      // fallback, and U+2192 is in neither, so an arrow would be a box on the
+      // one screen that must be unambiguous.
+      std::snprintf(line, sizeof(line), "%s -> %s", running->version,
+                    ota.version.c_str());
+    } else if (!ota.version.empty()) {
+      std::snprintf(line, sizeof(line), "%s", ota.version.c_str());
+    } else {
+      line[0] = '\0';
+    }
+    if (line[0] != '\0') {
+      label(parent, line, layout.percent, phase_font(), LV_TEXT_ALIGN_CENTER);
+    }
+  } else if (ota.percent_known) {
     char percent[8];
     std::snprintf(percent, sizeof(percent), "%u%%",
                   static_cast<unsigned>(ota.percent));
@@ -81,9 +103,14 @@ void render_ota(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
           LV_TEXT_ALIGN_CENTER);
   }
 
+  // During the write the version is what says the right thing is going on;
+  // afterwards `detail` carries the failure reason and outranks it.
   if (!ota.detail.empty()) {
     label_wrapped(parent, ota.detail.c_str(), layout.detail, small_font(),
                   LV_TEXT_ALIGN_CENTER);
+  } else if (!ota.version.empty() && app_core::ota_owns_screen(ota)) {
+    label(parent, ota.version.c_str(), layout.detail, small_font(),
+          LV_TEXT_ALIGN_CENTER);
   }
 }
 

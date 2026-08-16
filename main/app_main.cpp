@@ -319,11 +319,13 @@ void update_check_task(void*) {
 // Puts the confirm prompt on the panel and takes it away again. Routed through
 // wifi_provision like every other snapshot change rather than letting the ota
 // component reach into the UI.
-void show_update_prompt(bool showing, const std::string& peer) {
+void show_update_prompt(bool showing, const std::string& peer,
+                        const std::string& version) {
   app_core::OtaData data;
   if (showing) {
     data.phase = app_core::OtaPhase::AwaitingConfirm;
     data.detail = peer;
+    data.version = version;
   }
   wifi_provision::set_ota(data);
 }

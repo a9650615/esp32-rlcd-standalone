@@ -27,7 +27,9 @@ enum class ConfirmResult : uint8_t {
 //
 // One at a time: a second call while another is pending is rejected outright
 // rather than queued, so two pushes cannot race for one confirmation.
-ConfirmResult request_confirm(const std::string& peer, uint32_t timeout_ms);
+ConfirmResult request_confirm(const std::string& peer,
+                              const std::string& version,
+                              uint32_t timeout_ms);
 
 // True while a prompt is on screen. The input layer checks this to know that
 // the buttons currently mean yes and no.
@@ -41,6 +43,7 @@ void answer_confirm(bool accepted);
 // away again. Same indirection as the progress handler: the ota component must
 // not depend on the snapshot owner.
 void set_confirm_prompt_handler(void (*handler)(bool showing,
-                                                const std::string& peer));
+                                                const std::string& peer,
+                                                const std::string& version));
 
 }  // namespace ota
