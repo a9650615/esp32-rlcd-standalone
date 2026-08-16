@@ -50,7 +50,7 @@ constexpr Row kRows[] = {
     {"Next", "下一頁"},
 
     {"BATTERY", "電池"},
-    {"INDOOR", "室內"},
+    {"SENSOR", "感測器"},
     {"MARKET", "市場"},
     {"WEATHER", "天氣"},
     {"HISTORY", "歷史"},

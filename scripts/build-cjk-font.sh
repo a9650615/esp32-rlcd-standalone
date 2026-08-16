@@ -15,7 +15,7 @@
 set -euo pipefail
 
 project_dir="$(cd "$(dirname "$0")/.." && pwd)"
-strings_file="$project_dir/components/ui/ui_strings.cpp"
+ui_dir="$project_dir/components/ui"
 out_dir="$project_dir/components/ui/fonts"
 cache_dir="${TMPDIR:-/tmp}/rlcd-font-cache"
 font_file="$cache_dir/NotoSansTC-Regular.otf"
@@ -40,16 +40,10 @@ fi
 # new string cannot silently render as blank boxes: rerun this and the glyph is
 # there, or forget to and the test suite's own ASCII check still passes while
 # the panel shows nothing - which is exactly why this file is generated.
-symbols="$(python3 - "$strings_file" <<'PY'
-import sys, pathlib
-text = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
-glyphs = sorted({c for c in text if ord(c) > 0x2E7F})
-sys.stdout.write("".join(glyphs))
-PY
-)"
+symbols="$(python3 "$project_dir/scripts/cjk_glyphs.py" "$ui_dir")"
 
 if [[ -z "$symbols" ]]; then
-  printf 'error: no non-ASCII glyphs found in %s\n' "$strings_file" >&2
+  printf 'error: no non-ASCII glyphs found under %s\n' "$ui_dir" >&2
   exit 1
 fi
 printf 'subsetting %s glyphs\n' "$(python3 -c 'import sys;print(len(sys.argv[1]))' "$symbols")" >&2

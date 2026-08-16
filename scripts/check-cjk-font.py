@@ -13,14 +13,8 @@ import re
 import sys
 from pathlib import Path
 
-# Anything above this is treated as needing a glyph from the CJK subset;
-# below it is Latin, punctuation and symbols that Montserrat already covers.
-CJK_FLOOR = 0x2E7F
-
-
-def used_characters(strings_file: Path) -> set:
-    return {c for c in strings_file.read_text(encoding="utf-8") if ord(c) > CJK_FLOOR}
-
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from cjk_glyphs import glyphs_used  # noqa: E402
 
 def font_codepoints(font_file: Path) -> set:
     """Codepoints an lv_font_conv SPARSE_TINY cmap covers.
@@ -39,14 +33,14 @@ def font_codepoints(font_file: Path) -> set:
 
 def main() -> int:
     project = Path(__file__).resolve().parent.parent
-    strings = project / "components/ui/ui_strings.cpp"
+    ui_dir = project / "components/ui"
     fonts = sorted((project / "components/ui/fonts").glob("rlcd_cjk_*.c"))
     if not fonts:
         print("error: no generated CJK fonts; run ./scripts/build-cjk-font.sh",
               file=sys.stderr)
         return 1
 
-    wanted = used_characters(strings)
+    wanted = glyphs_used(ui_dir)
     failed = False
     for font in fonts:
         missing = sorted(c for c in wanted if ord(c) not in font_codepoints(font))

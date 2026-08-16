@@ -49,6 +49,10 @@ enum class Text : uint16_t {
   HintNextPage,
 
   TileBattery,
+  // "SENSOR", not "INDOOR". The SHTC3 sits on the board beside the
+  // ESP32-S3 and reads its own neighbourhood, which self-heating puts above
+  // room temperature (see the calibration note in shtc3.hpp). Calling it
+  // indoor temperature invites someone to read it as the room's.
   TileIndoor,
   TileMarket,
   TileWeather,
