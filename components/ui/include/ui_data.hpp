@@ -956,6 +956,41 @@ constexpr HomeTileKind choose_home_tile(const app_core::AppSnapshot& snapshot) {
   return HomeTileKind::None;
 }
 
+// The next-best tile after `first`, or None when nothing else has real data.
+//
+// Home shows at most two. One left roughly two thirds of a 264px column empty
+// and no amount of enlarging three short rows fills that; three was the
+// clutter the focus pass removed. Two is the count that uses the space without
+// going back to a list. The second only ever appears when it has something
+// measured to say, so an idle board still shows one tile rather than a
+// placeholder invented to fill the gap.
+constexpr HomeTileKind choose_home_second_tile(
+    const app_core::AppSnapshot& snapshot, HomeTileKind first) {
+  if (first != HomeTileKind::Weather && snapshot.weather.valid) {
+    return HomeTileKind::Weather;
+  }
+  if (first != HomeTileKind::Indoor && snapshot.indoor.valid) {
+    return HomeTileKind::Indoor;
+  }
+  if (first != HomeTileKind::Market && snapshot.taiwan_market.valid) {
+    return HomeTileKind::Market;
+  }
+  if (first != HomeTileKind::Battery && snapshot.battery.valid) {
+    return HomeTileKind::Battery;
+  }
+  return HomeTileKind::None;
+}
+
+// Splits the right column for two tiles, with a separator's worth of gap. When
+// only one tile has data it keeps the whole column, so a sparse board does not
+// show an empty half.
+constexpr Rect home_tile_cell(const Rect column, int index, int count) {
+  if (count <= 1) return column;
+  const int gap = 8;
+  const int height = (column.height - gap) / 2;
+  return {column.x, column.y + index * (height + gap), column.width, height};
+}
+
 struct HomeLayout {
   Rect hero;
   Rect date;

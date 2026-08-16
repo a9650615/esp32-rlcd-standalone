@@ -295,3 +295,45 @@ HOST_TEST(forecast_fixture_contains_rain_probability_for_every_day) {
   const auto columns = ui::forecast_columns(ui::Rect{0, 0, 400, 120});
   EXPECT_EQ(columns.back().right(), 400);
 }
+
+// Home shows two tiles when there is a second real reading and one when there
+// is not - never an empty half, and never a placeholder invented to fill it.
+HOST_TEST(home_shows_a_second_tile_only_when_it_has_real_data) {
+  app_core::AppSnapshot snapshot =
+      app_core::make_mock_snapshot(app_core::DemoScenario::TaiwanSession);
+  snapshot.battery.valid = false;
+  snapshot.weather.valid = true;
+  snapshot.indoor.valid = true;
+  snapshot.taiwan_market.valid = false;
+
+  const ui::HomeTileKind first = ui::choose_home_tile(snapshot);
+  const ui::HomeTileKind second = ui::choose_home_second_tile(snapshot, first);
+  EXPECT_TRUE(second != ui::HomeTileKind::None);
+  // The two must differ, or the same reading is shown twice.
+  EXPECT_TRUE(first != second);
+
+  // With only one valid source there is no second tile.
+  snapshot.indoor.valid = false;
+  snapshot.taiwan_market.valid = false;
+  snapshot.battery.valid = false;
+  const ui::HomeTileKind only = ui::choose_home_tile(snapshot);
+  EXPECT_TRUE(ui::choose_home_second_tile(snapshot, only) ==
+              ui::HomeTileKind::None);
+}
+
+HOST_TEST(home_tile_cells_split_the_column_without_overlapping) {
+  const ui::Rect column{270, 42, 118, 244};
+
+  // One tile keeps the whole column: a sparse board shows no empty half.
+  const ui::Rect single = ui::home_tile_cell(column, 0, 1);
+  EXPECT_EQ(single.height, column.height);
+  EXPECT_EQ(single.y, column.y);
+
+  const ui::Rect top = ui::home_tile_cell(column, 0, 2);
+  const ui::Rect bottom = ui::home_tile_cell(column, 1, 2);
+  EXPECT_TRUE(top.bottom() < bottom.y);              // gap between them
+  EXPECT_TRUE(bottom.bottom() <= column.bottom());   // stays in the column
+  EXPECT_EQ(top.height, bottom.height);              // evenly split
+  // Each half still has room for the tile's 64px of stacked rows.
+  EXPECT_TRUE(top.height >= 64);
+}

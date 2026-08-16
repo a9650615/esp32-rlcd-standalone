@@ -202,9 +202,9 @@ void reset_context(UiContext& context) {
 // whichever candidate wins fills the entire right column instead of sharing
 // it with two others, so `bounds` is drawn on directly with no
 // right_tile_cells split and no internal dividers.
-void render_right_tiles(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
-                        Rect bounds) {
-  const HomeTileKind kind = choose_home_tile(snapshot);
+// Draws one Home tile of the given kind into `bounds`.
+void render_home_tile(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
+                      HomeTileKind kind, Rect bounds) {
   char value[24] = "";
   char detail[24] = "";
   const char* title = text(Text::TileStatus);
@@ -250,6 +250,22 @@ void render_right_tiles(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
   }
   tile(parent, title, value, detail, bounds, weather, indoor,
        kind != HomeTileKind::None, condition);
+}
+
+void render_right_tiles(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
+                        Rect bounds) {
+  const HomeTileKind first = choose_home_tile(snapshot);
+  const HomeTileKind second = choose_home_second_tile(snapshot, first);
+  const int count = second == HomeTileKind::None ? 1 : 2;
+  render_home_tile(parent, snapshot, first, home_tile_cell(bounds, 0, count));
+  if (count == 2) {
+    // A separator between them, so two stacked tiles read as two readings
+    // rather than one run-on block.
+    const Rect top = home_tile_cell(bounds, 0, count);
+    divider(parent, {bounds.x + 8, top.bottom() + 3, bounds.width - 16,
+                     kSeparatorWidth});
+    render_home_tile(parent, snapshot, second, home_tile_cell(bounds, 1, count));
+  }
 }
 
 void render_market_sidebar(lv_obj_t* parent,
