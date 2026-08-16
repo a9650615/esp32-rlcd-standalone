@@ -3,6 +3,7 @@
 LV_FONT_DECLARE(rlcd_cjk_14)
 LV_FONT_DECLARE(rlcd_cjk_20)
 LV_FONT_DECLARE(rlcd_cjk_28)
+LV_FONT_DECLARE(rlcd_digits_128)
 
 namespace ui {
 namespace {
@@ -38,6 +39,6 @@ const lv_font_t* font_medium() {
 const lv_font_t* font_large() {
   return g_ready ? &g_large : &lv_font_montserrat_28;
 }
-const lv_font_t* font_hero() { return &lv_font_montserrat_48; }
+const lv_font_t* font_hero() { return &rlcd_digits_128; }
 
 }  // namespace ui

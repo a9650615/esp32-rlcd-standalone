@@ -16,6 +16,7 @@ idf_component_register(
         "fonts/rlcd_cjk_14.c"
         "fonts/rlcd_cjk_20.c"
         "fonts/rlcd_cjk_28.c"
+        "fonts/rlcd_digits_128.c"
     INCLUDE_DIRS
         "include"
     REQUIRES

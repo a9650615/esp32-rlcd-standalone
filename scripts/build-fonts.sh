@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Regenerates the Traditional Chinese glyph subset used by the interface.
+# Regenerates the generated fonts: the Traditional Chinese glyph subset used
+# throughout the interface, and the oversized digits used by Home's clock.
 #
 # The generated .c files are committed, so building the firmware needs neither
 # node nor a network. Run this only after adding or changing Chinese text in
@@ -64,3 +65,30 @@ for size in "${sizes[@]}"; do
 done
 
 printf '\nRegenerated. Commit components/ui/fonts/ along with the string change.\n' >&2
+
+# Home's clock, digits and a colon only - eleven glyphs.
+#
+# 128px is what the canvas allows: "12:34" measures about 335px of the 386px
+# usable width, leaving a comfortable margin. 140 would fit too, at 367px, with
+# nineteen pixels to spare and nothing to gain.
+#
+# Montserrat-Medium is the face LVGL generates its own built-in fonts from, so
+# the clock matches the rest of the interface rather than merely coexisting
+# with it. SIL OFL 1.1, so the generated subset ships with this project.
+mont="$project_dir/managed_components/lvgl__lvgl/scripts/built_in_font/Montserrat-Medium.ttf"
+if [[ -f "$mont" ]]; then
+  out="$out_dir/rlcd_digits_128.c"
+  npx --yes lv_font_conv@1.5.3 \
+    --font "$mont" \
+    --symbols "0123456789:" \
+    --size 128 \
+    --bpp 1 \
+    --format lvgl \
+    --no-compress \
+    --lv-include lvgl.h \
+    --force-fast-kern-format \
+    -o "$out"
+  printf 'wrote %s (%s bytes)\n' "$out" "$(wc -c < "$out" | tr -d ' ')" >&2
+else
+  printf 'warning: %s missing; run an IDF build first so the component manager fetches LVGL\n' "$mont" >&2
+fi

@@ -41,9 +41,6 @@ void render_home(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
 #endif
   apply_surface(parent);
   const HomeLayout layout = home_layout(bounds);
-  const int split_x = layout.tile.x - kHomeSplitGap / 2;
-  divider(parent, {split_x, bounds.y, kSeparatorWidth, layout.tile.height});
-
   const std::string clock = format_minute_clock(snapshot.clock.hero);
   lv_obj_t* clock_label =
       label(parent, clock.c_str(), layout.hero, hero_font(), LV_TEXT_ALIGN_LEFT);

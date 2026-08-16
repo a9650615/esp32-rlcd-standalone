@@ -1038,8 +1038,12 @@ inline constexpr int kHomeBottomMargin = 12;
 inline constexpr int kHomeHeroFontLineHeight = 52;  // lv_font_montserrat_48
 inline constexpr int kHomeRowFontLineHeight =
     kSetupMediumFontLineHeight;  // 22, lv_font_montserrat_20
+// lv_font_montserrat is no longer the hero face; rlcd_digits_128 is, and its
+// line height is 92. Kept as a literal for the same reason every other font
+// metric here is: this header compiles without LVGL for host tests.
+inline constexpr int kHomeHeroLineHeight = 92;
 inline constexpr int kHomeHeroHeight =
-    safe_text_box_height(64, kHomeHeroFontLineHeight);
+    safe_text_box_height(kHomeHeroLineHeight + 4, kHomeHeroLineHeight);
 inline constexpr int kHomeRowHeight =
     safe_text_box_height(26, kHomeRowFontLineHeight);
 inline constexpr int kHomeBlockGap = 10;
@@ -1053,22 +1057,37 @@ inline constexpr int kHomeBlockGap = 10;
 // arithmetic on bounds.x/y/width/height, so it works for both that
 // zero-offset-in-practice frame and the absolute safe_canvas() frame the
 // static_asserts below use, the same convention setup_layout follows.
+// Clock across the full width, tiles side by side beneath it.
+//
+// The clock used to share the row with a narrow tile column, which capped how
+// wide it could be - and a horizontal HH:MM is width-limited, not
+// height-limited, so capping the width left the whole lower half of a 264px
+// column empty no matter how large the font went. Given the full 388px the
+// clock roughly triples in area, and the tiles get cells that are wider than
+// they are tall instead of the reverse.
+//
+// `sync` is the clock-source warning. Its row is reserved even though it
+// usually draws nothing: overlaying it on the gap would have it paint across a
+// tile on exactly the boots where something is already wrong, and an empty
+// band under the clock is a better use of 28px than a collision.
 constexpr HomeLayout home_layout(const Rect bounds) {
-  const Rect tile{bounds.right() - kHomeRightWidth, bounds.y, kHomeRightWidth,
-                  bounds.height - kHomeBottomMargin};
-  const int left_width = bounds.width - kHomeRightWidth - kHomeSplitGap;
-  const int left_height = bounds.height - kHomeBottomMargin;
-  const int block_height = kHomeHeroHeight + kHomeBlockGap + kHomeRowHeight +
-                           kHomeBlockGap + kHomeRowHeight;
-  const int top = bounds.y + (left_height > block_height
-                                  ? (left_height - block_height) / 2
-                                  : 0);
-  const Rect hero{bounds.x + 2, top, left_width - 4, kHomeHeroHeight};
-  const Rect date{bounds.x + 3, hero.bottom() + kHomeBlockGap, left_width - 6,
+  const Rect hero{bounds.x + 2, bounds.y, bounds.width - 4, kHomeHeroHeight};
+  const Rect sync{bounds.x + 3, hero.bottom(), bounds.width - 6,
                   kHomeRowHeight};
-  const Rect sync{bounds.x + 3, date.bottom() + kHomeBlockGap, left_width - 6,
-                  kHomeRowHeight};
-  return {hero, date, sync, tile};
+  const int tiles_y = sync.bottom() + kHomeBlockGap;
+  const Rect tile{bounds.x, tiles_y, bounds.width,
+                  bounds.bottom() - tiles_y};
+  // `date` is unused now that the tray carries it; kept in the struct so the
+  // shape does not churn, collapsed to nothing so a stray draw is visible.
+  return {hero, Rect{bounds.x, bounds.y, 0, 0}, sync, tile};
+}
+
+// Splits the tile row left/right. Same contract as stacked_tile_cell: one tile
+// takes the whole row rather than leaving a blank half.
+constexpr Rect home_tile_column(const Rect row, int index, int count) {
+  if (count <= 1) return row;
+  const int width = (row.width - kStackedTileGap) / 2;
+  return {row.x + index * (width + kStackedTileGap), row.y, width, row.height};
 }
 
 // Every rect home_layout produces fits entirely inside `content`.

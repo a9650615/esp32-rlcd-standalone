@@ -257,14 +257,15 @@ void render_right_tiles(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
   const HomeTileKind first = choose_home_tile(snapshot);
   const HomeTileKind second = choose_home_second_tile(snapshot, first);
   const int count = second == HomeTileKind::None ? 1 : 2;
-  render_home_tile(parent, snapshot, first, home_tile_cell(bounds, 0, count));
+  render_home_tile(parent, snapshot, first, home_tile_column(bounds, 0, count));
   if (count == 2) {
-    // A separator between them, so two stacked tiles read as two readings
-    // rather than one run-on block.
-    const Rect top = home_tile_cell(bounds, 0, count);
-    divider(parent, {bounds.x + 8, top.bottom() + 3, bounds.width - 16,
-                     kSeparatorWidth});
-    render_home_tile(parent, snapshot, second, home_tile_cell(bounds, 1, count));
+    const Rect left = home_tile_column(bounds, 0, count);
+    // A rule between them, so two tiles read as two readings rather than one
+    // run-on block.
+    divider(parent, {left.right() + kStackedTileGap / 2, bounds.y + 4,
+                     kSeparatorWidth, bounds.height - 8});
+    render_home_tile(parent, snapshot, second,
+                     home_tile_column(bounds, 1, count));
   }
 }
 

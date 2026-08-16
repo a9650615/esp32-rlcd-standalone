@@ -24,9 +24,10 @@ void fonts_init();
 const lv_font_t* font_small();   // Montserrat 14 + CJK 14
 const lv_font_t* font_medium();  // Montserrat 20 + CJK 20
 const lv_font_t* font_large();   // Montserrat 28 + CJK 28
-// Clock hero. Digits and a colon only, so it carries no CJK fallback - a 48 px
-// Chinese subset would be the most expensive per glyph of any size, for text
-// that cannot occur here.
+// Clock hero: a 128px Montserrat subset of the ten digits and a colon, and
+// nothing else. No CJK fallback, because no Chinese can reach it - and a
+// Chinese subset at this size would cost more per glyph than every other size
+// combined.
 const lv_font_t* font_hero();
 
 }  // namespace ui
