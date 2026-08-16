@@ -9,6 +9,7 @@
 #include "net_log.hpp"
 #include "net_time.hpp"
 #include "ota.hpp"
+#include "ota_confirm.hpp"
 #include "ota_release.hpp"
 #include "ota_session.hpp"
 #include "shtc3.hpp"
@@ -19,6 +20,7 @@
 #include <array>
 #include <cstdio>
 #include <cstring>
+#include <string>
 
 #include <driver/i2c_master.h>
 #include <esp_err.h>
@@ -208,6 +210,18 @@ void update_check_task(void*) {
              release.firmware_url.c_str());
   }
   vTaskDelete(nullptr);
+}
+
+// Puts the confirm prompt on the panel and takes it away again. Routed through
+// wifi_provision like every other snapshot change rather than letting the ota
+// component reach into the UI.
+void show_update_prompt(bool showing, const std::string& peer) {
+  app_core::OtaData data;
+  if (showing) {
+    data.phase = app_core::OtaPhase::AwaitingConfirm;
+    data.detail = peer;
+  }
+  wifi_provision::set_ota(data);
 }
 
 void start_update_check() {
@@ -509,6 +523,7 @@ extern "C" void app_main() {
   ota::set_progress_handler(&wifi_provision::set_ota);
   ui::set_setup_gesture_handler(&wifi_provision::toggle_setup);
   ui::set_update_check_handler(&start_update_check);
+  ota::set_confirm_prompt_handler(&show_update_prompt);
   result = wifi_provision::start(snapshot);
   if (result != ESP_OK) {
     // Non-fatal: the carousel already runs standalone without Wi-Fi.

@@ -7,6 +7,7 @@ idf_component_register(
         "ota_pull.cpp"
         "ota_version.cpp"
         "ota_release.cpp"
+        "ota_confirm.cpp"
     INCLUDE_DIRS
         "include"
     REQUIRES

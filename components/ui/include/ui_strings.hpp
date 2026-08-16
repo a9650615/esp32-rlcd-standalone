@@ -27,6 +27,8 @@ enum class Text : uint16_t {
   SetupDefaultStatus,
   SetupQrUnavailable,
 
+  OtaAwaitingConfirm,
+  OtaConfirmHint,
   OtaUpdating,
   OtaFinishing,
   OtaVerifying,

@@ -116,6 +116,8 @@ const char* ota_phase_label(OtaPhase phase) {
   switch (phase) {
     case OtaPhase::Idle:
       return "";
+    case OtaPhase::AwaitingConfirm:
+      return "UPDATE OFFERED";
     case OtaPhase::Receiving:
       return "UPDATING";
     // Distinct from UPDATING because this is the phase where a power cut is

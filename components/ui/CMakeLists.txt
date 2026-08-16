@@ -22,6 +22,7 @@ idf_component_register(
         "include"
     REQUIRES
         app_core
+        ota
         esp_app_format
         board_rlcd
         lvgl__lvgl

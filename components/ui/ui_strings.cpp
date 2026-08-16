@@ -28,6 +28,8 @@ constexpr Row kRows[] = {
     {"QR unavailable - join the Wi-Fi named at left",
      "QR 無法顯示 - 請連左側熱點"},
 
+    {"UPDATE OFFERED", "收到更新"},
+    {"KEY cancel      accept BOOT", "KEY 取消      接受 BOOT"},
     {"UPDATING", "更新中"},
     {"FINISHING UPDATE", "寫入中"},
     {"VERIFYING UPDATE", "驗證中"},

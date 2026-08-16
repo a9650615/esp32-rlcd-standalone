@@ -6,8 +6,13 @@
 #include <esp_netif.h>
 #include <esp_system.h>
 #include <esp_timer.h>
+#include <lwip/sockets.h>
+#include <lwip/inet.h>
+
+#include <cstring>
 
 #include "dns_server.h"
+#include "ota_confirm.hpp"
 #include "ota_pull.hpp"
 #include "ota_release.hpp"
 #include "ota_session.hpp"
@@ -25,6 +30,9 @@ constexpr size_t kMaxFormBody = 512;
 // just fails httpd_req_get_url_query_str() and falls through to "wrong
 // password" rather than truncating into a false match.
 constexpr size_t kMaxQuery = 32;
+// Long enough to walk to the board, short enough that an unanswered push does
+// not hold a socket and a prompt indefinitely.
+constexpr uint32_t kOtaConfirmTimeoutMs = 45'000;
 
 httpd_handle_t server_ = nullptr;
 dns_server_handle_t dns_ = nullptr;
@@ -208,6 +216,17 @@ void send_html(httpd_req_t* req, const std::string& html) {
 // and would otherwise land in the log. Both routes are registered on the
 // literal path "/", so log sites below use that constant instead of
 // req->uri; only find_form_value()/constant_time_equal() ever see the value.
+// Every password check goes through here, and an unset password authorises
+// nothing. constant_time_equal("", "") is true, so with the portal reachable
+// while the board is on the home network - where no session password exists -
+// a bare request would otherwise have opened the Wi-Fi credential form to the
+// whole LAN.
+bool portal_password_ok(const std::string& candidate) {
+  const std::string& expected = current_portal_password();
+  if (expected.empty()) return false;
+  return wifi_config::constant_time_equal(candidate, expected);
+}
+
 std::string query_pw(httpd_req_t* req) {
   char query[kMaxQuery];
   if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK) {
@@ -220,7 +239,7 @@ std::string query_pw(httpd_req_t* req) {
 
 esp_err_t root_get_handler(httpd_req_t* req) {
   const std::string pw = query_pw(req);
-  if (wifi_config::constant_time_equal(pw, current_portal_password())) {
+  if (portal_password_ok(pw)) {
     ESP_LOGI(kTag, "GET / -> setup form shown");
     send_html(req, render_form_page({}, pw));
     return ESP_OK;
@@ -237,7 +256,7 @@ esp_err_t root_post_handler(httpd_req_t* req) {
 
   if (req->content_len == 0) {
     ESP_LOGW(kTag, "POST / -> empty body, password prompt");
-    if (wifi_config::constant_time_equal(query_password, current_portal_password())) {
+    if (portal_password_ok(query_password)) {
       send_html(req, render_form_page({}, query_password));
     } else {
       send_html(req, render_password_page(true));
@@ -265,7 +284,7 @@ esp_err_t root_post_handler(httpd_req_t* req) {
   std::string body_pw;
   wifi_config::find_form_value(body, "pw", body_pw);
   const std::string& pw = !query_password.empty() ? query_password : body_pw;
-  if (!wifi_config::constant_time_equal(pw, current_portal_password())) {
+  if (!portal_password_ok(pw)) {
     ESP_LOGW(kTag, "POST / -> wrong page password");
     send_html(req, render_password_page(true));
     return ESP_OK;
@@ -322,11 +341,39 @@ esp_err_t redirect_404_handler(httpd_req_t* req, httpd_err_code_t) {
 // is ota::Session's problem - it refuses to erase anything until the header
 // proves the upload is this project's firmware.
 esp_err_t ota_post_handler(httpd_req_t* req) {
-  if (!wifi_config::constant_time_equal(query_pw(req),
-                                        current_portal_password())) {
-    ESP_LOGW(kTag, "POST /ota -> wrong page password");
-    httpd_resp_send_err(req, HTTPD_401_UNAUTHORIZED, "Wrong password");
-    return ESP_OK;
+  // Either the setup page's session password, or - when there is no session,
+  // which is the normal state on the home network - somebody at the board
+  // saying yes. The endpoint listens whenever the board is online so nothing
+  // has to be pressed to make a push possible, but a device that reflashes
+  // itself because a request arrived is one anyone on the LAN can reflash.
+  if (!portal_password_ok(query_pw(req))) {
+    // Naming the source makes the prompt about a specific request rather than
+    // an abstract one. esp_http_server exposes the socket; the address comes
+    // from the standard call on it.
+    char peer[48] = "the network";
+    const int sock = httpd_req_to_sockfd(req);
+    if (sock >= 0) {
+      struct sockaddr_in6 source {};
+      socklen_t length = sizeof(source);
+      if (getpeername(sock, reinterpret_cast<struct sockaddr*>(&source),
+                      &length) == 0) {
+        inet_ntop(AF_INET6, &source.sin6_addr, peer, sizeof(peer));
+        // lwIP hands back IPv4 clients as ::FFFF:a.b.c.d; show the part
+        // someone would recognise as their machine.
+        const char* mapped = std::strrchr(peer, ':');
+        if (mapped != nullptr && std::strchr(peer, '.') != nullptr) {
+          std::memmove(peer, mapped + 1, std::strlen(mapped));
+        }
+      }
+    }
+    const ota::ConfirmResult answer =
+        ota::request_confirm(peer, kOtaConfirmTimeoutMs);
+    if (answer != ota::ConfirmResult::Accepted) {
+      ESP_LOGW(kTag, "POST /ota -> not confirmed at the board");
+      httpd_resp_send_err(req, HTTPD_403_FORBIDDEN,
+                          "Not confirmed on the device");
+      return ESP_OK;
+    }
   }
 
   // content_len of 0 means the client sent no length, in which case the panel
@@ -423,7 +470,7 @@ esp_err_t ota_url_post_handler(httpd_req_t* req) {
   wifi_config::find_form_value(body, "pw", body_pw);
   const std::string query_password = query_pw(req);
   const std::string& pw = !query_password.empty() ? query_password : body_pw;
-  if (!wifi_config::constant_time_equal(pw, current_portal_password())) {
+  if (!portal_password_ok(pw)) {
     ESP_LOGW(kTag, "POST /ota-url -> wrong page password");
     send_html(req, render_password_page(true));
     return ESP_OK;
@@ -458,7 +505,7 @@ esp_err_t ota_url_post_handler(httpd_req_t* req) {
 
 esp_err_t update_get_handler(httpd_req_t* req) {
   const std::string pw = query_pw(req);
-  if (!wifi_config::constant_time_equal(pw, current_portal_password())) {
+  if (!portal_password_ok(pw)) {
     send_html(req, render_password_page(false));
     return ESP_OK;
   }
@@ -492,7 +539,7 @@ esp_err_t update_post_handler(httpd_req_t* req) {
   wifi_config::find_form_value(body, "pw", body_pw);
   const std::string query_password = query_pw(req);
   const std::string& pw = !query_password.empty() ? query_password : body_pw;
-  if (!wifi_config::constant_time_equal(pw, current_portal_password())) {
+  if (!portal_password_ok(pw)) {
     ESP_LOGW(kTag, "POST /update -> wrong page password");
     send_html(req, render_password_page(true));
     return ESP_OK;

@@ -11,6 +11,8 @@ const lv_font_t* phase_font() { return font_large(); }
 // concern. app_core::ota_phase_label stays as the log-facing wording.
 Text ota_phase_text(app_core::OtaPhase phase) {
   switch (phase) {
+    case app_core::OtaPhase::AwaitingConfirm:
+      return Text::OtaAwaitingConfirm;
     case app_core::OtaPhase::Receiving:
       return Text::OtaUpdating;
     case app_core::OtaPhase::Writing:
@@ -63,6 +65,12 @@ void render_ota(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
           LV_TEXT_ALIGN_CENTER);
   }
 
+  // The prompt has to say which buttons answer it: this is the one screen
+  // where they mean yes and no rather than navigation.
+  if (app_core::ota_awaits_confirm(ota)) {
+    label(parent, text(Text::OtaConfirmHint), layout.warning, small_font(),
+          LV_TEXT_ALIGN_CENTER);
+  }
   // Only while flash is actually being written. On RolledBack or Failed the
   // write is over and telling someone not to power off would be false.
   if (app_core::ota_owns_screen(ota)) {

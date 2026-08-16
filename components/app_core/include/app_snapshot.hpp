@@ -198,6 +198,10 @@ bool battery_overvoltage_danger(int millivolts);
 // it, which is a separate change from making the states visible at all.
 enum class OtaPhase : uint8_t {
   Idle,
+  // A push arrived over the network and is waiting for someone at the board to
+  // accept it. Nothing has been written and nothing has been erased; the
+  // request is held open until an answer or a timeout.
+  AwaitingConfirm,
   // Bytes arriving from a feeder (browser upload or URL pull) and going
   // straight into the inactive slot; percent is meaningful only here.
   Receiving,
@@ -228,6 +232,13 @@ struct OtaData {
 // locked out of, and it ends on its own.
 constexpr bool ota_owns_screen(const OtaData& ota) {
   return ota.phase == OtaPhase::Receiving || ota.phase == OtaPhase::Writing;
+}
+
+// The confirm prompt owns the screen too, but unlike a write in progress it
+// wants the buttons - they are the answer. Kept separate so the input layer
+// can tell "ignore everything" from "these two keys mean yes and no".
+constexpr bool ota_awaits_confirm(const OtaData& ota) {
+  return ota.phase == OtaPhase::AwaitingConfirm;
 }
 
 // ASCII only - see the OtaPhase comment above.

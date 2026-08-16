@@ -17,6 +17,7 @@
 #include <lvgl.h>
 
 #include "board_buttons.hpp"
+#include "ota_confirm.hpp"
 #ifndef NDEBUG
 #include "ui_screenshot.hpp"
 #endif
@@ -388,6 +389,18 @@ void timer_callback(lv_timer_t* timer) {
   if (queue != nullptr) {
     board::ButtonEvent event;
     while (xQueueReceive(queue, &event, 0) == pdTRUE) {
+      // The confirm prompt takes the buttons before anything else can: while
+      // it is up they mean yes and no, and the screen says so.
+      if (app_core::ota_awaits_confirm(runtime->snapshot.ota)) {
+        if (event == board::ButtonEvent::Next) {
+          ESP_LOGI(kTag, "button event=BOOT action=accept-update");
+          ota::answer_confirm(true);
+        } else if (event == board::ButtonEvent::Previous) {
+          ESP_LOGI(kTag, "button event=KEY action=reject-update");
+          ota::answer_confirm(false);
+        }
+        continue;
+      }
       // Checked ahead of the setup gesture, which is handled before the
       // navigation guard below and would otherwise tear the screen away from
       // an in-progress write and start an AP while it runs.
@@ -458,7 +471,8 @@ void timer_callback(lv_timer_t* timer) {
   }
 
   if (!runtime->snapshot.setup.active && !runtime->showing_settings &&
-      !app_core::ota_owns_screen(runtime->snapshot.ota)) {
+      !app_core::ota_owns_screen(runtime->snapshot.ota) &&
+      !app_core::ota_awaits_confirm(runtime->snapshot.ota)) {
     const app_core::PageId current_page =
         runtime->active_pages[runtime->carousel.index];
     const auto transition = app_core::carousel::tick(
@@ -501,7 +515,8 @@ void timer_callback(lv_timer_t* timer) {
   // Setup happens to be up replaces the screen rather than being ignored.
   // Rebuilt on every OTA change, not just on entry, because the percentage is
   // the whole point of the page (see ota_changed above).
-  if (app_core::ota_owns_screen(runtime->snapshot.ota)) {
+  if (app_core::ota_owns_screen(runtime->snapshot.ota) ||
+      app_core::ota_awaits_confirm(runtime->snapshot.ota)) {
     if (!runtime->showing_ota || ota_changed) {
       const lv_obj_t* rendered =
           render_page(runtime->context, runtime->snapshot,

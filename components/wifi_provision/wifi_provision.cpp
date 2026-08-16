@@ -143,9 +143,17 @@ void apply_state_and_publish() {
     }
   } else if (state == State::Connected) {
     if (portal_active_) {
-      portal_stop();
+      // The AP goes away; the HTTP server stays. It is what a firmware push
+      // from a machine on the same network arrives at, and leaving it up is
+      // what makes that need no button to enable.
+      //
+      // Clearing the password is what keeps the setup form shut: with none
+      // set, portal_password_ok() refuses everything, so the only route that
+      // still answers is the upload - and that one asks the board.
       wifi_manager_stop_ap();
-      portal_active_ = false;
+    } else {
+      portal_start();
+      portal_active_ = true;
     }
     portal_password_.clear();
   }
