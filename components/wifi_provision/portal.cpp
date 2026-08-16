@@ -607,6 +607,32 @@ esp_err_t shot_get_handler(httpd_req_t* req) {
 }
 
 const httpd_uri_t kShotGet = {"/shot", HTTP_GET, shot_get_handler, nullptr};
+
+// Reboots the board. The last thing that still required a USB cable: verifying
+// anything that only happens at startup - a setting restored from NVS, the
+// boot order, a first-render layout - meant reaching for serial, and reaching
+// for serial to reset means find-board-port.sh, which stops the application on
+// every port it probes.
+//
+// POST, not GET: a GET that reboots the device is one browser prefetch or one
+// pasted link away from firing by accident.
+//
+// Unauthenticated, like every other route here, and debug builds only. A push
+// needs a button because it replaces the firmware; a restart cannot corrupt
+// anything and the running image comes straight back, so gating it behind a
+// press would only mean the cable stays.
+esp_err_t restart_post_handler(httpd_req_t* req) {
+  ESP_LOGW(kTag, "POST /restart -> restarting on request");
+  // Answer first, then restart: rebooting inside the handler drops the socket
+  // and the caller sees a network error for a reboot that worked. Same reason
+  // the OTA handler does it in this order.
+  httpd_resp_sendstr(req, "Restarting.\n");
+  schedule_restart();
+  return ESP_OK;
+}
+
+const httpd_uri_t kRestartPost = {"/restart", HTTP_POST, restart_post_handler,
+                                  nullptr};
 #endif
 
 const httpd_uri_t kRootGet = {"/", HTTP_GET, root_get_handler, nullptr};
@@ -639,7 +665,7 @@ void portal_start() {
   const httpd_uri_t* routes[] = {&kRootGet,   &kRootPost,  &kOtaPost,
                                  &kOtaUrlPost, &kUpdateGet, &kUpdatePost,
 #ifndef NDEBUG
-                                 &kShotGet,
+                                 &kShotGet,   &kRestartPost,
 #endif
   };
   for (const httpd_uri_t* route : routes) {

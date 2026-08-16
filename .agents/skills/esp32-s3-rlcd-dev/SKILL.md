@@ -87,7 +87,13 @@ log, layout by screenshot endpoint. Nothing below needs USB.
 ./scripts/remote.sh logs 60       # stream the log port for 60 s
 ./scripts/remote.sh shot out/     # PNG of the panel right now
 ./scripts/remote.sh push          # build/layout_carousel.bin -> the board
+./scripts/remote.sh restart       # reboot, and wait until it answers again
 ```
+
+`restart` is what makes startup behaviour testable without a cable - anything
+restored from NVS, boot ordering, the first frame rendered. It is POST, not GET,
+so a prefetch cannot fire it, and like `/shot` it does not exist in a release
+build.
 
 `push` still needs one press on the board to accept the offer. That prompt is
 the only authorisation a push has; do not add a way past it.

@@ -5,6 +5,7 @@
 #   ./scripts/remote.sh logs [seconds]     # stream the log port
 #   ./scripts/remote.sh shot [dir]         # PNG of what is on the panel now
 #   ./scripts/remote.sh push               # build and offer firmware
+#   ./scripts/remote.sh restart            # reboot and wait for it to answer
 #
 # Why not find-board-port.sh: that reads the MAC over USB, which means entering
 # the ROM downloader and stopping the application. Nothing here touches serial.
@@ -81,6 +82,23 @@ case "${1:-}" in
       exit 1
     fi
     python3 "$project_dir/scripts/decode-screenshots.py" "$capture" "$out"
+    ;;
+
+  restart)
+    ip="$(board_ip)"
+    curl --fail-with-body -sS -m 10 -X POST "http://$ip/restart" >&2
+    # Waiting is the whole point: every caller reboots in order to look at what
+    # happens next, and the address answers again before the application does.
+    echo "waiting for the board to answer again..." >&2
+    for _ in $(seq 1 40); do
+      sleep 2
+      if curl -s -m 3 -o /dev/null "http://$ip/shot"; then
+        echo "board is back" >&2
+        exit 0
+      fi
+    done
+    echo "board did not answer within 80 s" >&2
+    exit 1
     ;;
 
   push)
