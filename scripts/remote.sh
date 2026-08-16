@@ -109,8 +109,19 @@ case "${1:-}" in
     echo "the board is showing the offer now: BOOT accepts, KEY cancels" >&2
     # --max-time covers the confirmation window plus the transfer. The board
     # holds the request open until someone answers.
-    curl --fail-with-body -sS --max-time 420 \
-      -X POST --data-binary "@$bin" "http://$ip/ota"
+    #
+    # The exit status is the point. A refused or unanswered push returns 403
+    # with a body, and the echo that used to follow it made the script exit 0 -
+    # so a push that installed nothing reported success. With no cable and no
+    # eyes on the panel, that is indistinguishable from a deployment, and it is
+    # how a caller ends up believing firmware is running that never left the
+    # machine.
+    if ! curl --fail-with-body -sS --max-time 420 \
+         -X POST --data-binary "@$bin" "http://$ip/ota"; then
+      echo >&2
+      echo "push did NOT install - the board is still on its previous firmware" >&2
+      exit 1
+    fi
     echo
     ;;
 

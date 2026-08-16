@@ -152,28 +152,42 @@ int net_vprintf(const char* format, va_list args) {
     for (;;) {
       char line[256];
       std::size_t line_len = 0;
+      // Kept so a send that could not go out can be retried from the same
+      // place next time round rather than losing the line.
+      const std::uint64_t cursor_before = send_cursor;
       xSemaphoreTake(g_ring_mutex, portMAX_DELAY);
       const bool has_line =
           g_ring->read_line(send_cursor, line, sizeof(line), line_len);
       xSemaphoreGive(g_ring_mutex);
       if (!has_line) break;
-      // Known limitation: a failed/partial send here is treated as delivered (the
-      // cursor already advanced) rather than retried - simplest recovery
-      // is just letting the operator reconnect, which replays the backlog.
-      if (send(client_fd, line, line_len, 0) < 0) {
-        close(client_fd);
-        client_fd = -1;
+      if (send(client_fd, line, line_len, 0) >= 0) continue;
+
+      // EAGAIN here is the 200 ms SO_SNDTIMEO expiring against a full TCP
+      // window - backpressure, not a dead client. It happens whenever the
+      // firmware logs faster than the link drains, which a screenshot dump
+      // does by design: 157 lines with nothing between them.
+      //
+      // Closing on it was dropping an operator's capture mid-stream after
+      // about forty seconds, which reads as an unreliable board rather than
+      // as flow control working. Rewind and let the next pass retry; the
+      // 200 ms select timeout above is the pause that lets the window open.
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        send_cursor = cursor_before;
         break;
       }
+      // Anything else is the client really having gone.
+      close(client_fd);
+      client_fd = -1;
+      break;
     }
   }
 }
 
 }  // namespace
 
-esp_err_t start() {
-  static bool started = false;
-  if (started) return ESP_OK;
+esp_err_t begin() {
+  static bool begun = false;
+  if (begun) return ESP_OK;
 
   auto* storage = static_cast<std::uint8_t*>(
       heap_caps_malloc(CONFIG_NET_LOG_RING_BYTES, MALLOC_CAP_SPIRAM));
@@ -190,14 +204,29 @@ esp_err_t start() {
     return ESP_ERR_NO_MEM;
   }
 
+  // From here every log line is retained. Nothing sends yet; the sender task
+  // does not exist until start(), and until then this is purely a buffer that
+  // an operator will be handed in full when they eventually connect.
+  g_original_vprintf = esp_log_set_vprintf(&net_vprintf);
+  begun = true;
+  return ESP_OK;
+}
+
+esp_err_t start() {
+  static bool started = false;
+  if (started) return ESP_OK;
+
+  // Normally already done from app_main; called here too so start() alone
+  // still works and the ordering is not a trap for a future caller.
+  const esp_err_t ring_ready = begin();
+  if (ring_ready != ESP_OK) return ring_ready;
+
   if (xTaskCreate(&sender_task, "net_log_sender", 4096, nullptr,
                   tskIDLE_PRIORITY + 1, nullptr) != pdPASS) {
     ESP_LOGE(kTag, "sender task creation failed");
     return ESP_ERR_NO_MEM;
   }
 
-  // Installed last, once the ring/mutex/sender it depends on all exist.
-  g_original_vprintf = esp_log_set_vprintf(&net_vprintf);
   started = true;
 
   esp_netif_ip_info_t ip_info{};
@@ -222,6 +251,7 @@ std::uint32_t dropped_lines() {
 #else  // !CONFIG_NET_LOG_ENABLE
 
 esp_err_t start() { return ESP_ERR_NOT_SUPPORTED; }
+esp_err_t begin() { return ESP_ERR_NOT_SUPPORTED; }
 std::uint32_t dropped_lines() { return 0; }
 
 #endif  // CONFIG_NET_LOG_ENABLE

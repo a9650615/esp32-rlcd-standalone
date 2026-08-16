@@ -35,6 +35,21 @@ namespace net_log {
 // safe default - without touching the log sink or opening any socket.
 esp_err_t start();
 
+// Allocates the retained ring and installs the log sink, without opening any
+// socket. Call as early in app_main as possible - it needs PSRAM and nothing
+// else, in particular not the network stack.
+//
+// This exists because everything a startup decides is logged in the first few
+// seconds: the language restored from NVS, the history restored from flash,
+// the rollback guard's reading of the slot state, whether the RTC was
+// believed. start() cannot run until lwIP is up, so all of that was already
+// gone by the time anyone could connect - invisible on a board with no cable,
+// which is exactly the board that needs it.
+//
+// Returns ESP_ERR_NOT_SUPPORTED when CONFIG_NET_LOG_ENABLE is off, having
+// touched nothing.
+esp_err_t begin();
+
 // TCP port operators connect to (CONFIG_NET_LOG_PORT), reported
 // regardless of whether net_log is actually enabled/running.
 std::uint16_t port();

@@ -708,6 +708,14 @@ extern "C" void app_main() {
            static_cast<unsigned>(psram_bytes));
   if (psram_bytes == 0) fatal_loop("required PSRAM unavailable", ESP_ERR_NOT_FOUND);
 
+  // Retain the log from here rather than from when the socket opens. Every
+  // startup decision below - the language restored from NVS, the history
+  // restored from flash, the rollback guard's reading of the slot - is logged
+  // in the next few seconds, and net_log's listener cannot exist until lwIP
+  // does. Without this the answers were gone before anyone could connect,
+  // which on a board with no cable means they were unobservable.
+  (void)net_log::begin();
+
   esp_err_t result = board::display_init();
   if (result != ESP_OK) fatal_loop("display initialization failed", result);
   ESP_LOGI(kTag, "startup diagnostics display=ready");
