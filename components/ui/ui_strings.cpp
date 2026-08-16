@@ -46,7 +46,10 @@ constexpr Row kRows[] = {
     {"Check for updates", "檢查更新"},
     {"Wi-Fi setup", "Wi-Fi 設定"},
     {"Battery", "電池"},
+    {"Runtime", "預估續航"},
     {"Checking...", "檢查中..."},
+    {"Charging", "充電中"},
+    {"Collecting", "收集中"},
 
     {"Next", "下一項"},
     {"Select", "選擇"},

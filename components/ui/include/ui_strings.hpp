@@ -44,7 +44,10 @@ enum class Text : uint16_t {
   SettingsCheckUpdates,
   SettingsWifiSetup,
   SettingsBattery,
+  SettingsRuntime,
   SettingsChecking,
+  StatusCharging,
+  StatusCollecting,
 
   HintNextItem,
   HintSelect,

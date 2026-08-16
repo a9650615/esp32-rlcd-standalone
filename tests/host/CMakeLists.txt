@@ -24,7 +24,9 @@ add_executable(host_tests
     test_net_log.cpp
     test_ota.cpp
     test_settings_menu.cpp
+    test_history.cpp
     ../../components/app_core/app_snapshot.cpp
+    ../../components/app_core/history.cpp
     ../../components/app_core/page_registry.cpp
     ../../components/app_core/carousel_controller.cpp
     ../../components/wifi_config/wifi_config.cpp

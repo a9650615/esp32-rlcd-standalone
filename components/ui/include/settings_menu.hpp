@@ -23,6 +23,9 @@ enum class SettingsItem : uint8_t {
   // both untrustworthy, and digging the figure out of a serial log is enough
   // friction that the calibration does not happen.
   Battery,
+  // Projected time left, from the persisted discharge history rather than
+  // from the current reading. Display only, like Firmware and Battery.
+  Runtime,
   Count,
 };
 

@@ -13,6 +13,8 @@
 #include <nvs.h>
 #include <nvs_flash.h>
 
+#include "history.hpp"
+#include "history_store.hpp"
 #include "ota_pull.hpp"
 #include "ota_release.hpp"
 #include "ota_session.hpp"
@@ -352,6 +354,95 @@ void run_update_action(bool install) {
   }
 }
 
+// Readings arrive far faster than a history slot. They are averaged here and
+// committed once per slot, because a flash write per reading is the one thing
+// that would turn a 240-year wear budget into a handful of years - see the
+// arithmetic in history_store.hpp.
+portMUX_TYPE g_slot_lock = portMUX_INITIALIZER_UNLOCKED;
+int32_t g_battery_sum = 0;
+uint16_t g_battery_n = 0;
+int32_t g_temperature_sum_decic = 0;
+int32_t g_humidity_sum = 0;
+uint16_t g_environment_n = 0;
+
+void accumulate_battery(int millivolts) {
+  taskENTER_CRITICAL(&g_slot_lock);
+  g_battery_sum += millivolts;
+  ++g_battery_n;
+  taskEXIT_CRITICAL(&g_slot_lock);
+}
+
+void accumulate_environment(double temperature_c, uint8_t humidity_percent) {
+  taskENTER_CRITICAL(&g_slot_lock);
+  g_temperature_sum_decic += static_cast<int32_t>(temperature_c * 10.0);
+  g_humidity_sum += humidity_percent;
+  ++g_environment_n;
+  taskEXIT_CRITICAL(&g_slot_lock);
+}
+
+// Averages whatever arrived during the slot and resets the accumulator.
+// Sources that produced nothing leave their field marked absent rather than
+// contributing a zero.
+app_core::HistorySample take_slot() {
+  int32_t battery_sum = 0;
+  int32_t temperature_sum = 0;
+  int32_t humidity_sum = 0;
+  uint16_t battery_n = 0;
+  uint16_t environment_n = 0;
+  taskENTER_CRITICAL(&g_slot_lock);
+  battery_sum = g_battery_sum;
+  battery_n = g_battery_n;
+  temperature_sum = g_temperature_sum_decic;
+  humidity_sum = g_humidity_sum;
+  environment_n = g_environment_n;
+  g_battery_sum = 0;
+  g_battery_n = 0;
+  g_temperature_sum_decic = 0;
+  g_humidity_sum = 0;
+  g_environment_n = 0;
+  taskEXIT_CRITICAL(&g_slot_lock);
+
+  app_core::HistorySample sample;
+  if (battery_n > 0) {
+    sample.battery_millivolts =
+        static_cast<uint16_t>(battery_sum / battery_n);
+  }
+  if (environment_n > 0) {
+    sample.temperature_decic =
+        static_cast<int16_t>(temperature_sum / environment_n);
+    sample.humidity_percent =
+        static_cast<uint8_t>(humidity_sum / environment_n);
+  }
+  return sample;
+}
+
+[[noreturn]] void history_recorder_task(void*) {
+  for (;;) {
+    vTaskDelay(pdMS_TO_TICKS(app_core::kHistoryIntervalMinutes * 60'000));
+    const app_core::HistorySample sample = take_slot();
+    // An entirely empty slot is still recorded. The gap is information - it is
+    // how the estimator knows the window it is fitting has holes in it - and
+    // skipping it would silently compress the time axis, making an old
+    // discharge look like a recent one.
+    const esp_err_t result = history_store::record(sample);
+    if (result != ESP_OK) {
+      ESP_LOGW(kTag, "history slot not persisted: %s",
+               esp_err_to_name(result));
+      continue;
+    }
+    const app_core::RuntimeEstimate estimate = app_core::estimate_runtime(
+        history_store::current().samples, history_store::current().count,
+        app_core::kHistoryIntervalMinutes);
+    ESP_LOGI(kTag,
+             "history: %u slots, trend=%d %.2f%%/h known=%d minutes=%u",
+             static_cast<unsigned>(history_store::current().count),
+             static_cast<int>(estimate.trend),
+             static_cast<double>(estimate.percent_per_hour), estimate.known,
+             static_cast<unsigned>(estimate.minutes_remaining));
+    wifi_provision::set_runtime_estimate(estimate);
+  }
+}
+
 constexpr uint32_t kBatterySamplePeriodMs = 30'000;
 
 // Samples the battery divider roughly every 30 s and publishes it through
@@ -394,6 +485,7 @@ constexpr uint32_t kBatterySamplePeriodMs = 30'000;
       was_warning = battery.overvoltage_warning;
       was_danger = danger;
 
+      accumulate_battery(battery.millivolts);
       wifi_provision::set_battery(battery);
     } else {
       ESP_LOGW(kTag, "battery ADC read failed");
@@ -422,7 +514,16 @@ constexpr uint32_t kIndoorHistoryIntervalMs = 30 * 60'000;
 
 [[noreturn]] void indoor_monitor_task(void*) {
   std::array<double, 8> history{};
-  uint8_t history_count = 0;
+  // Seeded from flash rather than starting empty: the chart used to lose
+  // everything on every reboot, which on a board that reboots for each
+  // firmware push meant it was almost never populated.
+  uint8_t history_count = app_core::history_recent_temperatures(
+      history_store::current(), history.data(),
+      static_cast<uint8_t>(history.size()));
+  if (history_count > 0) {
+    ESP_LOGI(kTag, "indoor history: seeded %u point(s) from flash",
+             history_count);
+  }
   uint32_t since_history_ms = kIndoorHistoryIntervalMs;  // record immediately
   for (;;) {
     app_core::IndoorData indoor;
@@ -435,6 +536,7 @@ constexpr uint32_t kIndoorHistoryIntervalMs = 30 * 60'000;
           static_cast<uint8_t>(humidity_percent + 0.5f);
       ESP_LOGI(kTag, "indoor valid temp_c=%.1f humidity=%u",
                indoor.temperature_c, indoor.humidity_percent);
+      accumulate_environment(indoor.temperature_c, indoor.humidity_percent);
     } else {
       ESP_LOGW(kTag, "SHTC3 read failed");
     }
@@ -634,6 +736,13 @@ extern "C" void app_main() {
   // The store handler is registered after the load on purpose: set_language
   // only notifies on an actual change, and registering first would have the
   // restore write straight back what it just read.
+  // Before ui::start(), so the sensor chart's first render already carries
+  // the history from previous boots instead of drawing an empty box and
+  // filling in over the next hour.
+  if (history_store::init() != ESP_OK) {
+    ESP_LOGW(kTag, "history storage unavailable; charts start empty");
+  }
+
   ui::set_language(load_language());
   ui::set_language_store_handler(&store_language);
 
@@ -723,5 +832,12 @@ extern "C" void app_main() {
   if (xTaskCreate(&net_log_startup_task, "net_log_startup", 4096, nullptr,
                   tskIDLE_PRIORITY + 1, nullptr) != pdPASS) {
     ESP_LOGE(kTag, "net_log startup task creation failed");
+  }
+
+  // 4096 B: averages a handful of integers and hands a 3.5 KiB static buffer
+  // to esp_partition. Nothing of its own goes on the stack.
+  if (xTaskCreate(&history_recorder_task, "history_rec", 4096, nullptr,
+                  tskIDLE_PRIORITY + 1, nullptr) != pdPASS) {
+    ESP_LOGE(kTag, "history recorder task creation failed");
   }
 }

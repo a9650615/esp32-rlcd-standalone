@@ -1,0 +1,10 @@
+idf_component_register(
+    SRCS
+        "history_store.cpp"
+    INCLUDE_DIRS
+        "include"
+    PRIV_REQUIRES
+        app_core
+        spi_flash
+        esp_partition
+)

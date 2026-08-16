@@ -29,6 +29,7 @@ SettingsAction SettingsMenu::activate() {
     case SettingsItem::WifiSetup:
       return SettingsAction::EnterWifiSetup;
     case SettingsItem::Battery:
+    case SettingsItem::Runtime:
       // Display only, like the firmware row.
       return SettingsAction::None;
     case SettingsItem::Count:
@@ -49,6 +50,8 @@ Text settings_item_label(SettingsItem item) {
       return Text::SettingsWifiSetup;
     case SettingsItem::Battery:
       return Text::SettingsBattery;
+    case SettingsItem::Runtime:
+      return Text::SettingsRuntime;
     case SettingsItem::Count:
       break;
   }

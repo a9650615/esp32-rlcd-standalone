@@ -38,6 +38,28 @@ std::string row_value(SettingsItem item,
                     static_cast<unsigned>(battery.percent));
       return buffer;
     }
+    case SettingsItem::Runtime: {
+      // Every branch that is not a measured projection says so rather than
+      // printing a number. A runtime figure is the kind of thing that gets
+      // believed and planned around, so the only case that produces one is
+      // the one where the discharge was actually observed.
+      switch (battery.runtime.trend) {
+        case app_core::PowerTrend::Charging:
+          return text(Text::StatusCharging);
+        case app_core::PowerTrend::Unknown:
+          return text(Text::StatusCollecting);
+        case app_core::PowerTrend::Steady:
+          return "--";
+        case app_core::PowerTrend::Discharging:
+          break;
+      }
+      if (!battery.runtime.known) return "--";
+      const unsigned minutes = battery.runtime.minutes_remaining;
+      char buffer[24];
+      std::snprintf(buffer, sizeof(buffer), "%uh %02um", minutes / 60,
+                    minutes % 60);
+      return buffer;
+    }
     case SettingsItem::WifiSetup:
     case SettingsItem::Count:
       break;

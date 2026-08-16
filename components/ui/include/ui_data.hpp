@@ -1,6 +1,7 @@
 #pragma once
 
 #include "app_snapshot.hpp"
+#include "settings_menu.hpp"
 #include "ui_strings.hpp"
 #include "carousel_controller.hpp"
 #include "ui_theme.hpp"
@@ -255,11 +256,19 @@ inline std::string market_as_of_text(const app_core::MarketData& market) {
   return buffer;
 }
 
+// One per SettingsItem. Derived rather than written as a literal: it was a
+// literal 5, and adding a sixth item would have written a row past the end of
+// the array in a constexpr function - caught here only because the row count
+// happened to be checked. Tie it to the enum and adding an item cannot do that
+// again.
+inline constexpr int kSettingsRowCount =
+    static_cast<int>(SettingsItem::Count);
+
 struct SettingsLayout {
   Rect title;
-  // One row per SettingsItem. Fixed-size rather than computed per item so the
-  // rows cannot shift as values change length underneath them.
-  Rect rows[5];
+  // Fixed-size rather than computed per item so the rows cannot shift as
+  // values change length underneath them.
+  Rect rows[kSettingsRowCount];
   Rect value_column;
   // Full width, below the list. The update check reports things like "Up to
   // date (latest is v0.1.2)", which has no chance in the value column and was
@@ -285,7 +294,7 @@ constexpr SettingsLayout settings_layout(const Rect bounds) {
   SettingsLayout layout{};
   layout.title = title;
   int y = title.bottom() + kSettingsTitleGap;
-  for (int i = 0; i < 5; ++i) {
+  for (int i = 0; i < kSettingsRowCount; ++i) {
     layout.rows[i] = Rect{bounds.x, y, bounds.width, kSettingsRowHeight};
     y += kSettingsRowHeight + kSettingsRowGap;
   }
@@ -300,7 +309,7 @@ constexpr SettingsLayout settings_layout(const Rect bounds) {
 constexpr bool settings_layout_fits(const Rect content) {
   const SettingsLayout layout = settings_layout(content);
   if (!rect_within(content, layout.title)) return false;
-  for (int i = 0; i < 5; ++i) {
+  for (int i = 0; i < kSettingsRowCount; ++i) {
     if (!rect_within(content, layout.rows[i])) return false;
   }
   if (!rect_within(content, layout.status)) return false;

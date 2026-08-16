@@ -31,6 +31,9 @@ void set_battery(const app_core::BatteryData& battery);
 // AppSnapshot owner/publisher rather than letting each provider task manage
 // its own copy.
 void set_indoor(const app_core::IndoorData& indoor);
+// Merged into the battery field rather than published as its own, because it
+// is a statement about the battery and every consumer already reads that.
+void set_runtime_estimate(const app_core::RuntimeEstimate& estimate);
 void set_weather(const app_core::WeatherData& weather);
 void set_taiwan_market(const app_core::MarketData& market);
 void set_us_market(const app_core::MarketData& market);

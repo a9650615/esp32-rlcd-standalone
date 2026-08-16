@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <string>
 
+#include "history.hpp"
+
 namespace app_core {
 
 // Setup is not scheduled by PageRegistry/the carousel; it is shown only via
@@ -147,6 +149,9 @@ struct BatteryData {
   int millivolts = 0;
   uint8_t percent = 0;
   bool overvoltage_warning = false;
+  // Derived from the persisted history rather than from this reading, so it
+  // stays empty until enough of a window exists to fit - see history.hpp.
+  RuntimeEstimate runtime;
 };
 
 // Applies the board's 3x sense divider and a calibration_permille trim

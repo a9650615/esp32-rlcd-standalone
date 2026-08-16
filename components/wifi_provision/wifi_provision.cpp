@@ -284,6 +284,15 @@ void set_indoor(const app_core::IndoorData& indoor) {
   unlock();
 }
 
+void set_runtime_estimate(const app_core::RuntimeEstimate& estimate) {
+  lock();
+  // Only the estimate, never the reading: the battery sampler owns millivolts
+  // and percent, and this runs on a different task at a different cadence.
+  snapshot_.battery.runtime = estimate;
+  ui::publish_snapshot(snapshot_);
+  unlock();
+}
+
 void set_weather(const app_core::WeatherData& weather) {
   lock();
   snapshot_.weather = weather;
