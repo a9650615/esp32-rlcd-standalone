@@ -72,10 +72,40 @@ Treat the ST7305 output as a 1-bit pixel surface, not a scaled web mockup. Use i
 - For the bundled Montserrat bitmap fonts, give each label 1 px internal padding and a height of at least `font.line_height + 2 px`. A 1 px LVGL text outline may be requested only for the 14 px small-text tier; bitmap glyphs may ignore outline styling, so the real fix for an insufficient stroke is a verified heavier 1-bit font. Do not outline medium, large, or hero numerals.
 - Data polylines and mini-history lines are at least 2 px wide. Hairline separators and dotted grids may remain 1 px. Keep data strokes outside every text rectangle.
 - Give each right-side tile three non-overlapping rows: title, value, detail. Derive and host-test the rectangles; do not repair overlap by relying on opaque labels or paint order.
-- Every non-ASCII character must exist in the compiled font. If it has not been verified, use an ASCII fallback; for example use `40-60`, `<`, and `>` instead of `40–60`, `‹`, and `›`. Keep `°` only while its bundled glyph is confirmed on hardware.
-- Accept display changes from a real-board photo of every page, not the simulator alone. Check full glyph strokes, top/bottom clipping, diagonal continuity, title/value overlap, missing-glyph boxes, stale pixels, and a complete carousel wrap.
+- Every non-ASCII character must exist in the compiled font, and the build enforces it: `scripts/check-cjk-font.py` runs on every build and fails when a string literal under `components/ui` uses a glyph the generated subset lacks. Add Chinese, run `./scripts/build-fonts.sh`, commit `components/ui/fonts/`. A missing glyph is otherwise invisible - LVGL draws an empty box and says nothing - and this project shipped 32 characters of that before the gate existed.
+- Labels are `LV_LABEL_LONG_DOT`, never `LONG_CLIP`. Clipping deletes characters silently, which on a panel that otherwise refuses to show unmeasured numbers is the same class of defect: `Up to date` clipped to `pdate to date` reads as a message rather than as damage. Debug builds log every overflow with its measured and available widths, so a too-narrow box is a line of serial output rather than something to notice by eye.
+- A CJK glyph is full-width - exactly 14px at font 14 - against roughly 7px for average Latin. Every box here was sized from Latin metrics, so translated strings meet the edges far sooner. The tight ones are the Setup text column (168px usable) and the market sidebar cell (108px, 66px for a value once the icon gutter is taken).
 
-For this project, KEY/GPIO18 means previous page and BOOT/GPIO0 means next page. Both are active-low and emit once after a debounced release. GPIO0 must stay input-only with a pull-up; never drive it or initialize it early in a way that can block ROM download recovery. The transient overlay must use the same physical mapping: `KEY < AUTO > BOOT`.
+## Look at what you changed
+
+Debug builds photograph themselves. Each page emits its frame over serial once per boot, and `scripts/decode-screenshots.py` turns a capture into PNGs:
+
+```bash
+PORT="$(./scripts/find-board-port.sh)"
+# any serial capture works - see the non-interactive recipe below
+python capture.py "$PORT" 100 > shots.log
+python3 scripts/decode-screenshots.py shots.log out/
+```
+
+Use it for anything about arrangement: clipping, overlap, alignment, a value that never arrived, a page still carrying another page's content. Three defects that no geometry check could see were found in the first two captures - a temperature rendered in a digits-only font and coming out as an empty box, a sensor page still drawing a market sidebar, and seven forecast columns all truncated to `Thun...`.
+
+It is not a substitute for looking at the board. The PNG is what was drawn, not what the panel shows: stroke weight, contrast in real light, glyph legibility at distance and ghosting are properties of a reflective display and only a photograph settles them. Screenshots answer "is this laid out correctly", photographs answer "can this be read".
+
+The capture is taken at the LVGL flush and waits for the flush completing the bottom-right corner. A full-screen redraw arrives as several flushes across several handler passes, so reading one tick after the render returns a frame two page transitions stale - which looks like a working tool producing wrong pictures.
+
+So a display change is accepted on both: screenshots for every page, and a photograph of every page checking glyph strokes, contrast, diagonal continuity, stale pixels and a complete carousel wrap.
+
+## Two buttons, three contexts
+
+The buttons change meaning with what is on screen, which is only usable because the screen says what they currently do - the bottom band carries page dots on a carousel page and a button legend on the settings menu. Keep that pairing: a context that reassigns a button without saying so is worse than one that offers less.
+
+| | KEY (GPIO18, middle) | BOOT (GPIO0, right) |
+| --- | --- | --- |
+| Carousel | short: previous page, long ~2s: Wi-Fi setup | short: next page, long ~2s: settings menu |
+| Settings menu | short: next item, long: leave | short: select |
+| Writing flash | ignored | ignored |
+
+Both are active-low and emit once after a debounced release; a long press suppresses its own release so one press never means two things. BOOT long presses are safe despite GPIO0 being the download strap - the strap is sampled at reset, not while running - but GPIO0 must still stay input-only with a pull-up, and must never be driven or initialised early in a way that can block ROM download recovery.
 
 The measured layout values, photo-derived failure modes, and acceptance checklist are in [references/official-development.md](references/official-development.md).
 
