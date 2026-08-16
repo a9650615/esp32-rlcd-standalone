@@ -145,7 +145,7 @@ ReleaseInfo check_latest_release() {
   const std::string running = running_version();
   info.update_available = is_newer(info.version, running);
   info.message = info.update_available
-                     ? "Update available: " + info.version
+                     ? "Update " + info.version + " ready - select to install"
                      : "Up to date (latest is " + info.version + ")";
   ESP_LOGI(kTag, "update check: running=%s latest=%s newer=%d",
            running.c_str(), info.version.c_str(), info.update_available);

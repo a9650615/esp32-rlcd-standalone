@@ -10,6 +10,7 @@
 #include "net_time.hpp"
 #include "ota.hpp"
 #include "ota_confirm.hpp"
+#include "ota_pull.hpp"
 #include "ota_release.hpp"
 #include "ota_session.hpp"
 #include "shtc3.hpp"
@@ -197,18 +198,46 @@ void ota_guard_task(void*) {
 // task because the check is a blocking HTTPS round trip and the caller is the
 // LVGL thread - doing it inline would freeze the display for the duration and,
 // on a slow network, trip the watchdog.
+// Where the last check left its download URL. Written by the check task and
+// read by the LVGL thread when the install row is selected, so it is guarded
+// rather than merely assumed to be quiescent between the two.
+portMUX_TYPE g_found_lock = portMUX_INITIALIZER_UNLOCKED;
+std::string g_found_url;
+
+void set_found_url(const std::string& url) {
+  // Copy before the lock and let the old value die after it: a portMUX section
+  // runs with interrupts off, and neither malloc nor free belongs in one.
+  std::string copy = url;
+  taskENTER_CRITICAL(&g_found_lock);
+  copy.swap(g_found_url);
+  taskEXIT_CRITICAL(&g_found_lock);
+}
+
+std::string take_found_url() {
+  taskENTER_CRITICAL(&g_found_lock);
+  std::string url;
+  url.swap(g_found_url);
+  taskEXIT_CRITICAL(&g_found_lock);
+  return url;
+}
+
 void update_check_task(void*) {
   const ota::ReleaseInfo release = ota::check_latest_release();
   ESP_LOGI(kTag, "update check: ok=%d newer=%d version=%s", release.ok,
            release.update_available, release.version.c_str());
-  ui::set_update_status(release.message);
-  if (release.update_available && !release.firmware_url.empty()) {
-    // Found, not installed. Pulling firmware is a decision, and making a check
-    // silently reflash the device would mean there was no way to ask "is there
-    // an update?" without getting one.
+  const bool installable =
+      release.update_available && !release.firmware_url.empty();
+  // Found, not installed. Pulling firmware stays a decision, and making a
+  // check silently reflash the device would mean there was no way to ask "is
+  // there an update?" without getting one. What changes is only that the
+  // answer is now reachable from the board: the row that asked the question
+  // becomes the row that acts on it.
+  if (installable) {
+    set_found_url(release.firmware_url);
     ESP_LOGW(kTag, "update %s available at %s", release.version.c_str(),
              release.firmware_url.c_str());
   }
+  ui::set_update_status(release.message, installable);
   vTaskDelete(nullptr);
 }
 
@@ -224,7 +253,23 @@ void show_update_prompt(bool showing, const std::string& peer) {
   wifi_provision::set_ota(data);
 }
 
-void start_update_check() {
+// The settings update row, both halves of it. Called on the LVGL thread, so
+// neither branch may block: each hands off to a task and returns.
+void run_update_action(bool install) {
+  if (install) {
+    const std::string url = take_found_url();
+    if (url.empty()) {
+      // The offer outlived the URL - a reboot, or a second install after the
+      // first consumed it. Re-check rather than reflash something stale.
+      ui::set_update_status("Check again before installing");
+      return;
+    }
+    // The same downloader POST /ota-url runs, feeding the same ota::Session as
+    // a push, so all three routes share one set of header checks, one progress
+    // screen and one rollback path.
+    if (!ota::start_pull(url)) ui::set_update_status("Device busy");
+    return;
+  }
   // 16384 B: an HTTPS handshake plus a JSON parse, the same shape as
   // weather_monitor_task, which needed this much for the same reasons.
   if (xTaskCreate(&update_check_task, "ota_check", 16384, nullptr,
@@ -522,7 +567,7 @@ extern "C" void app_main() {
   // depending on it and inverting the layering.
   ota::set_progress_handler(&wifi_provision::set_ota);
   ui::set_setup_gesture_handler(&wifi_provision::toggle_setup);
-  ui::set_update_check_handler(&start_update_check);
+  ui::set_update_handler(&run_update_action);
   ota::set_confirm_prompt_handler(&show_update_prompt);
   result = wifi_provision::start(snapshot);
   if (result != ESP_OK) {

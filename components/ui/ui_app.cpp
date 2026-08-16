@@ -74,13 +74,14 @@ app_core::AppSnapshot g_published_snapshot;
 bool g_published_dirty = false;
 std::string g_pending_update_status;
 bool g_pending_update_status_dirty = false;
+bool g_pending_update_available = false;
 
 void (*g_setup_gesture_handler)() = nullptr;
 // Runs the release check off the LVGL thread; the result comes back through
 // set_update_status. Null until main registers it, in which case selecting the
 // row simply reports nothing rather than blocking the render loop on a network
 // call.
-void (*g_update_check_handler)() = nullptr;
+void (*g_update_handler)(bool install) = nullptr;
 
 // The subset of AppSnapshot that non-UI FreeRTOS tasks (wifi_provision, the
 // battery monitor, and now the indoor/weather/market/net_time providers)
@@ -328,6 +329,7 @@ void timer_callback(lv_timer_t* timer) {
       xSemaphoreTake(g_publish_mutex, 0) == pdTRUE) {
     if (g_pending_update_status_dirty) {
       runtime->context.settings_status = g_pending_update_status;
+      runtime->settings.set_update_offered(g_pending_update_available);
       g_pending_update_status_dirty = false;
       settings_dirty = true;
     }
@@ -552,7 +554,16 @@ void timer_callback(lv_timer_t* timer) {
 
   if (settings_action == SettingsAction::StartUpdateCheck) {
     runtime->context.settings_status = text(Text::SettingsChecking);
-    if (g_update_check_handler != nullptr) g_update_check_handler();
+    if (g_update_handler != nullptr) g_update_handler(false);
+  } else if (settings_action == SettingsAction::StartUpdateInstall) {
+    // No confirmation prompt here, unlike a push from the network. That prompt
+    // exists because a push has no other authorisation - anyone on the LAN can
+    // send one. This install was started by someone holding the board and
+    //选ing the row; asking them to confirm the button they just pressed is a
+    // second press for no added assurance.
+    runtime->context.settings_status = text(Text::SettingsChecking);
+    runtime->settings.set_update_offered(false);
+    if (g_update_handler != nullptr) g_update_handler(true);
   } else if (settings_action == SettingsAction::EnterWifiSetup) {
     // Leaves the menu first: Wi-Fi setup is its own page, and the two must not
     // both believe they own the screen.
@@ -672,17 +683,18 @@ void set_setup_gesture_handler(void (*handler)()) {
   g_setup_gesture_handler = handler;
 }
 
-void set_update_check_handler(void (*handler)()) {
-  g_update_check_handler = handler;
+void set_update_handler(void (*handler)(bool install)) {
+  g_update_handler = handler;
 }
 
-void set_update_status(const std::string& status) {
+void set_update_status(const std::string& status, bool install_available) {
   // Written from whatever task ran the check. It is read on the LVGL thread on
   // the next tick, and a torn read of a std::string would be a crash, so the
   // publish goes through the same mutex the snapshot handoff uses.
   if (g_publish_mutex == nullptr) return;
   if (xSemaphoreTake(g_publish_mutex, portMAX_DELAY) != pdTRUE) return;
   g_pending_update_status = status;
+  g_pending_update_available = install_available;
   g_pending_update_status_dirty = true;
   xSemaphoreGive(g_publish_mutex);
 }

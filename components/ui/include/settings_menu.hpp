@@ -46,6 +46,10 @@ enum class SettingsAction : uint8_t {
   None,
   LanguageChanged,
   StartUpdateCheck,
+  // Install what the last check found. Same downloader, same ota::Session,
+  // same progress and rollback path as a push from a machine on the network -
+  // the only difference is which side started it.
+  StartUpdateInstall,
   EnterWifiSetup,
   Exit,
 };
@@ -71,11 +75,21 @@ class SettingsMenu {
   SettingsAction activate();
 
   // Reset on every entry, so the menu always opens on the first row instead of
-  // wherever it was left days ago.
-  void reset() { focused_ = SettingsItem::Firmware; }
+  // wherever it was left days ago. The offer is cleared too: an update found
+  // days ago should be re-checked rather than installed on trust.
+  void reset() {
+    focused_ = SettingsItem::Firmware;
+    update_offered_ = false;
+  }
+
+  // Set when a check finds something installable, so the same row switches
+  // from asking to offering.
+  void set_update_offered(bool offered) { update_offered_ = offered; }
+  bool update_offered() const { return update_offered_; }
 
  private:
   SettingsItem focused_ = SettingsItem::Firmware;
+  bool update_offered_ = false;
 };
 
 // The label shown for an item, in the active language.

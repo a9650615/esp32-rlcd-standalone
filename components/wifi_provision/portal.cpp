@@ -30,9 +30,11 @@ constexpr size_t kMaxFormBody = 512;
 // just fails httpd_req_get_url_query_str() and falls through to "wrong
 // password" rather than truncating into a false match.
 constexpr size_t kMaxQuery = 32;
-// Long enough to walk to the board, short enough that an unanswered push does
-// not hold a socket and a prompt indefinitely.
-constexpr uint32_t kOtaConfirmTimeoutMs = 45'000;
+// Five minutes: long enough to start a push from another room and then walk
+// to the board, which is the actual situation. The earlier 45 seconds assumed
+// someone standing over it. Still bounded, because an unanswered push holds a
+// socket and keeps the prompt on screen.
+constexpr uint32_t kOtaConfirmTimeoutMs = 5 * 60'000;
 
 httpd_handle_t server_ = nullptr;
 dns_server_handle_t dns_ = nullptr;
@@ -434,22 +436,6 @@ esp_err_t ota_post_handler(httpd_req_t* req) {
   return ESP_OK;
 }
 
-// Runs the download off the HTTP task. A pull takes tens of seconds, and
-// blocking the handler that long stalls the whole server: the phone times out
-// and retries, which would start a second update on top of the first.
-void ota_pull_task(void* argument) {
-  std::unique_ptr<std::string> url(static_cast<std::string*>(argument));
-  const ota::PullResult result = ota::pull_from_url(*url);
-  if (result == ota::PullResult::Armed) {
-    ESP_LOGW(kTag, "pulled firmware armed; restarting");
-    esp_restart();
-  }
-  // pull_from_url already put the reason on the panel. Nothing to reboot for;
-  // the running image is untouched and the carousel simply carries on.
-  ESP_LOGE(kTag, "firmware pull failed: %s", ota::pull_result_message(result));
-  vTaskDelete(nullptr);
-}
-
 esp_err_t ota_url_post_handler(httpd_req_t* req) {
   if (req->content_len == 0 || req->content_len >= kMaxFormBody) {
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad request");
@@ -483,13 +469,8 @@ esp_err_t ota_url_post_handler(httpd_req_t* req) {
     return ESP_OK;
   }
 
-  // 4096 B of stack would not survive the TLS handshake; weather_monitor_task
-  // needed 16 KiB for the same reason and this additionally holds a 4 KiB
-  // read buffer of its own.
-  auto* argument = new std::string(url);
-  if (xTaskCreate(&ota_pull_task, "ota_pull", 16384, argument,
-                  tskIDLE_PRIORITY + 1, nullptr) != pdPASS) {
-    delete argument;
+  // Same downloader the settings row runs, so the two cannot drift.
+  if (!ota::start_pull(url)) {
     ESP_LOGE(kTag, "POST /ota-url -> could not start the download task");
     send_html(req, render_form_page("Device busy; try again.", pw));
     return ESP_OK;

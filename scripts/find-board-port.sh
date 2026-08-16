@@ -39,12 +39,15 @@ if [[ ${#candidates[@]} -eq 0 ]]; then
 fi
 
 for port in "${candidates[@]}"; do
-  # --after no_reset so probing a port never disturbs whatever is running on
-  # it, including another board mid-update.
+  # --after hard_reset, not no_reset. Reading the MAC means entering the ROM
+  # downloader, and that has already happened by the time --after is consulted:
+  # no_reset does not spare the board, it strands it there with the application
+  # not running. Every probed port gets put back, not just the one that matched
+  # - probing is how a second board on the bench would otherwise be left dead.
   # `python -m esptool` rather than the console script: that has been named
   # both esptool.py and esptool across ESP-IDF versions, while the module name
   # has not changed. export.sh has already put the right interpreter on PATH.
-  mac="$(python -m esptool --port "$port" --after no_reset read_mac 2>/dev/null \
+  mac="$(python -m esptool --port "$port" --after hard_reset read_mac 2>/dev/null \
         | awk '/^MAC:/ {print $2; exit}')" || true
   if [[ "$mac" == "$expected_mac" ]]; then
     printf '%s\n' "$port"

@@ -21,7 +21,11 @@ SettingsAction SettingsMenu::activate() {
       return SettingsAction::LanguageChanged;
     }
     case SettingsItem::CheckUpdates:
-      return SettingsAction::StartUpdateCheck;
+      // One row, two jobs: it asks until there is an answer, then it offers.
+      // A separate install row would sit there inert most of the time and
+      // still need the check to have run first.
+      return update_offered_ ? SettingsAction::StartUpdateInstall
+                             : SettingsAction::StartUpdateCheck;
     case SettingsItem::WifiSetup:
       return SettingsAction::EnterWifiSetup;
     case SettingsItem::Battery:

@@ -124,3 +124,21 @@ HOST_TEST(every_menu_item_has_its_own_label) {
   EXPECT_EQ(static_cast<int>(labels.size()),
             static_cast<int>(ui::SettingsMenu::count()));
 }
+
+HOST_TEST(update_row_installs_only_what_a_check_actually_found) {
+  ui::SettingsMenu menu;
+  while (menu.focused() != ui::SettingsItem::CheckUpdates) menu.focus_next();
+
+  // Nothing found yet: the row asks.
+  EXPECT_TRUE(menu.activate() == ui::SettingsAction::StartUpdateCheck);
+
+  menu.set_update_offered(true);
+  EXPECT_TRUE(menu.activate() == ui::SettingsAction::StartUpdateInstall);
+
+  // Re-entering the menu drops the offer. An update found days ago is a URL
+  // that may no longer exist, and a row that still reads "install" would
+  // reflash on the strength of a stale answer.
+  menu.reset();
+  while (menu.focused() != ui::SettingsItem::CheckUpdates) menu.focus_next();
+  EXPECT_TRUE(menu.activate() == ui::SettingsAction::StartUpdateCheck);
+}

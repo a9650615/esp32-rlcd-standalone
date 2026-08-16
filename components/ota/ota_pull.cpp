@@ -3,6 +3,9 @@
 #include <esp_crt_bundle.h>
 #include <esp_http_client.h>
 #include <esp_log.h>
+#include <esp_system.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 #include <memory>
 
@@ -174,6 +177,40 @@ const char* pull_result_message(PullResult result) {
       return "Could not write the firmware to flash";
   }
   return "Update failed";
+}
+
+namespace {
+
+void pull_task(void* argument) {
+  // Owns the copy the caller handed over, so the URL cannot go out of scope
+  // while the download is still running.
+  std::unique_ptr<std::string> url(static_cast<std::string*>(argument));
+  const PullResult result = pull_from_url(*url);
+  if (result == PullResult::Armed) {
+    ESP_LOGW(kTag, "pulled firmware armed; restarting");
+    esp_restart();
+  }
+  // pull_from_url already put the reason on the panel. Nothing to reboot for;
+  // the running image is untouched and the carousel simply carries on.
+  ESP_LOGE(kTag, "firmware pull failed: %s", pull_result_message(result));
+  vTaskDelete(nullptr);
+}
+
+}  // namespace
+
+bool start_pull(const std::string& url) {
+  auto owned = std::make_unique<std::string>(url);
+  // 16384 B: 4096 would not survive the TLS handshake. weather_monitor_task
+  // needed this much for the handshake alone, and this additionally holds a
+  // 4 KiB read buffer.
+  if (xTaskCreate(&pull_task, "ota_pull", 16384, owned.get(),
+                  tskIDLE_PRIORITY + 1, nullptr) != pdPASS) {
+    ESP_LOGE(kTag, "firmware pull task creation failed");
+    return false;
+  }
+  // The task owns it now.
+  (void)owned.release();
+  return true;
 }
 
 }  // namespace ota

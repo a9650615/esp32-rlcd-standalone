@@ -106,10 +106,13 @@ curl -X POST --data-binary @build/layout_carousel.bin http://<board-ip>/ota
 ```
 
 The board then shows `UPDATE OFFERED`, the pushing machine's address, and
-`KEY cancel  accept BOOT`. Press BOOT within 45 seconds. Nothing is erased and
-nothing is written while it waits, so a rejection or a timeout leaves the
-running firmware untouched. Verified end to end: accepted in 12 s, written to
-`ota_0`, rebooted into it.
+`KEY cancel  accept BOOT`. Press BOOT within five minutes - long enough to
+start the push from another room and then walk to the board, which is the
+actual situation. Nothing is erased and nothing is written while it waits, so a
+rejection or a timeout leaves the running firmware untouched. Verified both
+ways: accepted in 12 s, written to `ota_0`, rebooted into it; and left
+unanswered, releasing at the timeout with `Not confirmed on the device` and the
+running image intact.
 
 That prompt is the authorisation. Do not add a way to skip it - a device that
 reflashes itself because a request arrived is one anyone on the LAN can
@@ -126,8 +129,31 @@ Two things this arrangement depends on, both easy to undo by accident:
   time. A counting one banks an answer that arrived with nothing waiting and
   applies it to the next push.
 
+### One downloader, three routes
+
+A push, `POST /ota-url`, and the settings menu's update row all run
+`ota::start_pull` into the same `ota::Session`, so they share one set of header
+checks, one progress screen and one rollback path. Add a fourth route by
+calling `start_pull`, never by writing another download task - the copies drift
+and only one of them gets fixed.
+
+The settings row is one row doing two jobs: it checks until something is found,
+then installs what it found. It does **not** raise the confirm prompt, and that
+is not an oversight - the prompt exists because a push has no other
+authorisation, while this install was started by someone holding the board.
+Asking them to confirm the button they just pressed adds a press and no
+assurance. The offer is cleared on every entry to the menu, so a URL found days
+ago is re-checked rather than installed on trust.
+
 After an OTA the board boots from `ota_0`, and `app-flash` still writes to
-`factory` - see the trap under "Verify every hardware change".
+`factory` - see the trap under "Verify every hardware change". `idf.py flash`
+avoids it without otatool: it writes `ota_data_initial.bin` at 0x10000, which
+resets the boot slot to factory.
+
+`find-board-port.sh` reads the MAC, which means entering the ROM downloader. It
+now hard-resets afterwards; if that ever goes back to `no_reset`, every probed
+port is left with its application not running - which presents as a board that
+is on USB, flashes fine, and answers neither serial nor network.
 
 ## Two buttons, three contexts
 

@@ -34,13 +34,17 @@ void publish_snapshot(const app_core::AppSnapshot& snapshot);
 // Invoked on the LVGL thread when board::ButtonEvent::EnterSetup arrives.
 // Pass nullptr to unregister; the button drain is null-safe either way.
 void set_setup_gesture_handler(void (*handler)());
-// Registers what the settings menu's "check for updates" row runs. The handler
-// is expected to return immediately and do the work on its own task, then
-// report through set_update_status.
-void set_update_check_handler(void (*handler)());
-// Callable from any task. The text lands on the settings page's update row on
-// the next LVGL tick.
-void set_update_status(const std::string& status);
+// Registers what the settings menu's update row runs: a check when nothing has
+// been found yet, an install of what the last check found once something has.
+// The handler is expected to return immediately and do the work on its own
+// task, then report through set_update_status - it is called on the LVGL
+// thread, where a blocking network call would freeze the panel.
+void set_update_handler(void (*handler)(bool install));
+// Callable from any task. The text lands on the settings page's status line on
+// the next LVGL tick. `install_available` turns the update row from asking
+// into offering, so the same row installs what it just found.
+void set_update_status(const std::string& status,
+                       bool install_available = false);
 
 // Address-sensitive owner retained by the caller for the host's entire LVGL
 // lifetime. LVGL stores a pointer to this exact instance in the host delete
