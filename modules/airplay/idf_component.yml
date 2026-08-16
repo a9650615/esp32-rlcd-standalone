@@ -1,0 +1,14 @@
+dependencies:
+  # Only needed when CONFIG_AIRPLAY_ENABLE=y (see CMakeLists.txt) -
+  # esp-raop-receiver advertises the RAOP service over mDNS/Bonjour
+  # (_raop._tcp) and this IDF checkout does not bundle an mdns component
+  # (see .tools/esp-idf/components/ - no mdns/ there, unlike mbedtls/
+  # esp_netif/nvs_flash which are built in).
+  #
+  # Scoped to this component rather than main/idf_component.yml, same
+  # reasoning as modules/audio/idf_component.yml: disabling
+  # CONFIG_AIRPLAY_ENABLE keeps this dependency out of this component's own
+  # build (see CMakeLists.txt's SRCS gating); the component manager may
+  # still resolve/fetch the package before Kconfig is known, but nothing
+  # from it is ever compiled or linked when the option is off.
+  espressif/mdns: "^1.2"

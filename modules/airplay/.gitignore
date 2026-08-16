@@ -1,0 +1,5 @@
+# Apple's AirPort Express RSA private key, PEM-encoded - never commit this.
+# See README.md, "The RSA key situation", and CMakeLists.txt's build-time
+# check. Scoped to this directory deliberately, not the repo root .gitignore
+# - this rule belongs with the module that needs it.
+secrets/*.pem

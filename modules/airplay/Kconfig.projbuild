@@ -1,0 +1,28 @@
+config AIRPLAY_ENABLE
+    bool "Enable AirPlay (RAOP) receiver skeleton"
+    default n
+    help
+        Vendors an AirPlay 1 (RAOP) receiver (esp-raop-receiver, from
+        codeberg.org/Edu_Coder/esp-airsync - see modules/airplay/UPSTREAM.md)
+        plus Apple's own open-source ALAC decoder, in place of upstream's
+        prebuilt libalac.a. Defaults off, and unlike audio's "cheap and
+        harmless when idle" default-on, this has real costs even before
+        anyone streams to it:
+
+        - The RSA key AirPlay 1's handshake needs (Apple's AirPort Express
+          private key) is not shipped in this repository and never will be
+          - turning this on without supplying your own copy at
+          modules/airplay/secrets/raop_private_key.pem (gitignored) fails
+          the build with an explanatory message. See README.md, "The RSA
+          key situation".
+        - AirPlay needs Wi-Fi power save disabled and sustained CPU for the
+          RTSP/RTP/ALAC/mDNS work, which this board's battery-drain
+          tracking makes a real, measured cost, not a hypothetical one -
+          see README.md, "Power".
+
+        This is a skeleton, not a feature: nothing in main/app_main.cpp,
+        components/ui, or modules/audio calls into this module yet, and it
+        registers no tray indicator - that integration is a deliberately
+        separate pass. Turning this on today only proves the vendored
+        receiver and ALAC decoder compile; see README.md for exactly what
+        is and is not verified.
