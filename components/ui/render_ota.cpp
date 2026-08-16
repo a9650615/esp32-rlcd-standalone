@@ -28,7 +28,10 @@ Text ota_phase_text(app_core::OtaPhase phase) {
   }
   return Text::OtaWorking;
 }
-const lv_font_t* percent_font() { return font_hero(); }
+// Not font_hero(): that face carries ten digits and a colon, so "42%" loses
+// its sign and "WORKING" is five empty boxes. The percentage is large but it
+// is still text.
+const lv_font_t* percent_font() { return font_large(); }
 const lv_font_t* small_font() { return font_small(); }
 
 }  // namespace

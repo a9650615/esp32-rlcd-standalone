@@ -72,6 +72,7 @@ Treat the ST7305 output as a 1-bit pixel surface, not a scaled web mockup. Use i
 - For the bundled Montserrat bitmap fonts, give each label 1 px internal padding and a height of at least `font.line_height + 2 px`. A 1 px LVGL text outline may be requested only for the 14 px small-text tier; bitmap glyphs may ignore outline styling, so the real fix for an insufficient stroke is a verified heavier 1-bit font. Do not outline medium, large, or hero numerals.
 - Data polylines and mini-history lines are at least 2 px wide. Hairline separators and dotted grids may remain 1 px. Keep data strokes outside every text rectangle.
 - Give each right-side tile three non-overlapping rows: title, value, detail. Derive and host-test the rectangles; do not repair overlap by relying on opaque labels or paint order.
+- **`font_hero()` is ten digits and a colon.** No letters, no `%`, no space, no decimal point. Only the clock may use it. Everything else renders the missing characters as empty boxes and nothing warns - a missing glyph is neither an overflow nor an out-of-bounds object. This has bitten twice: the sensor page lost its temperature to it, and the OTA page drew `WORKING` as five boxes. Use `font_large()` when a big number needs a unit or a sign.
 - Every non-ASCII character must exist in the compiled font, and the build enforces it: `scripts/check-cjk-font.py` runs on every build and fails when a string literal under `components/ui` uses a glyph the generated subset lacks. Add Chinese, run `./scripts/build-fonts.sh`, commit `components/ui/fonts/`. A missing glyph is otherwise invisible - LVGL draws an empty box and says nothing - and this project shipped 32 characters of that before the gate existed.
 - Labels are `LV_LABEL_LONG_DOT`, never `LONG_CLIP`. Clipping deletes characters silently, which on a panel that otherwise refuses to show unmeasured numbers is the same class of defect: `Up to date` clipped to `pdate to date` reads as a message rather than as damage. Debug builds log every overflow with its measured and available widths, so a too-narrow box is a line of serial output rather than something to notice by eye.
 - A CJK glyph is full-width - exactly 14px at font 14 - against roughly 7px for average Latin. Every box here was sized from Latin metrics, so translated strings meet the edges far sooner. The tight ones are the Setup text column (168px usable) and the market sidebar cell (108px, 66px for a value once the icon gutter is taken).
@@ -94,6 +95,39 @@ It is not a substitute for looking at the board. The PNG is what was drawn, not 
 The capture is taken at the LVGL flush and waits for the flush completing the bottom-right corner. A full-screen redraw arrives as several flushes across several handler passes, so reading one tick after the render returns a frame two page transitions stale - which looks like a working tool producing wrong pictures.
 
 So a display change is accepted on both: screenshots for every page, and a photograph of every page checking glyph strokes, contrast, diagonal continuity, stale pixels and a complete carousel wrap.
+
+## Push firmware over the network
+
+The upload endpoint listens whenever the board is online, so nothing has to be
+pressed to make a push possible:
+
+```bash
+curl -X POST --data-binary @build/layout_carousel.bin http://<board-ip>/ota
+```
+
+The board then shows `UPDATE OFFERED`, the pushing machine's address, and
+`KEY cancel  accept BOOT`. Press BOOT within 45 seconds. Nothing is erased and
+nothing is written while it waits, so a rejection or a timeout leaves the
+running firmware untouched. Verified end to end: accepted in 12 s, written to
+`ota_0`, rebooted into it.
+
+That prompt is the authorisation. Do not add a way to skip it - a device that
+reflashes itself because a request arrived is one anyone on the LAN can
+reflash. The session password is the alternative and only exists during setup
+mode.
+
+Two things this arrangement depends on, both easy to undo by accident:
+
+- `constant_time_equal("", "")` is true, and the session password is cleared
+  once connected. Every check must go through `portal_password_ok()`, where an
+  unset password authorises nothing. Without that, leaving the portal up past
+  setup mode opens the Wi-Fi credential form to the whole network.
+- The confirmation is a **binary** semaphore with one pending request at a
+  time. A counting one banks an answer that arrived with nothing waiting and
+  applies it to the next push.
+
+After an OTA the board boots from `ota_0`, and `app-flash` still writes to
+`factory` - see the trap under "Verify every hardware change".
 
 ## Two buttons, three contexts
 

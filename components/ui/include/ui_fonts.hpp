@@ -25,8 +25,16 @@ const lv_font_t* font_small();   // Montserrat 14 + CJK 14
 const lv_font_t* font_medium();  // Montserrat 20 + CJK 20
 const lv_font_t* font_large();   // Montserrat 28 + CJK 28
 // Clock hero: a 128px Montserrat subset of the ten digits and a colon, and
-// nothing else. No CJK fallback, because no Chinese can reach it - and a
-// Chinese subset at this size would cost more per glyph than every other size
+// NOTHING else - no letters, no percent sign, no space, no decimal point.
+//
+// Only the clock may use it. Anything else renders the missing characters as
+// empty boxes, silently: the sensor page lost its temperature to this and the
+// OTA page showed "WORKING" as five boxes, and neither produced a warning,
+// because a missing glyph is not an overflow and not an out-of-bounds object.
+// Reach for font_large() when a big number needs a unit or a sign.
+//
+// No CJK fallback either, because no Chinese can reach it - and a Chinese
+// subset at this size would cost more per glyph than every other size
 // combined.
 const lv_font_t* font_hero();
 
