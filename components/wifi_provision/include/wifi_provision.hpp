@@ -40,6 +40,14 @@ void set_us_market(const app_core::MarketData& market);
 void set_clock(const app_core::ClockData& clock);
 void set_ota(const app_core::OtaData& ota);
 
+// There is no set_tray_activity() here (an earlier version had one). The
+// tray's indicators now go through app_core::register_tray_indicator()/
+// set_tray_indicator_active() directly - see tray_registry.hpp - which
+// needed no handler indirection at all, unlike set_battery/set_ota/etc
+// above: that registry lives in app_core, which nothing depends on
+// circularly, whereas this component depending on wifi_provision back
+// would have.
+
 // Registers what GET /shot returns: the panel's current framebuffer, 1 bit per
 // pixel, 400x300. board::framebuffer_snapshot has exactly this shape, so main
 // registers it directly rather than wrapping it.

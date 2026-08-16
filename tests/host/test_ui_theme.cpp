@@ -1,6 +1,7 @@
 #define UI_THEME_GEOMETRY_ONLY
 #include "ui_theme.hpp"
 #include "ui_app.hpp"
+#include "dither.hpp"
 
 #include "test_support.hpp"
 
@@ -85,4 +86,62 @@ HOST_TEST(right_tile_leading_visual_never_crosses_the_value_text) {
 
 HOST_TEST(rlcd_data_lines_use_two_pixel_strokes) {
   EXPECT_EQ(ui::kDataLineWidth, 2);
+}
+
+// --- ui/include/dither.hpp -------------------------------------------
+
+// The extremes never dither at all - level 0 is plain white, level 16 is
+// plain solid - across every position in (and outside) one 4x4 tile, not
+// just the origin.
+HOST_TEST(dither_bayer4x4_extremes_are_uniform) {
+  for (int y = 0; y < 8; ++y) {
+    for (int x = 0; x < 8; ++x) {
+      EXPECT_TRUE(!ui::dither_bayer4x4_dark(x, y, 0));
+      EXPECT_TRUE(ui::dither_bayer4x4_dark(x, y, 16));
+    }
+  }
+}
+
+// A mid level (8, "50% grey") paints exactly half of every 4x4 tile dark -
+// the whole point of an ordered dither over a plain threshold, which would
+// instead paint either all or none of a uniform input.
+HOST_TEST(dither_bayer4x4_mid_level_is_exactly_half) {
+  int dark_count = 0;
+  for (int y = 0; y < 4; ++y) {
+    for (int x = 0; x < 4; ++x) {
+      if (ui::dither_bayer4x4_dark(x, y, 8)) ++dark_count;
+    }
+  }
+  EXPECT_EQ(dark_count, 8);
+}
+
+// Every level from 0 to 16 paints exactly that many of the 16 cells dark -
+// the density ramp the debug test card relies on to show 0/12.5/25/50/75/
+// 100% as visually distinct, evenly-stepped fills rather than six copies
+// of whatever a rounding bug happens to produce.
+HOST_TEST(dither_bayer4x4_every_level_matches_its_own_count) {
+  for (int level = 0; level <= 16; ++level) {
+    int dark_count = 0;
+    for (int y = 0; y < 4; ++y) {
+      for (int x = 0; x < 4; ++x) {
+        if (ui::dither_bayer4x4_dark(x, y, level)) ++dark_count;
+      }
+    }
+    EXPECT_EQ(dark_count, level);
+  }
+}
+
+// The pattern tiles seamlessly: the same level at the same position modulo
+// 4 always agrees, arbitrarily far from the origin - a test card several
+// tiles wide must not show a seam where one tile ends and the next begins.
+HOST_TEST(dither_bayer4x4_tiles_seamlessly) {
+  for (int level = 0; level <= 16; level += 4) {
+    for (int y = 0; y < 4; ++y) {
+      for (int x = 0; x < 4; ++x) {
+        const bool origin_tile = ui::dither_bayer4x4_dark(x, y, level);
+        EXPECT_EQ(ui::dither_bayer4x4_dark(x + 40, y + 24, level),
+                  origin_tile);
+      }
+    }
+  }
 }

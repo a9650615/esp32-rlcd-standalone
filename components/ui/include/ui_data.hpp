@@ -2,6 +2,7 @@
 
 #include "app_snapshot.hpp"
 #include "settings_menu.hpp"
+#include "tray_registry.hpp"
 #include "ui_strings.hpp"
 #include "carousel_controller.hpp"
 #include "ui_theme.hpp"
@@ -433,6 +434,35 @@ struct SystemTrayLayout {
   Rect time;
   Rect network;
   Rect battery;
+  // Parallel to TrayIndicators.entries below and to
+  // app_core::kMaxTrayIndicators registry slots. indicators[i] is zero-size
+  // (width 0) unless entries[i] was active and it fit - see
+  // system_tray_layout() below. Never draw a Rect with width <= 0; check it
+  // first.
+  Rect indicators[app_core::kMaxTrayIndicators];
+};
+
+// Which of core's fixed tray-indicator registry slots (see
+// tray_registry.hpp) have something to show right now. Time, network, and
+// battery are not here - they always show wherever the tray itself shows
+// (page_shows_tray) and never move; this struct is only for the registry's
+// transient slots. Deliberately just {active, width} pairs, not the actual
+// bitmap or who owns the slot - system_tray_layout() only needs to know how
+// much room each active slot wants, not what it draws or why.
+//
+// system_tray_layout() packs whichever entries are active immediately to
+// the left of the anchored network+battery group, in slot order (index 0
+// first) - earlier slots are placed, and kept if space runs out, before
+// later ones. Building this from the live registry every render (rather
+// than the registry being the layout function's own input type) is what
+// keeps this function pure and host-testable without pulling in
+// tray_registry.cpp's atomics.
+struct TrayIndicators {
+  struct Entry {
+    bool active = false;
+    int width = 0;  // the registered bitmap's width; 0 when not active
+  };
+  Entry entries[app_core::kMaxTrayIndicators] = {};
 };
 
 // Both indicators live at the right end, leaving the middle empty. They were
@@ -465,30 +495,71 @@ inline constexpr int kSystemTrayCellHeight = 18;
 inline constexpr int kSystemTrayCellGap = 4;
 inline constexpr int kSystemTrayBatteryWidth = 64;
 
-// Time flush left, battery flush right, network status filling the middle.
+// Time flush left, battery flush right, network status just left of battery.
 // The page dots briefly lived here too; they are now centred along the bottom
 // of the page (see page_dots_geometry), which gives the network cell back the
 // width it was sharing. Pure arithmetic on bounds.x/y/width/height, so - like
 // setup_layout - it works for both the zero-offset local frame render_page
 // builds pages with and the absolute safe_canvas() frame the static_asserts
 // below use.
-// `wide_leading` gives the first cell room for a date ("Sun, 16 Aug 2026",
-// 168px) instead of a clock ("12:34", 58px). Home uses it, because its hero
-// already shows the time and the tray carries the date instead.
+//
+// `page` selects the leading cell's width - Home gets room for a date
+// ("Sun, 16 Aug 2026", 168px) instead of a clock ("12:34", 58px), because its
+// hero already shows the time and the tray carries the date instead - and is
+// a parameter (not a bare bool) so this stays the one place that decision is
+// made, rather than every caller re-deriving "is this Home".
+//
+// network and battery are anchored: battery flush against the right edge,
+// network immediately to its left, in that order, always. `indicators`
+// selects which of the registry's transient slots also appear, and each
+// active one gets placed immediately to the left of whatever is already
+// anchored there - never between network and battery, never to their
+// right. This ordering is deliberate, not incidental: on a reflective panel
+// with no backlight, a full-area repaint is the only way to move anything,
+// so an indicator appearing or disappearing (a beep starting, an alarm
+// ending) must never shift a cell that was already on screen, or every
+// appearance/disappearance reads as a glitch rather than an update. Inserting
+// new cells to the left of the anchored group, rather than the anchored
+// group shifting to make room, is what keeps that promise.
+//
+// If a slot's indicator does not fit - the tray is too narrow, or too many
+// are active at once - it is dropped (given a zero-width Rect) rather than
+// allowed to overlap the leading cell or another indicator, without moving
+// the ones to its right that already fit. Lower-index slots win when there
+// is not room for all of them.
 constexpr SystemTrayLayout system_tray_layout(const Rect bounds,
-                                              bool wide_leading = false) {
+                                              app_core::PageId page,
+                                              TrayIndicators indicators = {}) {
+  const bool wide_leading = page == app_core::PageId::Home;
   const int leading_width =
       wide_leading ? kSystemTrayDateWidth : kSystemTrayTimeWidth;
   const Rect time{bounds.x, bounds.y, leading_width, kSystemTrayTimeHeight};
   // Icon cells now, both flush right: battery last, wifi immediately left of
-  // it, and whatever is between them and the leading cell stays empty.
+  // it, and whatever is between them and the leading cell stays empty (or is
+  // filled by transient indicators below).
   const int icon_y = bounds.y + (kSystemTrayHeight - kTrayIconHeight) / 2;
   const Rect battery{bounds.right() - kTrayBatteryIconWidth, icon_y,
                      kTrayBatteryIconWidth, kTrayIconHeight};
   const Rect network{battery.x - kTrayIconGap - kTrayWifiIconWidth,
                      bounds.y + (kSystemTrayHeight - kTrayWifiIconHeight) / 2,
                      kTrayWifiIconWidth, kTrayWifiIconHeight};
-  return {time, network, battery};
+
+  SystemTrayLayout layout{time, network, battery, {}};
+  int next_right_edge = network.x - kTrayIconGap;
+  for (int i = 0; i < app_core::kMaxTrayIndicators; ++i) {
+    const TrayIndicators::Entry& entry = indicators.entries[i];
+    if (!entry.active || entry.width <= 0) continue;
+    const int candidate_x = next_right_edge - entry.width;
+    // Room means "does not reach as far left as the leading cell", with one
+    // gap of clearance on each side - if it does not fit, this slot's Rect
+    // stays the zero Rect it was initialised to, and next_right_edge does
+    // not move, so a later (lower-priority) slot gets exactly the same
+    // chance at the same space rather than being pushed further left still.
+    if (candidate_x < time.right() + kTrayIconGap) continue;
+    layout.indicators[i] = {candidate_x, icon_y, entry.width, kTrayIconHeight};
+    next_right_edge = candidate_x - kTrayIconGap;
+  }
+  return layout;
 }
 
 // One of the three fixed tray network strings.
@@ -558,21 +629,98 @@ constexpr Rect page_dots_band(const Rect bounds) {
           kPageDotSize};
 }
 
-static_assert(system_tray_layout(safe_canvas()).time.right() <=
-                  system_tray_layout(safe_canvas()).network.x,
+// Builds a TrayIndicators with exactly one active entry (slot 0, the given
+// width) - a stand-in for "one module's icon is showing" that the
+// static_asserts below and tests/host/test_tray_layout.cpp both use, since
+// TrayIndicators{true} does not exist for an aggregate that now holds an
+// array rather than a single bool.
+constexpr TrayIndicators one_indicator(int width) {
+  TrayIndicators indicators{};
+  indicators.entries[0] = {true, width};
+  return indicators;
+}
+
+// Three representative combinations, proven at compile time the way every
+// other layout in this file is: nothing transient visible (the common case
+// today), one transient indicator visible, and the wide-leading (Home) page
+// with one visible, so a wide date cell and an indicator cell are proven
+// not to collide in the same assert. tests/host/test_tray_layout.cpp covers
+// the full registry-capacity combination space exhaustively - this is the
+// compile-time proof of the common cases, not a substitute for that.
+static_assert(system_tray_layout(safe_canvas(), app_core::PageId::Weather)
+                      .indicators[0]
+                      .width == 0,
+              "no transient indicators visible means no indicator cell");
+static_assert(system_tray_layout(safe_canvas(), app_core::PageId::Weather,
+                                 one_indicator(20))
+                      .indicators[0]
+                      .width > 0,
+              "an active indicator gets a nonzero-width cell when the tray "
+              "has room");
+
+static_assert(system_tray_layout(safe_canvas(), app_core::PageId::Weather)
+                      .time.right() <=
+                  system_tray_layout(safe_canvas(), app_core::PageId::Weather)
+                      .network.x,
               "tray time and network cells do not overlap");
-static_assert(system_tray_layout(safe_canvas()).network.right() <=
-                  system_tray_layout(safe_canvas()).battery.x,
+static_assert(system_tray_layout(safe_canvas(), app_core::PageId::Weather)
+                      .network.right() <=
+                  system_tray_layout(safe_canvas(), app_core::PageId::Weather)
+                      .battery.x,
               "tray network and battery cells do not overlap");
-static_assert(system_tray_layout(safe_canvas()).network.width > 0,
+static_assert(system_tray_layout(safe_canvas(), app_core::PageId::Weather)
+                      .network.width > 0,
               "tray network cell has positive width");
-static_assert(system_tray_layout(safe_canvas()).battery.right() ==
-                  safe_canvas().right(),
+static_assert(system_tray_layout(safe_canvas(), app_core::PageId::Weather)
+                      .battery.right() == safe_canvas().right(),
               "tray battery cell sits flush right");
-static_assert(within_safe_canvas(system_tray_layout(safe_canvas()).time) &&
-                  within_safe_canvas(system_tray_layout(safe_canvas()).network) &&
-                  within_safe_canvas(system_tray_layout(safe_canvas()).battery),
-              "tray cells stay inside the safe canvas");
+static_assert(
+    within_safe_canvas(
+        system_tray_layout(safe_canvas(), app_core::PageId::Weather).time) &&
+        within_safe_canvas(system_tray_layout(safe_canvas(),
+                                              app_core::PageId::Weather)
+                                .network) &&
+        within_safe_canvas(system_tray_layout(safe_canvas(),
+                                              app_core::PageId::Weather)
+                                .battery),
+    "tray cells stay inside the safe canvas");
+
+// Home (wide leading cell) with one indicator visible: the anchored group
+// (network/battery) is unchanged from the plain case above, and the leading
+// date cell and the indicator cell that gets inserted between them still do
+// not collide, which is the combination most likely to crowd the tray.
+static_assert(
+    system_tray_layout(safe_canvas(), app_core::PageId::Home,
+                       one_indicator(20))
+            .time.right() <=
+        system_tray_layout(safe_canvas(), app_core::PageId::Home,
+                           one_indicator(20))
+            .indicators[0]
+            .x,
+    "Home's wide leading cell and a visible indicator do not overlap");
+static_assert(
+    system_tray_layout(safe_canvas(), app_core::PageId::Home,
+                       one_indicator(20))
+            .indicators[0]
+            .right() +
+            kTrayIconGap <=
+        system_tray_layout(safe_canvas(), app_core::PageId::Home,
+                           one_indicator(20))
+            .network.x,
+    "a visible indicator does not touch the anchored network cell");
+static_assert(
+    system_tray_layout(safe_canvas(), app_core::PageId::Home,
+                       one_indicator(20))
+            .network.x ==
+        system_tray_layout(safe_canvas(), app_core::PageId::Home, TrayIndicators{})
+            .network.x &&
+        system_tray_layout(safe_canvas(), app_core::PageId::Home,
+                           one_indicator(20))
+                .battery.x ==
+            system_tray_layout(safe_canvas(), app_core::PageId::Home, TrayIndicators{})
+                .battery.x,
+    "network and battery never move when a transient indicator appears or "
+    "disappears");
 
 static_assert(page_shows_tray(app_core::PageId::Home) &&
                   page_shows_tray(app_core::PageId::TaiwanMarket) &&

@@ -12,9 +12,12 @@
 #include <mbedtls/base64.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 
+#include "audio.hpp"
 #include "dns_server.h"
+#include "ui_app.hpp"
 #include "ota_confirm.hpp"
 #include "ota_image.hpp"
 #include "ota_pull.hpp"
@@ -725,6 +728,161 @@ esp_err_t restart_post_handler(httpd_req_t* req) {
 
 const httpd_uri_t kRestartPost = {"/restart", HTTP_POST, restart_post_handler,
                                   nullptr};
+
+// "vol=100&freq=6000&ms=3000" + slack; a query this small failing
+// httpd_req_get_url_query_str() just falls through to every parameter's
+// default rather than truncating into a wrong one.
+constexpr size_t kMaxBeepQuery = 40;
+// 2 kHz, not 1 kHz: a coin-sized MX1.25 driver has poor output right around
+// 1 kHz, and both its useful range and the ear's most sensitive band sit
+// nearer 2-4 kHz.
+constexpr int kDefaultBeepFrequencyHz = 2000;
+constexpr int kDefaultBeepDurationMs = 300;
+
+// Parses "key=<int>" out of a query string already fetched via
+// httpd_req_get_url_query_str(); returns fallback if the key is absent or
+// not a valid integer. Deliberately does not duplicate audio_play_tone()'s
+// or audio_set_volume()'s range clamps - this only parses, they still own
+// their own safe ranges.
+int query_int(const char* query, const char* key, int fallback) {
+  std::string value;
+  if (!wifi_config::find_form_value(query, key, value) || value.empty()) {
+    return fallback;
+  }
+  char* end = nullptr;
+  const long parsed = std::strtol(value.c_str(), &end, 10);
+  if (end == value.c_str()) return fallback;  // no digits parsed
+  return static_cast<int>(parsed);
+}
+
+// Fires a short test tone through the ES8311/speaker. Debug builds only,
+// unauthenticated, same reasoning as /restart: this cannot corrupt anything
+// and the board has no cable to press a button over.
+//
+// vol/freq/ms are optional query parameters (POST /beep?vol=70&freq=2000&
+// ms=400) so a volume or frequency experiment never needs a rebuild and a
+// push. Never logs the raw query string - see the req->uri comment above,
+// the setup-page password rides in other routes' query strings the same
+// way - only the parsed values below are logged.
+//
+// Starts the tone on its own task (audio_play_tone_async()) and returns
+// immediately - reporting that playback *started*, not that it finished.
+// This server is single-task: a handler blocked for the tone's duration
+// made every other route, including /shot and /restart, unreachable for as
+// long as it ran. That is also what makes the tray's speaker indicator
+// (see modules/audio/README.md) verifiable at all - /shot can now actually
+// be served while a tone plays.
+esp_err_t beep_post_handler(httpd_req_t* req) {
+  char query[kMaxBeepQuery];
+  const bool has_query =
+      httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK;
+
+  const int requested_vol = has_query ? query_int(query, "vol", -1) : -1;
+  const int freq =
+      has_query ? query_int(query, "freq", kDefaultBeepFrequencyHz)
+                : kDefaultBeepFrequencyHz;
+  const int ms = has_query ? query_int(query, "ms", kDefaultBeepDurationMs)
+                           : kDefaultBeepDurationMs;
+
+  if (requested_vol >= 0) {
+    audio::audio_set_volume(requested_vol);
+    ESP_LOGW(kTag, "POST /beep -> %d Hz, %d ms, volume set to %d%%", freq, ms,
+             requested_vol);
+  } else {
+    ESP_LOGW(kTag, "POST /beep -> %d Hz, %d ms, volume unchanged", freq, ms);
+  }
+
+  const esp_err_t result = audio::audio_play_tone_async(freq, ms);
+  if (result == ESP_ERR_INVALID_STATE) {
+    // One I2S channel, one codec: refused cleanly rather than queued or run
+    // concurrently with whatever is already playing.
+    httpd_resp_set_status(req, "409 Conflict");
+    httpd_resp_sendstr(req, "Playback already in progress; try again shortly.\n");
+    return ESP_OK;
+  }
+  if (result != ESP_OK) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                        "Tone playback failed to start; see device log.");
+    return ESP_OK;
+  }
+  httpd_resp_sendstr(req, "Beep started.\n");
+  return ESP_OK;
+}
+
+const httpd_uri_t kBeepPost = {"/beep", HTTP_POST, beep_post_handler, nullptr};
+
+// Diagnostic staircase for "no error, but no sound": steps codec volume and
+// frequency and dumps the ES8311's register map to the log (see
+// audio_play_diagnostic_sweep()). Debug builds only, same gating as /beep.
+//
+// ?bypass_amp=1 plays the identical staircase - same writes, same codec
+// state - but never raises GPIO46 at all. This is the decisive test for
+// "does GPIO46 actually gate the amplifier": if a bypassed tone is still
+// clearly audible at the same volume as a normal one, the enable line is
+// not doing anything and the amplifier is on continuously in hardware,
+// independent of whatever the GPIO46 readback says.
+//
+// Same non-blocking contract as /beep above: starts the staircase on its
+// own task (audio_play_diagnostic_sweep_async()) and returns immediately,
+// rather than holding the HTTP task for the several seconds the full
+// staircase takes.
+esp_err_t beep_sweep_post_handler(httpd_req_t* req) {
+  char query[kMaxBeepQuery];
+  const bool has_query =
+      httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK;
+  const bool bypass_amp =
+      has_query && query_int(query, "bypass_amp", 0) != 0;
+
+  ESP_LOGW(kTag, "POST /beep-sweep -> starting diagnostic staircase (GPIO46 %s)",
+           bypass_amp ? "bypassed" : "enabled");
+  const esp_err_t result = audio::audio_play_diagnostic_sweep_async(!bypass_amp);
+  if (result == ESP_ERR_INVALID_STATE) {
+    httpd_resp_set_status(req, "409 Conflict");
+    httpd_resp_sendstr(req, "Playback already in progress; try again shortly.\n");
+    return ESP_OK;
+  }
+  if (result != ESP_OK) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                        "Diagnostic sweep failed to start; see device log.");
+    return ESP_OK;
+  }
+  httpd_resp_sendstr(req, "Sweep started.\n");
+  return ESP_OK;
+}
+
+const httpd_uri_t kBeepSweepPost = {"/beep-sweep", HTTP_POST,
+                                    beep_sweep_post_handler, nullptr};
+
+// Shows a static test card on the panel demonstrating ui::dither_bayer4x4_dark
+// (components/ui/include/dither.hpp) - a density ramp and a 50%-grey size
+// ramp, nothing real. Debug builds only, same reasoning as /shot/restart:
+// cannot corrupt anything, unauthenticated is fine.
+//
+// GET, not POST: showing it is idempotent (a second call just reloads the
+// same cached screen, see ui_app.cpp's build_dither_card_screen caching) and
+// changes nothing the way /restart or /beep does, the same reasoning /shot
+// itself is a GET.
+//
+// Only requests the card; it does not answer with one. The card renders on
+// the LVGL thread on its next ~100 ms tick (ui::request_dither_card()'s own
+// comment explains why this cannot happen directly on the calling task), so
+// the way to actually see it is the same two-step /shot already needs
+// elsewhere in this codebase:
+//   curl -X GET ".../dither-card" && curl ".../shot" > card.txt
+// There is no route back to normal operation - POST /restart is that route,
+// since this card does not belong to the carousel/tray/Setup/OTA state
+// machine at all (see build_dither_card_screen's own comment) and reloading
+// back to whatever the carousel is still, invisibly, doing underneath would
+// be one more one-off mechanism for a debug tool that already has one.
+esp_err_t dither_card_get_handler(httpd_req_t* req) {
+  ui::request_dither_card();
+  httpd_resp_sendstr(req, "Dither card requested; GET /shot in a moment to see it. "
+                          "POST /restart returns to normal.\n");
+  return ESP_OK;
+}
+
+const httpd_uri_t kDitherCardGet = {"/dither-card", HTTP_GET,
+                                    dither_card_get_handler, nullptr};
 #endif
 
 const httpd_uri_t kRootGet = {"/", HTTP_GET, root_get_handler, nullptr};
@@ -744,7 +902,7 @@ void portal_start() {
   // registration past the limit fails by returning an error rather than by
   // complaining, so a route added as the ninth would simply 404 with nothing
   // to explain why.
-  config.max_uri_handlers = 12;
+  config.max_uri_handlers = 13;
   // A firmware upload holds the socket for the length of the transfer, and a
   // release check waits on GitHub's TLS handshake.
   config.recv_wait_timeout = 20;
@@ -757,7 +915,8 @@ void portal_start() {
   const httpd_uri_t* routes[] = {&kRootGet,    &kRootPost,  &kOtaPost,
                                  &kOtaUrlPost, &kUpdateGet, &kUpdatePost,
 #ifndef NDEBUG
-                                 &kShotGet,    &kRestartPost,
+                                 &kShotGet,    &kRestartPost, &kBeepPost,
+                                 &kBeepSweepPost, &kDitherCardGet,
 #endif
   };
   for (const httpd_uri_t* route : routes) {

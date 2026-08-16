@@ -2,6 +2,8 @@
 
 #ifdef ESP_PLATFORM
 
+#include <cstdio>
+
 #include <esp_log.h>
 
 #include "board_pins.hpp"
@@ -53,6 +55,28 @@ esp_err_t board_i2c_add_device(uint8_t address_7bit, uint32_t scl_speed_hz,
              address_7bit, esp_err_to_name(result));
   }
   return result;
+}
+
+i2c_master_bus_handle_t board_i2c_bus_handle() { return g_bus; }
+
+void board_i2c_scan() {
+  if (g_bus == nullptr) {
+    ESP_LOGW(kTag, "board_i2c_scan called before board_i2c_init");
+    return;
+  }
+
+  // Reserved ranges (0x00-0x07, 0x78-0x7f) are skipped: probing them is not
+  // meaningful and one of them is the general-call address.
+  char found[112];
+  int used = 0;
+  for (uint8_t address = 0x08; address <= 0x77; ++address) {
+    if (i2c_master_probe(g_bus, address, 50) != ESP_OK) continue;
+    const int written = std::snprintf(found + used, sizeof(found) - used,
+                                      " 0x%02x", address);
+    if (written <= 0 || written >= static_cast<int>(sizeof(found)) - used) break;
+    used += written;
+  }
+  ESP_LOGI(kTag, "I2C scan:%s", used > 0 ? found : " no devices answered");
 }
 
 }  // namespace board

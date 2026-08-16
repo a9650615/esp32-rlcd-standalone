@@ -149,6 +149,10 @@ components/market         TWSE + Yahoo
 components/net_log        log streaming over TCP, off by default
 ```
 
+Optional, Kconfig-gated capabilities that the board runs fine without - audio
+today, AirPlay planned - live outside this list, in
+[`modules/`](modules/README.md), which compiles out entirely when disabled.
+
 Two rules hold this together, both learned the hard way:
 
 **One publisher.** `wifi_provision` owns the single `AppSnapshot` behind a

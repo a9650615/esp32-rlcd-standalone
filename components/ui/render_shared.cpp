@@ -5,9 +5,10 @@
 #include <cstring>
 #include <string>
 
-#ifndef NDEBUG
+// Unconditional, not #ifndef NDEBUG like the tag right below: the tray
+// state-change log a few lines down runs in every build, not just debug
+// ones - see update_visible_fields().
 #include <esp_log.h>
-#endif
 
 namespace ui {
 namespace {
@@ -15,10 +16,49 @@ namespace {
 #ifndef NDEBUG
 constexpr char kTag[] = "ui_geometry";
 #endif
+// Separate from kTag above (which is debug-build-only, for the safe-canvas
+// tree walk): this one is used unconditionally.
+constexpr char kTrayTag[] = "ui_tray";
 
 const lv_font_t* small_font() { return font_small(); }
 const lv_font_t* medium_font() { return font_medium(); }
 const lv_font_t* large_font() { return font_large(); }
+
+void clear_tray_indicator_icons(TrayIndicatorIcon* icons) {
+  for (int i = 0; i < app_core::kMaxTrayIndicators; ++i) icons[i] = {};
+}
+
+// Last-logged active state per registry slot, so log_tray_indicator_state
+// below records only genuine transitions - not a line every ~100 ms tick.
+// File-scope, not in UiContext: a page rebuild recreates the context, and
+// this must not manufacture a spurious "changed" line just because of
+// that. Two arrays rather than one signed tri-state, so "never logged yet"
+// (log the very first observed value, whatever it is) is distinguishable
+// from "logged and it was false" without a sentinel value.
+bool g_tray_indicator_ever_logged[app_core::kMaxTrayIndicators] = {};
+bool g_tray_indicator_last_logged_active[app_core::kMaxTrayIndicators] = {};
+
+// The point where the tray actually consumes each registered indicator's
+// activity state - added specifically because two earlier attempts at this
+// feature both failed silently on hardware with no way to tell "the value
+// never reached here" from "it arrived and nothing was drawn". Logged
+// every tick regardless of whether context_ready() below finds anything
+// to draw into, so a registered-but-never-rendered slot still shows up
+// here - that distinction is exactly what answers the open question.
+void log_tray_indicator_state_changes() {
+  for (int i = 0; i < app_core::kMaxTrayIndicators; ++i) {
+    const app_core::TrayIndicatorSlot slot = app_core::tray_indicator_slot(i);
+    if (!slot.registered) continue;
+    if (g_tray_indicator_ever_logged[i] &&
+        slot.active == g_tray_indicator_last_logged_active[i]) {
+      continue;
+    }
+    ESP_LOGI(kTrayTag, "tray indicator slot %d -> %s", i,
+             slot.active ? "active" : "inactive");
+    g_tray_indicator_ever_logged[i] = true;
+    g_tray_indicator_last_logged_active[i] = slot.active;
+  }
+}
 
 void context_host_deleted(lv_event_t* event) {
   auto* context = static_cast<UiContext*>(lv_event_get_user_data(event));
@@ -28,10 +68,12 @@ void context_host_deleted(lv_event_t* event) {
   context->clock_label = nullptr;
   context->network_icon = {};
   context->battery_icon_parts = {};
+  clear_tray_indicator_icons(context->tray_indicator_icons);
   context->setup_status_label = nullptr;
   context->staging_clock_label = nullptr;
   context->staging_network_icon = {};
   context->staging_battery_icon = {};
+  clear_tray_indicator_icons(context->staging_tray_indicator_icons);
   context->staging_setup_status_label = nullptr;
   context->initialized = false;
 }
@@ -164,10 +206,12 @@ bool init_context(UiContext& context, lv_obj_t* host) {
   context.clock_label = nullptr;
   context.network_icon = {};
   context.battery_icon_parts = {};
+  clear_tray_indicator_icons(context.tray_indicator_icons);
   context.setup_status_label = nullptr;
   context.staging_clock_label = nullptr;
   context.staging_network_icon = {};
   context.staging_battery_icon = {};
+  clear_tray_indicator_icons(context.staging_tray_indicator_icons);
   context.staging_setup_status_label = nullptr;
   context.initialized = true;
   lv_obj_add_event_cb(host, context_host_deleted, LV_EVENT_DELETE, &context);
@@ -183,6 +227,7 @@ void reset_context(UiContext& context) {
     context.clock_label = nullptr;
     context.network_icon = {};
     context.battery_icon_parts = {};
+    clear_tray_indicator_icons(context.tray_indicator_icons);
     context.setup_status_label = nullptr;
     lv_obj_delete(context.root);
   }
@@ -191,10 +236,12 @@ void reset_context(UiContext& context) {
   context.clock_label = nullptr;
   context.network_icon = {};
   context.battery_icon_parts = {};
+  clear_tray_indicator_icons(context.tray_indicator_icons);
   context.setup_status_label = nullptr;
   context.staging_clock_label = nullptr;
   context.staging_network_icon = {};
   context.staging_battery_icon = {};
+  clear_tray_indicator_icons(context.staging_tray_indicator_icons);
   context.staging_setup_status_label = nullptr;
   context.initialized = false;
 }
@@ -315,8 +362,24 @@ void render_market_sidebar(lv_obj_t* parent,
 
 void render_tray(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
                  Rect bounds, std::size_t page_index, std::size_t page_count,
-                 UiContext* context, bool home) {
-  const SystemTrayLayout cells = system_tray_layout(bounds, home);
+                 UiContext* context, app_core::PageId page) {
+  const bool home = page == app_core::PageId::Home;
+  // Every registered slot's cell is reserved unconditionally, keyed only on
+  // "is anything registered here" (a session-static fact - modules
+  // register once, at startup) and the registered bitmap's own width, not
+  // on the moment-to-moment active flag. That live flag only ever decides
+  // *visibility*, toggled in place every ~100 ms tick by
+  // update_visible_fields() below - the same cheap-update path the wifi
+  // and battery icons already use. A reservation that depended on the live
+  // value would only update at the next full rebuild, which is what
+  // previously let an icon show whatever the flag happened to be at render
+  // time - stale, not the truth.
+  TrayIndicators indicators{};
+  for (int i = 0; i < app_core::kMaxTrayIndicators; ++i) {
+    const app_core::TrayIndicatorSlot slot = app_core::tray_indicator_slot(i);
+    indicators.entries[i] = {slot.registered, slot.registered ? slot.bitmap.width : 0};
+  }
+  const SystemTrayLayout cells = system_tray_layout(bounds, page, indicators);
   // Home puts the date in the tray's first cell instead of the time. The hero
   // clock two rows below is already the time, and repeating it in 20px type
   // spends the one cell that could say something else. It also takes the date
@@ -340,9 +403,28 @@ void render_tray(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
   const BatteryIconParts battery =
       battery_icon(parent, cells.battery, snapshot.battery.percent,
                    snapshot.battery.valid);
+  TrayIndicatorIcon indicator_icons[app_core::kMaxTrayIndicators]{};
+  for (int i = 0; i < app_core::kMaxTrayIndicators; ++i) {
+    // Only drawn when system_tray_layout() actually gave this slot room -
+    // a zero-width cell means the tray genuinely does not have space for
+    // it (see the drop rule on system_tray_layout()), not that the module
+    // is currently inactive; drawing into a zero-width Rect would place an
+    // icon on top of whatever cell happens to sit at that x. The *initial*
+    // on/off look comes from the slot's own active flag here, at
+    // construction time; set_tray_indicator_icon_visible() in
+    // update_visible_fields() keeps it correct afterward every ~100 ms
+    // tick.
+    if (cells.indicators[i].width <= 0) continue;
+    const app_core::TrayIndicatorSlot slot = app_core::tray_indicator_slot(i);
+    indicator_icons[i] = tray_indicator_icon(parent, cells.indicators[i], slot.bitmap);
+    set_tray_indicator_icon_visible(indicator_icons[i], slot.active);
+  }
   if (context != nullptr) {
     context->staging_network_icon = wifi;
     context->staging_battery_icon = battery;
+    for (int i = 0; i < app_core::kMaxTrayIndicators; ++i) {
+      context->staging_tray_indicator_icons[i] = indicator_icons[i];
+    }
   }
 
   divider(parent, {bounds.x, bounds.y + kSystemTrayHeight, bounds.width,
@@ -383,6 +465,7 @@ lv_obj_t* render_page(UiContext& context,
   context.staging_clock_label = nullptr;
   context.staging_network_icon = {};
   context.staging_battery_icon = {};
+  clear_tray_indicator_icons(context.staging_tray_indicator_icons);
   context.staging_setup_status_label = nullptr;
 
   // Single site that decides whether a page carries the tray and, if so,
@@ -391,7 +474,7 @@ lv_obj_t* render_page(UiContext& context,
   if (page_shows_tray(page)) {
     render_tray(replacement, snapshot,
                {0, 0, local_bounds.width, kSystemTrayHeight}, page_index,
-               page_count, &context, page == app_core::PageId::Home);
+               page_count, &context, page);
   }
   const Rect content = content_bounds(local_bounds, page);
 
@@ -461,6 +544,7 @@ lv_obj_t* render_page(UiContext& context,
     context.clock_label = nullptr;
     context.network_icon = {};
     context.battery_icon_parts = {};
+    clear_tray_indicator_icons(context.tray_indicator_icons);
     context.setup_status_label = nullptr;
     lv_obj_delete(context.root);
   }
@@ -468,10 +552,14 @@ lv_obj_t* render_page(UiContext& context,
   context.clock_label = context.staging_clock_label;
   context.network_icon = context.staging_network_icon;
   context.battery_icon_parts = context.staging_battery_icon;
+  for (int i = 0; i < app_core::kMaxTrayIndicators; ++i) {
+    context.tray_indicator_icons[i] = context.staging_tray_indicator_icons[i];
+  }
   context.setup_status_label = context.staging_setup_status_label;
   context.staging_clock_label = nullptr;
   context.staging_network_icon = {};
   context.staging_battery_icon = {};
+  clear_tray_indicator_icons(context.staging_tray_indicator_icons);
   context.staging_setup_status_label = nullptr;
   lv_obj_clear_flag(replacement, LV_OBJ_FLAG_HIDDEN);
 #ifndef NDEBUG
@@ -489,6 +577,42 @@ bool update_visible_clock(UiContext& context,
   if (!context_ready(context) || context.clock_label == nullptr) return false;
   set_label_text_if_changed(context.clock_label,
                             format_minute_clock(snapshot.clock.hero).c_str());
+  return true;
+}
+
+// Separate from update_visible_fields below, and called unconditionally on
+// every ~100 ms tick rather than only when a publish or a clock-minute
+// rollover happens to land on the same tick - see ui_app.cpp's
+// timer_callback for the call site.
+//
+// That distinction is the actual bug a silent-audio hardware run traced back
+// to here: this function's own comments already claimed the registry "reads
+// fresh every tick regardless of whether a publish happened this cycle", but
+// it used to live inside update_visible_fields(), which timer_callback only
+// calls when (published_updated || clock_minute_changed) - true maybe twice
+// a minute. A tone that starts and finishes inside the gap between those
+// events set the registry's active flag correctly (confirmed: the sending
+// side in modules/audio/audio.cpp was never the problem) and nothing on the
+// receiving side ever polled it in time to notice, log it, or draw it - the
+// exact "everything reports success and nothing happens" shape of a wire
+// left unconnected, just one level removed from where it looked at first.
+bool update_tray_indicators(UiContext& context) {
+  // Logged unconditionally, even if context_ready() below is about to
+  // return false - the whole point is to answer "did the value even get
+  // this far" independently of whether there is currently anything to draw
+  // it into.
+  log_tray_indicator_state_changes();
+  if (!context_ready(context)) return false;
+  // render_tray() reserves every registered slot's cell on every page
+  // unconditionally (see its own comment), so context.tray_indicator_icons[i]
+  // is a real, already-drawn target on every tray-carrying page, not just the
+  // ones that happened to be active when last rendered - a stale or wrong
+  // icon was worse than one that simply never appeared, so this does not get
+  // the indoor/weather/market wait-for-the-next-rebuild treatment.
+  for (int i = 0; i < app_core::kMaxTrayIndicators; ++i) {
+    const app_core::TrayIndicatorSlot slot = app_core::tray_indicator_slot(i);
+    set_tray_indicator_icon_visible(context.tray_indicator_icons[i], slot.active);
+  }
   return true;
 }
 

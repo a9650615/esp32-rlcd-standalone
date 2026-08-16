@@ -75,8 +75,15 @@ struct UiContext {
   // path needs is their mutable parts rather than a text pointer.
   WifiIconParts network_icon{};
   BatteryIconParts battery_icon_parts{};
+  // One per app_core tray-registry slot. All-null (a safe no-op for
+  // set_tray_indicator_icon_visible) for a slot nothing has registered, or
+  // when the tray genuinely had no room for it - see system_tray_layout()'s
+  // dynamic layout and render_tray's per-slot width check in
+  // render_shared.cpp.
+  TrayIndicatorIcon tray_indicator_icons[app_core::kMaxTrayIndicators]{};
   WifiIconParts staging_network_icon{};
   BatteryIconParts staging_battery_icon{};
+  TrayIndicatorIcon staging_tray_indicator_icons[app_core::kMaxTrayIndicators]{};
   lv_obj_t* setup_status_label = nullptr;
   // Staging-only registrations used during atomic replacement.
   lv_obj_t* staging_clock_label = nullptr;
@@ -166,7 +173,37 @@ bool update_visible_clock(UiContext& context,
 bool update_visible_fields(UiContext& context,
                            const app_core::AppSnapshot& snapshot);
 
+// Caller owns the LVGL lock. Polls app_core's tray registry and updates
+// each reserved icon's visibility, plus the diagnostic state-change log -
+// called every ~100 ms tick unconditionally (see ui_app.cpp's
+// timer_callback), unlike update_visible_fields above, which only runs
+// when something else already changed. A tray indicator can go active and
+// inactive again entirely inside the gap between two of those, so this
+// cannot share that gating without silently missing it - see this
+// function's own comment in render_shared.cpp for the hardware failure that
+// is exactly what happened.
+bool update_tray_indicators(UiContext& context);
+
 lv_obj_t* navigation_overlay(UiContext& context, Rect bounds);
+
+#ifndef NDEBUG
+// Debug-only test card demonstrating dither.hpp's 4x4 ordered-dither
+// pattern on the actual panel (a density ramp and a 50%-grey size ramp) -
+// see render_dither_card.cpp for exactly what's on it, and
+// modules/audio/README.md-adjacent debug routes (/shot, /beep) for the
+// same #ifndef NDEBUG gate this follows. Not a real page: it does not
+// participate in the carousel, the tray, or app_core::PageId at all.
+//
+// request_dither_card() is callable from any FreeRTOS task (wifi_provision's
+// GET /dither-card handler calls it) - same mutex-guarded handoff to the
+// LVGL thread's own timer that set_update_status() above uses, so no lv_*
+// call ever happens off the LVGL thread. build_dither_card_screen() builds
+// the actual lv_obj_t screen and is only ever called from that timer, once;
+// declared here only so ui_app.cpp (which owns the trigger and the
+// one-time build-and-cache) can call into render_dither_card.cpp.
+void request_dither_card();
+lv_obj_t* build_dither_card_screen();
+#endif
 
 #endif
 

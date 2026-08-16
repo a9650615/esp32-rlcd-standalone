@@ -1,0 +1,17 @@
+config AUDIO_ENABLE
+    bool "Enable onboard audio (ES8311 codec + speaker test tone)"
+    default y
+    help
+        Stage 1 of audio support: initializes the ES8311 codec and its I2S
+        TX path at startup, and backs the debug-only POST /beep route with
+        a short test tone. A beep/alarm capability is a legitimate native
+        feature, so this defaults on - but audio is still an optional
+        module, not part of the native firmware: the display, clock,
+        sensors, battery, portal, and OTA all build and behave identically
+        with this on or off.
+
+        Turning this off removes the ES8311/I2S code and the
+        espressif/esp_codec_dev managed dependency from the build entirely
+        - audio_init() and audio_play_tone() become inline no-ops (see
+        audio.hpp) rather than a runtime check, so none of this component
+        ends up in the binary.

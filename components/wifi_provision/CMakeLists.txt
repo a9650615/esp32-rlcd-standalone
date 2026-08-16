@@ -20,4 +20,5 @@ idf_component_register(
         esp_app_format
         mbedtls
         ota
+        audio
 )

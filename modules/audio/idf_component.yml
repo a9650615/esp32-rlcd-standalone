@@ -1,0 +1,11 @@
+dependencies:
+  # 2.x betas exclude IDF 5.5.2 outright (see their manifest); 1.6.x has no
+  # such restriction and its I2C control interface accepts an existing
+  # i2c_master_bus_handle_t, which is what lets it share board_i2c's bus.
+  #
+  # Scoped to this component rather than main/idf_component.yml so that
+  # disabling CONFIG_AUDIO_ENABLE keeps this dependency out of the audio
+  # component's own build (see CMakeLists.txt); the component manager may
+  # still resolve/fetch the package before Kconfig is known, but nothing
+  # from it is ever compiled or linked when the option is off.
+  espressif/esp_codec_dev: "==1.6.2"

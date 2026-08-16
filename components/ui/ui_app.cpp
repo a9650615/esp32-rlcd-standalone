@@ -66,6 +66,15 @@ bool g_published_dirty = false;
 std::string g_pending_update_status;
 bool g_pending_update_status_dirty = false;
 bool g_pending_update_available = false;
+#ifndef NDEBUG
+// Same mutex-guarded handoff as g_pending_update_status_dirty above, for
+// GET /dither-card (wifi_provision/portal.cpp) requesting the debug test
+// card. g_dither_card_screen is LVGL-thread-only (built once, on the first
+// request, and reused after) - never touched under g_publish_mutex, unlike
+// the flag itself.
+bool g_dither_card_requested = false;
+lv_obj_t* g_dither_card_screen = nullptr;
+#endif
 
 void (*g_setup_gesture_handler)() = nullptr;
 // Runs the release check off the LVGL thread; the result comes back through
@@ -302,6 +311,10 @@ void timer_callback(lv_timer_t* timer) {
   if (!runtime->initialized) return;
 
 #ifndef NDEBUG
+  // Drained below, alongside the settings-status flag this mirrors; acted
+  // on after the mutex is released, since building the screen makes lv_*
+  // calls of its own.
+  bool show_dither_card = false;
 #endif
 
   // Set when the settings page needs redrawing - the cursor moved, a value
@@ -319,8 +332,32 @@ void timer_callback(lv_timer_t* timer) {
       g_pending_update_status_dirty = false;
       settings_dirty = true;
     }
+#ifndef NDEBUG
+    if (g_dither_card_requested) {
+      show_dither_card = true;
+      g_dither_card_requested = false;
+    }
+#endif
     xSemaphoreGive(g_publish_mutex);
   }
+
+#ifndef NDEBUG
+  // Built once and cached; a second request just reloads the same screen.
+  // Entirely separate from the carousel/tray/Setup/OTA machinery below -
+  // it loads its own standalone lv_scr rather than touching runtime->context
+  // or runtime->context.host, so nothing here can disturb whatever the
+  // carousel is (still, invisibly) doing to its own host object underneath.
+  if (show_dither_card) {
+    if (g_dither_card_screen == nullptr) {
+      g_dither_card_screen = build_dither_card_screen();
+    }
+    if (g_dither_card_screen != nullptr) {
+      lv_scr_load(g_dither_card_screen);
+    } else {
+      ESP_LOGE(kTag, "dither card: screen build failed");
+    }
+  }
+#endif
 
   PublishedFields published;
   const bool published_updated = consume_published(published);
@@ -364,6 +401,12 @@ void timer_callback(lv_timer_t* timer) {
     runtime->snapshot.taiwan_market = published.taiwan_market;
     runtime->snapshot.us_market = published.us_market;
     runtime->snapshot.clock = published.clock;
+    // No tray-indicator field here (there used to be one, tray_activity):
+    // that state does not travel through the AppSnapshot publish/consume
+    // pipeline at all any more. It goes through app_core's tray registry
+    // directly - see tray_registry.hpp and update_visible_fields() in
+    // render_shared.cpp, which read it fresh every tick regardless of
+    // whether a publish happened this cycle.
   }
 
   // Set whenever a genuine page-identity change forces a full atomic
@@ -599,6 +642,16 @@ void timer_callback(lv_timer_t* timer) {
       (published_updated || clock_minute_changed)) {
     (void)update_visible_fields(runtime->context, runtime->snapshot);
   }
+
+  // Every tick, unconditionally - not folded into the block above. A tray
+  // indicator can go active and inactive again entirely within the gap
+  // between two published/clock-minute events (a several-second tone is
+  // shorter than either), and update_visible_fields' own gating would miss
+  // it silently if this shared that condition. See update_tray_indicators'
+  // comment in render_shared.cpp for the hardware failure this fixes.
+  if (runtime->initialized) {
+    (void)update_tray_indicators(runtime->context);
+  }
 }
 
 }  // namespace
@@ -671,5 +724,16 @@ void set_update_status(const std::string& status, bool install_available) {
   g_pending_update_status_dirty = true;
   xSemaphoreGive(g_publish_mutex);
 }
+
+#ifndef NDEBUG
+void request_dither_card() {
+  // No payload to carry, just a request - a plain bool under the same
+  // mutex as every other cross-task flag here, not a new lock of its own.
+  if (g_publish_mutex == nullptr) return;
+  if (xSemaphoreTake(g_publish_mutex, portMAX_DELAY) != pdTRUE) return;
+  g_dither_card_requested = true;
+  xSemaphoreGive(g_publish_mutex);
+}
+#endif
 
 }  // namespace ui

@@ -369,6 +369,49 @@ void set_battery_icon_level(const BatteryIconParts& parts, uint8_t percent,
   lv_obj_set_width(parts.fill, filled < 1 ? 1 : filled);
 }
 
+// One LV_COLOR_FORMAT_I1 canvas, backed directly by the module's own bytes
+// (no copy, no conversion) - core blits whatever it was handed and never
+// draws anything module-specific of its own. This is the one place that
+// bitmap layout (app_core::TrayIndicatorBitmap: row-major, MSB-first,
+// byte-padded rows) has to line up with what LVGL expects, and it does
+// without any repacking: lv_canvas_set_buffer()'s own stride formula for
+// I1 is `(width*1 + 7) / 8` bytes/row rounded up to
+// CONFIG_LV_DRAW_BUF_STRIDE_ALIGN, which is 1 in this project's
+// sdkconfig - i.e. exactly the tightly-packed layout the bitmap struct's
+// own comment documents, with no hidden padding a module could get wrong
+// silently.
+//
+// const_cast is safe here specifically because nothing in this function (or
+// anything else this module calls) ever writes through the canvas buffer -
+// lv_canvas_set_px()/set_palette() touch different backing storage, and
+// this canvas is never used as a draw target, only ever blitted read-only.
+TrayIndicatorIcon tray_indicator_icon(lv_obj_t* parent, Rect bounds,
+                                      const app_core::TrayIndicatorBitmap& bitmap) {
+  TrayIndicatorIcon icon{};
+  if (bitmap.pixels == nullptr || bitmap.width == 0 || bitmap.height == 0) {
+    return icon;
+  }
+  lv_obj_t* canvas = lv_canvas_create(parent);
+  if (canvas == nullptr) return icon;
+  apply_surface(canvas);
+  lv_canvas_set_buffer(canvas, const_cast<uint8_t*>(bitmap.pixels), bitmap.width,
+                       bitmap.height, LV_COLOR_FORMAT_I1);
+  // Palette index 0 (bit clear) is the "off" pixel and must be fully
+  // transparent so the tray's own background shows through rather than a
+  // second, redundant white square; index 1 (bit set) is solid ink.
+  lv_canvas_set_palette(canvas, 0, lv_color_to_32(lv_color_white(), LV_OPA_TRANSP));
+  lv_canvas_set_palette(canvas, 1, lv_color_to_32(lv_color_black(), LV_OPA_COVER));
+  lv_obj_set_pos(canvas, bounds.x, bounds.y);
+  lv_obj_set_size(canvas, bitmap.width, bitmap.height);
+  icon.canvas = canvas;
+  return icon;
+}
+
+void set_tray_indicator_icon_visible(const TrayIndicatorIcon& icon, bool visible) {
+  if (icon.canvas == nullptr) return;
+  lv_obj_set_style_opa(icon.canvas, visible ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+}
+
 void button_hints(lv_obj_t* parent, Rect bounds, InputHints hints) {
   if (!hints.visible) return;
   // KEY is the middle button and BOOT the right one (see the button table in

@@ -21,6 +21,20 @@ esp_err_t board_i2c_init();
 esp_err_t board_i2c_add_device(uint8_t address_7bit, uint32_t scl_speed_hz,
                                i2c_master_dev_handle_t& out_handle);
 
+// Returns the shared bus handle itself, for the rare caller that cannot go
+// through board_i2c_add_device() - namely esp_codec_dev's I2C control
+// interface, which wants to add its own device handle on an existing bus
+// rather than being handed one. Returns nullptr if board_i2c_init() has not
+// run yet; this still does not create a second bus.
+i2c_master_bus_handle_t board_i2c_bus_handle();
+
+// Probes every 7-bit address once and logs the ones that answer. On a board
+// with no cable this is the only way to tell "the chip is not fitted" from
+// "the driver is wrong": the board also carries an ES8311 codec (0x18) and an
+// ES7210 microphone ADC (0x40/0x42) that nothing here drives yet, and their
+// presence has to be established before any audio code exists to fail.
+void board_i2c_scan();
+
 }  // namespace board
 
 #endif  // ESP_PLATFORM

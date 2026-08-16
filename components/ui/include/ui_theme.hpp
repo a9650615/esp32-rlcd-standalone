@@ -2,6 +2,8 @@
 
 // For InputHints, which button_hints below renders.
 #include "settings_menu.hpp"
+// For app_core::TrayIndicatorBitmap, which tray_indicator_icon() renders.
+#include "tray_registry.hpp"
 
 #include <cstdint>
 #include <array>
@@ -163,6 +165,15 @@ struct BatteryIconParts {
   int body_width = 0;
 };
 
+// A tray-registry indicator's icon: one LVGL canvas object showing exactly
+// the bytes its module registered (see app_core::TrayIndicatorBitmap) -
+// core never draws anything module-specific itself. Its cell is reserved
+// unconditionally for every registered slot (see render_tray()) precisely
+// so the cheap per-tick visibility toggle below always has a real target.
+struct TrayIndicatorIcon {
+  lv_obj_t* canvas = nullptr;
+};
+
 #ifndef UI_THEME_GEOMETRY_ONLY
 
 void apply_surface(lv_obj_t* object);
@@ -194,6 +205,18 @@ BatteryIconParts battery_icon(lv_obj_t* parent, Rect bounds, uint8_t percent,
                               bool valid);
 void set_battery_icon_level(const BatteryIconParts& parts, uint8_t percent,
                             bool valid);
+// Renders a module's registered 1-bit bitmap as an LVGL canvas
+// (LV_COLOR_FORMAT_I1) positioned at `bounds` - core blits the bytes and
+// never interprets them. Returns an all-null TrayIndicatorIcon if `bitmap`
+// is empty (nothing registered for this slot) or the canvas could not be
+// created. See app_core::TrayIndicatorBitmap for the exact byte layout a
+// module must supply.
+TrayIndicatorIcon tray_indicator_icon(lv_obj_t* parent, Rect bounds,
+                                      const app_core::TrayIndicatorBitmap& bitmap);
+// Shows or hides the whole icon - not a per-part toggle like wifi_icon's
+// rings, since a tray-registry icon is one opaque bitmap, not several
+// hand-drawn primitives core understands individually.
+void set_tray_indicator_icon_visible(const TrayIndicatorIcon& icon, bool visible);
 
 void button_hints(lv_obj_t* parent, Rect bounds, InputHints hints);
 void page_dots(lv_obj_t* parent, std::size_t page_index,

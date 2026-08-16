@@ -1,4 +1,5 @@
 #include "app_snapshot.hpp"
+#include "audio.hpp"
 #include "battery.hpp"
 #include "board_buttons.hpp"
 #include "board_i2c.hpp"
@@ -814,6 +815,24 @@ extern "C" void app_main() {
 
   app_core::AppSnapshot snapshot =
       app_core::make_mock_snapshot(app_core::DemoScenario::TaiwanSession);
+  // Everything on this board that is not the display hangs off one I2C bus,
+  // including the ES7210 mic ADC nothing here drives yet. Logging what
+  // actually answers costs one line per boot and settles "is the part
+  // fitted" without a cable or a multimeter.
+  if (board::board_i2c_init() == ESP_OK) board::board_i2c_scan();
+
+  // Never fatal: this board's primary job is the display, and a codec that
+  // is absent or unresponsive should mean no sound, not no boot. Nothing
+  // plays here - audio_init() only readies the I2S/codec path, and leaves
+  // the amplifier off until a /beep request asks for a tone.
+  const esp_err_t audio_result = audio::audio_init();
+  if (audio_result == ESP_OK) {
+    ESP_LOGI(kTag, "startup diagnostics audio=ready (ES8311)");
+  } else {
+    ESP_LOGW(kTag, "startup diagnostics audio=unavailable: %s",
+             esp_err_to_name(audio_result));
+  }
+
   app_core::RtcDateTime clock = compile_clock();
   const bool rtc_ok = read_rtc(clock);
   if (rtc_ok) {
@@ -857,6 +876,10 @@ extern "C" void app_main() {
   // release build, where the route does not exist.
   wifi_provision::set_screenshot_provider(&board::framebuffer_snapshot);
   ota::set_confirm_prompt_handler(&show_update_prompt);
+  // No wiring call here for audio's tray indicator (there used to be one):
+  // audio_init() above already registered it directly with app_core's tray
+  // registry, which needs no handler indirection at all - see
+  // tray_registry.hpp.
   result = wifi_provision::start(snapshot);
   if (result != ESP_OK) {
     // Non-fatal: the carousel already runs standalone without Wi-Fi.

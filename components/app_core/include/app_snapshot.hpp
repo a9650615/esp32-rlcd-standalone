@@ -271,6 +271,17 @@ constexpr bool ota_awaits_confirm(const OtaData& ota) {
 // ASCII only - see the OtaPhase comment above.
 const char* ota_phase_label(OtaPhase phase);
 
+// The tray's transient indicators are not a snapshot field: see
+// tray_registry.hpp. A module registers its own icon and toggles it
+// directly through that registry, rather than through this struct and the
+// wifi_provision publish/consume pipeline every other field here goes
+// through - there is no per-module state to carry here, and no enum to
+// extend when a second module (audio today, AirPlay someday) needs a tray
+// icon. This is deliberate: an earlier version of this file had exactly
+// such an enum (app_core::TrayActivity) naming "Speaker", and it was
+// removed because naming a specific module's concept in core is precisely
+// the coupling the module contract exists to prevent.
+
 struct AppSnapshot {
   OtaData ota;
   ClockData clock;

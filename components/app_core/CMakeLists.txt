@@ -4,6 +4,7 @@ idf_component_register(
         "history.cpp"
         "page_registry.cpp"
         "carousel_controller.cpp"
+        "tray_registry.cpp"
     INCLUDE_DIRS
         "include"
 )
