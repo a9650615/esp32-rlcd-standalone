@@ -63,7 +63,7 @@ void render_market(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
   const MarketLayout layout = market_layout(bounds);
   const Rect primary = layout.primary;
 
-  label(parent, us_market ? "US MARKET" : "TAIWAN MARKET",
+  label(parent, us_market ? text(Text::TitleUsMarket) : text(Text::TitleTaiwanMarket),
         {primary.x + 8, primary.y + 4, primary.width - 16, 18}, small_font());
 
   if (!market.valid) {
@@ -106,11 +106,11 @@ void render_market(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
       label(parent, "09:00",
             {chart.x, chart.bottom() + 1, chart.width / 3, axis_height},
             small_font());
-      label(parent, "MID",
+      label(parent, text(Text::ChartMid),
             {chart.x + chart.width / 3, chart.bottom() + 1, chart.width / 3,
              axis_height},
             small_font(), LV_TEXT_ALIGN_CENTER);
-      label(parent, "NOW",
+      label(parent, text(Text::ChartNow),
             {chart.x + 2 * chart.width / 3, chart.bottom() + 1,
              chart.width / 3, axis_height},
             small_font(), LV_TEXT_ALIGN_RIGHT);

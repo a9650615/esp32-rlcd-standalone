@@ -49,10 +49,13 @@ void render_home(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
       label(parent, clock.c_str(), layout.hero, hero_font(), LV_TEXT_ALIGN_LEFT);
   if (context != nullptr) context->staging_clock_label = clock_label;
   label(parent, snapshot.clock.date.c_str(), layout.date, row_font());
-  // compact_clock_source already folds an empty/unrecognized source string
-  // to "UNKNOWN", so it needs no separate emptiness check here.
-  const std::string sync = "SOURCE  " + compact_clock_source(snapshot.clock.source);
-  label(parent, sync.c_str(), layout.sync, row_font());
+  // Nothing at all when the clock is synced: a correct clock does not need to
+  // announce where it came from, and the row it frees is the space Home was
+  // spending on saying so.
+  const Text warning = clock_warning_text(snapshot.clock.source);
+  if (warning != Text::Count) {
+    label(parent, text(warning), layout.sync, row_font());
+  }
 
   render_right_tiles(parent, snapshot, layout.tile);
 }

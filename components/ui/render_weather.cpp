@@ -29,7 +29,7 @@ void render_weather(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
     // has no other title text (the condition line normally serves that
     // role), so give it the same small title row the market/indoor pages
     // use.
-    label(parent, "WEATHER", {bounds.x + 8, bounds.y + 4, bounds.width - 16, 18},
+    label(parent, text(Text::TileWeather), {bounds.x + 8, bounds.y + 4, bounds.width - 16, 18},
           small_font());
     label(parent, text(Text::NoData), no_data_rect(bounds), medium_font(),
           LV_TEXT_ALIGN_CENTER);

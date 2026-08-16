@@ -14,6 +14,12 @@ git -C "$idf_dir" describe --tags --exact-match | grep -qx 'v5.5.2'
 # doing here: the failure surfaces much later, in the host test build, as
 # "Cannot find source file .../cJSON/cJSON.c" with nothing pointing back at a
 # half-initialised toolchain.
-git -C "$idf_dir" submodule update --init --recursive --depth 1
+#
+# Not --depth 1: a shallow submodule fetch only retrieves the tip of the
+# default branch, and ESP-IDF pins commits that are frequently not the tip.
+# The checkout then leaves the directory present but empty, which surfaces at
+# link time as "No rule to make target .../esp_wifi/lib/esp32s3/libcore.a"
+# rather than as anything mentioning submodules.
+git -C "$idf_dir" submodule update --init --recursive
 
 "$idf_dir/install.sh" esp32s3

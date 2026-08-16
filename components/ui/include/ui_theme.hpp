@@ -105,14 +105,17 @@ constexpr TileTextLayout tile_text_layout(const Rect cell) {
 constexpr Rect tile_leading_visual_rect(const Rect cell,
                                         const bool visible) {
   const Rect value = tile_text_layout(cell).value;
-  return visible ? Rect{cell.x + 8, value.y, 28, 28}
+  // 4px in from the cell edge, not 8. The sidebar cell is 108px wide and the
+  // icon plus its old gap left only 57px for the value, which is 3px short of
+  // "25.2 C" - measured on the device, not guessed.
+  return visible ? Rect{cell.x + 4, value.y, 28, 28}
                  : Rect{value.x, value.y, 0, 0};
 }
 
 constexpr Rect tile_value_rect(const Rect cell, const bool with_leading_visual) {
   const Rect value = tile_text_layout(cell).value;
   return with_leading_visual
-             ? Rect{cell.x + 43, value.y, cell.width - 49, value.height}
+             ? Rect{cell.x + 36, value.y, cell.width - 40, value.height}
              : value;
 }
 

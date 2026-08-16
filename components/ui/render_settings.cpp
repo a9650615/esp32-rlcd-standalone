@@ -8,7 +8,7 @@ namespace {
 // The value shown to the right of a row's label. Empty for rows that are an
 // action rather than a setting - "check for updates" has no current value, and
 // inventing one would make it look like a reading.
-std::string row_value(SettingsItem item, const std::string& status) {
+std::string row_value(SettingsItem item) {
   switch (item) {
     case SettingsItem::Firmware: {
       const esp_app_desc_t* desc = esp_app_get_description();
@@ -17,9 +17,6 @@ std::string row_value(SettingsItem item, const std::string& status) {
     case SettingsItem::Language:
       return language_name(ui::language());
     case SettingsItem::CheckUpdates:
-      // Carries the result of the last check once there is one, so the row
-      // that started the work is also the row that reports it.
-      return status;
     case SettingsItem::WifiSetup:
     case SettingsItem::Count:
       break;
@@ -72,13 +69,23 @@ void render_settings(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
     // the text disappears in dim rooms.
     if (is_focused) apply_setup_status_style(label_obj, true);
 
-    const std::string value = row_value(item, status);
+    const std::string value = row_value(item);
     if (!value.empty()) {
       const Rect value_rect{row.right() - kSettingsValueWidth, row.y,
                             kSettingsValueWidth, row.height};
       lv_obj_t* value_obj = label(parent, value.c_str(), value_rect,
                                   font_small(), LV_TEXT_ALIGN_RIGHT);
       if (is_focused) apply_setup_status_style(value_obj, true);
+    }
+  }
+
+  // Its own full-width row, wrapping rather than clipping: this is the one
+  // string on the page whose length is not under this code's control.
+  if (!status.empty()) {
+    lv_obj_t* status_obj = label(parent, status.c_str(), layout.status,
+                                 font_small(), LV_TEXT_ALIGN_LEFT);
+    if (status_obj != nullptr) {
+      lv_label_set_long_mode(status_obj, LV_LABEL_LONG_WRAP);
     }
   }
 }

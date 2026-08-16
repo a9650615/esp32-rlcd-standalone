@@ -192,6 +192,10 @@ struct SettingsLayout {
   // rows cannot shift as values change length underneath them.
   Rect rows[4];
   Rect value_column;
+  // Full width, below the list. The update check reports things like "Up to
+  // date (latest is v0.1.2)", which has no chance in the value column and was
+  // arriving on the panel silently chopped.
+  Rect status;
 };
 
 inline constexpr int kSettingsRowHeight =
@@ -219,6 +223,8 @@ constexpr SettingsLayout settings_layout(const Rect bounds) {
   layout.value_column =
       Rect{bounds.right() - kSettingsValueWidth, 0, kSettingsValueWidth,
            kSettingsRowHeight};
+  layout.status = Rect{bounds.x, y + kSettingsRowGap, bounds.width,
+                       kSettingsRowHeight};
   return layout;
 }
 
@@ -228,6 +234,7 @@ constexpr bool settings_layout_fits(const Rect content) {
   for (int i = 0; i < 4; ++i) {
     if (!rect_within(content, layout.rows[i])) return false;
   }
+  if (!rect_within(content, layout.status)) return false;
   // The label side must keep usable width once the cursor gutter and the value
   // column are taken out of the row.
   return content.width - kSettingsCursorWidth - kSettingsValueWidth > 80;
@@ -333,7 +340,7 @@ inline std::string setup_status_text(const std::string& status) {
 // the SSID itself.
 inline std::string setup_ssid_text(const std::string& ap_ssid) {
   if (ap_ssid.empty()) return text(Text::SetupNoSsid);
-  return "WIFI: " + ap_ssid;
+  return std::string(text(Text::SetupWifiPrefix)) + ap_ssid;
 }
 
 // portal_password gates the setup page itself, not the network - labelled
@@ -341,7 +348,7 @@ inline std::string setup_ssid_text(const std::string& ap_ssid) {
 // passphrase.
 inline std::string setup_password_text(const std::string& portal_password) {
   if (portal_password.empty()) return text(Text::SetupNoPortalPassword);
-  return "PAGE PW: " + portal_password;
+  return std::string(text(Text::SetupPagePwPrefix)) + portal_password;
 }
 
 struct SystemTrayLayout {
@@ -386,7 +393,9 @@ constexpr SystemTrayLayout system_tray_layout(const Rect bounds) {
 
 // One of the three fixed tray network strings.
 inline std::string tray_network_text(const app_core::SetupData& setup) {
-  return setup.active ? "SETUP" : (setup.connected ? "WIFI" : "NO WIFI");
+  return setup.active ? text(Text::TraySetup)
+                      : (setup.connected ? text(Text::TrayWifi)
+                                        : text(Text::TrayNoWifi));
 }
 
 // Empty when unread/implausible (BatteryData::valid false) so the tray cell
@@ -580,6 +589,20 @@ inline std::string format_minute_clock(std::string clock) {
 // is present or its data looks implausible - is genuinely fake. Any other
 // input still gets an honest "UNKNOWN" rather than silently widening the old
 // DEMO net around it.
+// Empty when the clock is network-synced, which is the expected state and
+// needs no annotation. "SOURCE  SYNC" was developer vocabulary on a
+// user-facing screen: it told someone reading the time that a subsystem had
+// worked, which is not news, and cost a whole row of Home to say it.
+//
+// The cases worth a word are the ones where the displayed time may be wrong.
+inline Text clock_warning_text(const std::string& source) {
+  if (source == "SNTP") return Text::Count;  // nothing to say
+  if (source == "PCF85063") return Text::ClockFromRtc;
+  return Text::ClockNotSynced;
+}
+
+// Retained for the tray and for logs, where naming the source is still the
+// useful thing to say.
 inline std::string compact_clock_source(const std::string& source) {
   if (source == "SNTP") return "SYNC";
   if (source == "PCF85063") return "RTC";

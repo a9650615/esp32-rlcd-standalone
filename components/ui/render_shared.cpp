@@ -207,38 +207,39 @@ void render_right_tiles(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
   const HomeTileKind kind = choose_home_tile(snapshot);
   char value[24] = "";
   char detail[24] = "";
-  const char* title = "STATUS";
+  const char* title = text(Text::TileStatus);
   const char* condition = nullptr;
   bool weather = false;
   bool indoor = false;
   switch (kind) {
     case HomeTileKind::Battery:
-      title = "BATTERY";
+      title = text(Text::TileBattery);
       std::snprintf(value, sizeof(value), "%u%%", snapshot.battery.percent);
       std::snprintf(detail, sizeof(detail), "%s",
-                    snapshot.battery.overvoltage_warning ? "OVERVOLTAGE"
-                                                          : "LOW BATTERY");
+                    snapshot.battery.overvoltage_warning
+                        ? text(Text::StatusOvervoltage)
+                        : text(Text::StatusLowBattery));
       break;
     case HomeTileKind::Weather:
-      title = "WEATHER";
+      title = text(Text::TileWeather);
       std::snprintf(value, sizeof(value), "%.0f C",
                     snapshot.weather.current.temperature_c);
       std::snprintf(detail, sizeof(detail), "%s%s%s",
-                    snapshot.weather.alert ? "ALERT  " : "",
+                    snapshot.weather.alert ? text(Text::StatusAlert) : "",
                     snapshot.weather.current.condition.c_str(),
                     snapshot.weather.stale ? text(Text::StaleSuffix) : "");
       condition = snapshot.weather.current.condition.c_str();
       weather = true;
       break;
     case HomeTileKind::Market:
-      title = "MARKET";
+      title = text(Text::TileMarket);
       std::snprintf(value, sizeof(value), "%d",
                     snapshot.taiwan_market.primary_value);
       std::snprintf(detail, sizeof(detail), "%+.2f%%",
                     snapshot.taiwan_market.primary_change_percent);
       break;
     case HomeTileKind::Indoor:
-      title = "INDOOR";
+      title = text(Text::TileIndoor);
       std::snprintf(value, sizeof(value), "%.1f C", snapshot.indoor.temperature_c);
       std::snprintf(detail, sizeof(detail), "RH %u%%",
                     snapshot.indoor.humidity_percent);
@@ -272,8 +273,10 @@ void render_market_sidebar(lv_obj_t* parent,
                 market.secondary_change_percent);
   std::snprintf(weather_value, sizeof(weather_value), "%.0f C",
                 weather_snapshot.current.temperature_c);
-  std::snprintf(weather_detail, sizeof(weather_detail), "%s %u%%%s",
-                weather_snapshot.current.condition.c_str(),
+  // Rain probability only. The tile already draws the condition as an icon,
+  // so spelling it out again was both redundant and the thing that overflowed:
+  // "Tstorm Hail 100%" needs 121px in a 94px box.
+  std::snprintf(weather_detail, sizeof(weather_detail), "%u%%%s",
                 weather_snapshot.current.rain_probability_percent,
                 weather_snapshot.stale ? text(Text::StaleSuffix) : "");
   std::snprintf(indoor_value, sizeof(indoor_value), "%.1f C",
@@ -285,7 +288,7 @@ void render_market_sidebar(lv_obj_t* parent,
   tile(parent, weather_snapshot.current.location.c_str(), weather_value,
        weather_detail, weather, true, false, weather_snapshot.valid,
        weather_snapshot.current.condition.c_str());
-  tile(parent, "INDOOR", indoor_value, indoor_detail, indoor, false, true,
+  tile(parent, text(Text::TileIndoor), indoor_value, indoor_detail, indoor, false, true,
        snapshot.indoor.valid);
   divider(parent, {bounds.x, index.bottom(), bounds.width, kSeparatorWidth});
   divider(parent, {bounds.x, weather.bottom(), bounds.width, kSeparatorWidth});

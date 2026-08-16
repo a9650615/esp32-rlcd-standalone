@@ -58,7 +58,7 @@ void render_indoor(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
   apply_surface(parent);
   const MarketLayout layout = market_layout(bounds);
   const Rect primary = layout.primary;
-  label(parent, "INDOOR", {primary.x + 8, primary.y + 5, 100, 18}, small_font());
+  label(parent, text(Text::TileIndoor), {primary.x + 8, primary.y + 5, 100, 18}, small_font());
 
   if (!snapshot.indoor.valid) {
     // No fabricated temperature/humidity/comfort band/history chart below
@@ -91,12 +91,12 @@ void render_indoor(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
                                                          snapshot.indoor.humidity_percent)) /
                                        100;
     line_segment(parent, humidity_x, band_y - 8, 2, 18);
-    label(parent, "DRY", {band_x, band_y + 14, 42, 18}, small_font());
+    label(parent, text(Text::StatusDry), {band_x, band_y + 14, 42, 18}, small_font());
     label(parent, "OK", {band_x + band_width / 2 - 12, band_y + 14, 24, 18},
           small_font(), LV_TEXT_ALIGN_CENTER);
-    label(parent, "HUMID", {band_x + band_width - 48, band_y + 14, 48, 18},
+    label(parent, text(Text::StatusHumid), {band_x + band_width - 48, band_y + 14, 48, 18},
           small_font(), LV_TEXT_ALIGN_RIGHT);
-    label(parent, "HISTORY", {primary.x + 8, primary.y + 174, 72, 18},
+    label(parent, text(Text::TileHistory), {primary.x + 8, primary.y + 174, 72, 18},
           small_font());
     mini_history(parent, {primary.x + 8, primary.y + 195, primary.width - 16, 35},
                  snapshot.indoor.temperature_history_c);

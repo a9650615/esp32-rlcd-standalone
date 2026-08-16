@@ -3,7 +3,12 @@
 #include "ui_data.hpp"
 
 #include <algorithm>
+#include <cstring>
 #include <new>
+
+#ifndef NDEBUG
+#include <esp_log.h>
+#endif
 
 namespace ui {
 namespace {
@@ -56,7 +61,34 @@ lv_obj_t* label(lv_obj_t* parent, const char* text, Rect bounds,
   lv_obj_set_style_text_outline_stroke_width(object, outline_width, 0);
   lv_obj_set_style_text_outline_stroke_opa(
       object, outline_width > 0 ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
-  lv_label_set_long_mode(object, LV_LABEL_LONG_CLIP);
+  // LV_LABEL_LONG_DOT, not LONG_CLIP. Clipping removes characters with no
+  // trace, which on this project's terms is the same defect as showing a
+  // number nobody measured: "Up to date" clipped to "pdate to date" reads as a
+  // message rather than as damage. An ellipsis says the text was too long.
+  //
+  // It also matters more than it used to. Box widths here were all derived
+  // from Latin metrics, and a CJK glyph is roughly twice as wide as an average
+  // Latin one at the same size, so translated strings meet these edges far
+  // sooner than English ones ever did.
+  lv_label_set_long_mode(object, LV_LABEL_LONG_DOT);
+
+#ifndef NDEBUG
+  // Truncation is now visible on the panel, but only to someone looking at it.
+  // This puts every instance in the serial log with its measured and available
+  // widths, so a layout that no longer fits its text can be found the same way
+  // an out-of-bounds object is - by capture, not by eye.
+  const char* measured = text == nullptr ? "" : text;
+  if (measured[0] != '\0') {
+    const int32_t width = lv_text_get_width(
+        measured, static_cast<uint32_t>(std::strlen(measured)),
+        effective_font, 0);
+    const int available = bounds.width - 2 * kTextInset;
+    if (width > available) {
+      ESP_LOGW("ui_text", "clipped: \"%s\" needs %dpx, box gives %dpx",
+               measured, static_cast<int>(width), available);
+    }
+  }
+#endif
   return object;
 }
 
