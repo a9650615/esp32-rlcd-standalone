@@ -40,21 +40,37 @@ HOST_TEST(ota_rollback_decision_acts_only_on_a_pending_image) {
   using ota::RollbackDecision;
   using ota::rollback_decision;
 
-  // Pending and demonstrably alive: accept it.
-  EXPECT_TRUE(rollback_decision(true, true, true) ==
+  // Pending, drawing, and reachable: accept it.
+  EXPECT_TRUE(rollback_decision(true, true, true, true) ==
               RollbackDecision::MarkValid);
   // Pending with no sign of life: this board's watchdog will not reset for us,
   // so the guard has to force the rollback itself.
-  EXPECT_TRUE(rollback_decision(true, true, false) ==
+  EXPECT_TRUE(rollback_decision(true, true, false, true) ==
+              RollbackDecision::Rollback);
+  // Draws perfectly and cannot be reached. This is the one that matters for a
+  // board with no cable attached: accepting it means nothing can ever talk to
+  // it again, and the only recovery is USB. Rolling back costs a re-push.
+  EXPECT_TRUE(rollback_decision(true, true, true, false) ==
+              RollbackDecision::Rollback);
+  EXPECT_TRUE(rollback_decision(true, true, false, false) ==
               RollbackDecision::Rollback);
   // Not pending: the steady state on every factory boot and every already
-  // confirmed slot. Liveness must not drag it into either action.
-  EXPECT_TRUE(rollback_decision(true, false, true) == RollbackDecision::None);
-  EXPECT_TRUE(rollback_decision(true, false, false) == RollbackDecision::None);
-  // State unreadable: stay inert whatever the liveness sample said, rather
-  // than guessing at a partition whose state could not be queried.
-  EXPECT_TRUE(rollback_decision(false, true, false) == RollbackDecision::None);
-  EXPECT_TRUE(rollback_decision(false, true, true) == RollbackDecision::None);
+  // confirmed slot. Neither piece of evidence may drag it into an action -
+  // in particular a board deliberately run with no Wi-Fi must not roll back,
+  // and it never reaches this code because it is not pending in the first
+  // place.
+  EXPECT_TRUE(rollback_decision(true, false, true, true) ==
+              RollbackDecision::None);
+  EXPECT_TRUE(rollback_decision(true, false, false, false) ==
+              RollbackDecision::None);
+  EXPECT_TRUE(rollback_decision(true, false, true, false) ==
+              RollbackDecision::None);
+  // State unreadable: stay inert whatever the evidence said, rather than
+  // guessing at a partition whose state could not be queried.
+  EXPECT_TRUE(rollback_decision(false, true, false, false) ==
+              RollbackDecision::None);
+  EXPECT_TRUE(rollback_decision(false, true, true, true) ==
+              RollbackDecision::None);
 }
 
 HOST_TEST(ota_page_owns_the_screen_only_while_flash_is_being_written) {

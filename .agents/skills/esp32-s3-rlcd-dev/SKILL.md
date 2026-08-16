@@ -98,6 +98,14 @@ build.
 `push` still needs one press on the board to accept the offer. That prompt is
 the only authorisation a push has; do not add a way past it.
 
+A pushed image must both **render** and **be reachable** before the guard marks
+it valid, and is rolled back otherwise. Rendering alone was the whole test once
+and it misses the failure that ends remote development: an image that draws
+perfectly and has broken its own networking accepts itself and can never be
+talked to again. Do not relax this back to a liveness-only check - the two
+directions are not symmetric. Too strict costs a re-push; too lenient costs a
+trip to the board with a cable.
+
 Three traps this arrangement has already hit:
 
 - **`timeout` is GNU coreutils and macOS does not ship it.** `timeout N nc ...`

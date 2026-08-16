@@ -126,6 +126,11 @@ bool read_rtc(app_core::RtcDateTime& clock) {
 // first renders, short enough that the board does not sit in a state where an
 // unrelated reset would roll back a perfectly good image.
 constexpr uint32_t kOtaVerifyWindowMs = 30'000;
+// Association plus DHCP, with room for a slow access point. Generous on
+// purpose: this window elapsing means rolling back an image that may be fine,
+// so it should only expire when the network is genuinely not coming back.
+constexpr uint32_t kOtaVerifyNetworkMs = 90'000;
+constexpr uint32_t kOtaVerifyPollMs = 2'000;
 constexpr uint32_t kOtaVerifySettleMs = 2'000;
 
 // Runs once at boot and exits. Two jobs, both of which exist because this
@@ -172,11 +177,26 @@ void ota_guard_task(void*) {
   const uint32_t before = board::lvgl_loop_count();
   vTaskDelay(pdMS_TO_TICKS(kOtaVerifyWindowMs));
   const uint32_t after = board::lvgl_loop_count();
-  const bool alive = after != before;
-  ESP_LOGI(kTag, "ota guard: lvgl loops %u -> %u alive=%d",
-           static_cast<unsigned>(before), static_cast<unsigned>(after), alive);
+  const bool renders = after != before;
+  ESP_LOGI(kTag, "ota guard: lvgl loops %u -> %u renders=%d",
+           static_cast<unsigned>(before), static_cast<unsigned>(after),
+           renders);
 
-  switch (ota::rollback_decision(readable, pending, alive)) {
+  // Polled rather than waited on an event: this task already owns a timeline
+  // and station_has_ip() is the same flag every provider gates its first fetch
+  // on, so there is nothing to subscribe to that is not already published.
+  bool reachable = false;
+  for (uint32_t waited = 0; waited < kOtaVerifyNetworkMs;
+       waited += kOtaVerifyPollMs) {
+    if (wifi_provision::station_has_ip()) {
+      reachable = true;
+      break;
+    }
+    vTaskDelay(pdMS_TO_TICKS(kOtaVerifyPollMs));
+  }
+  ESP_LOGI(kTag, "ota guard: reachable=%d", reachable);
+
+  switch (ota::rollback_decision(readable, pending, renders, reachable)) {
     case ota::RollbackDecision::MarkValid:
       if (ota::mark_valid() == ESP_OK) {
         status.phase = app_core::OtaPhase::Idle;
