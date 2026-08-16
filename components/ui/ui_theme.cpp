@@ -291,16 +291,24 @@ WifiIconParts wifi_icon(lv_obj_t* parent, Rect bounds, bool connected) {
   lv_obj_set_pos(clip, bounds.x, bounds.y);
   lv_obj_set_size(clip, bounds.width, arc_height);
 
-  // Ring centres land on the container's bottom edge, so each contributes its
-  // top half only.
+  // Concentric about the dot, which sits below the container - so what shows
+  // is a shallow cap of each circle rather than a half of it. Centring them on
+  // the container's own bottom edge gave exact semicircles, and a semicircle
+  // is a dome: that is the hotspot idiom, not the wifi one.
   const int centre_x = bounds.width / 2;
-  const int diameters[2] = {bounds.width, bounds.width * 5 / 9};
+  const int dot_centre_y = bounds.height - dot / 2 - 1;
+  // Both diameters are chosen so the visible cap is genuinely curved. Going
+  // much wider than the icon flattens the top of the circle into a straight
+  // line across the container - measured, not guessed: at radius 16 with the
+  // centre 11px down, the arc is already 23px wide by the time it reaches the
+  // top edge of an 18px box.
+  const int diameters[2] = {bounds.width, bounds.width * 3 / 5};
   for (int i = 0; i < 2; ++i) {
     lv_obj_t* ring = lv_obj_create(clip);
     if (ring == nullptr) continue;
     apply_surface(ring);
     const int size = diameters[i];
-    lv_obj_set_pos(ring, centre_x - size / 2, arc_height - size / 2);
+    lv_obj_set_pos(ring, centre_x - size / 2, dot_centre_y - size / 2);
     lv_obj_set_size(ring, size, size);
     lv_obj_set_style_radius(ring, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_opa(ring, LV_OPA_TRANSP, 0);
