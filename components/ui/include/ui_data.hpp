@@ -374,6 +374,10 @@ inline constexpr int kSystemTrayContentGap = 7;
 inline constexpr int kSystemTrayReservedHeight =
     kSystemTrayHeight + kSeparatorWidth + kSystemTrayContentGap;
 inline constexpr int kSystemTrayTimeWidth = 60;
+// "Sun, 16 Aug 2026" measures 168px at font 20 - the widest date the clock
+// formatter produces, since every weekday and month abbreviation is three
+// characters and the day is zero-padded.
+inline constexpr int kSystemTrayDateWidth = 176;
 inline constexpr int kSystemTrayTimeHeight = 25;
 inline constexpr int kSystemTrayCellY = 3;
 inline constexpr int kSystemTrayCellHeight = 18;
@@ -387,9 +391,14 @@ inline constexpr int kSystemTrayBatteryWidth = 64;
 // setup_layout - it works for both the zero-offset local frame render_page
 // builds pages with and the absolute safe_canvas() frame the static_asserts
 // below use.
-constexpr SystemTrayLayout system_tray_layout(const Rect bounds) {
-  const Rect time{bounds.x, bounds.y, kSystemTrayTimeWidth,
-                  kSystemTrayTimeHeight};
+// `wide_leading` gives the first cell room for a date ("Sun, 16 Aug 2026",
+// 168px) instead of a clock ("12:34", 58px). Home uses it, because its hero
+// already shows the time and the tray carries the date instead.
+constexpr SystemTrayLayout system_tray_layout(const Rect bounds,
+                                              bool wide_leading = false) {
+  const int leading_width =
+      wide_leading ? kSystemTrayDateWidth : kSystemTrayTimeWidth;
+  const Rect time{bounds.x, bounds.y, leading_width, kSystemTrayTimeHeight};
   const Rect battery{bounds.right() - kSystemTrayBatteryWidth,
                      bounds.y + kSystemTrayCellY, kSystemTrayBatteryWidth,
                      kSystemTrayCellHeight};
@@ -981,14 +990,39 @@ constexpr HomeTileKind choose_home_second_tile(
   return HomeTileKind::None;
 }
 
-// Splits the right column for two tiles, with a separator's worth of gap. When
-// only one tile has data it keeps the whole column, so a sparse board does not
-// show an empty half.
-constexpr Rect home_tile_cell(const Rect column, int index, int count) {
+// Splits a side column into `count` evenly-sized cells. A count of one keeps
+// the whole column, so a page with a single thing to say does not show an
+// empty half - the count is always how many tiles have real data, never a
+// fixed grid with blanks in it.
+inline constexpr int kStackedTileGap = 8;
+constexpr Rect stacked_tile_cell(const Rect column, int index, int count) {
   if (count <= 1) return column;
-  const int gap = 8;
-  const int height = (column.height - gap) / 2;
-  return {column.x, column.y + index * (height + gap), column.width, height};
+  const int total_gap = kStackedTileGap * (count - 1);
+  const int height = (column.height - total_gap) / count;
+  return {column.x, column.y + index * (height + kStackedTileGap),
+          column.width, height};
+}
+
+// Kept as the Home-specific name the tests and renderer already use.
+constexpr Rect home_tile_cell(const Rect column, int index, int count) {
+  return stacked_tile_cell(column, index, count);
+}
+
+// Highest and lowest of the intraday series. Only meaningful when the provider
+// actually supplied one - a daily-close source repeats its close, and a range
+// of zero drawn as a range would read as "the market did not move".
+struct MarketRange {
+  int high = 0;
+  int low = 0;
+};
+constexpr MarketRange market_intraday_range(
+    const std::array<int, 8>& samples) {
+  MarketRange range{samples[0], samples[0]};
+  for (std::size_t i = 1; i < samples.size(); ++i) {
+    if (samples[i] > range.high) range.high = samples[i];
+    if (samples[i] < range.low) range.low = samples[i];
+  }
+  return range;
 }
 
 struct HomeLayout {

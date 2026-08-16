@@ -272,53 +272,61 @@ void render_market_sidebar(lv_obj_t* parent,
                            const app_core::AppSnapshot& snapshot,
                            const app_core::MarketData& market, Rect bounds,
                            bool us_market) {
-  const auto cells = right_tile_cells(bounds);
-  const Rect& index = cells[0];
-  const Rect& weather = cells[1];
-  const Rect& indoor = cells[2];
+  (void)snapshot;
+  (void)us_market;
+  // Market facts only. This column used to carry weather and the onboard
+  // sensor as well, which put the same two readings on four different pages in
+  // three different shapes - and made "what is this page about?" a question
+  // rather than an answer. Weather and the sensor have their own pages, and
+  // Home is where a mixed summary belongs.
+  //
+  // What is left is what the main area has not already said: the secondary
+  // index, and the day's range when the provider gave an intraday series. Two
+  // facts, so two cells - a third would have to be invented.
+  const bool has_range = market.valid && market.has_intraday;
+  const int count = has_range ? 2 : 1;
+
   char index_value[24];
   char index_detail[24];
-  char weather_value[24];
-  char weather_detail[24];
-  char indoor_value[24];
-  char indoor_detail[24];
-  const auto& weather_snapshot =
-      us_market ? snapshot.new_york_weather : snapshot.weather;
   std::snprintf(index_value, sizeof(index_value), "%d", market.secondary_value);
   std::snprintf(index_detail, sizeof(index_detail), "%+.2f%%",
                 market.secondary_change_percent);
-  std::snprintf(weather_value, sizeof(weather_value), "%.0f C",
-                weather_snapshot.current.temperature_c);
-  // Rain probability only. The tile already draws the condition as an icon,
-  // so spelling it out again was both redundant and the thing that overflowed:
-  // "Tstorm Hail 100%" needs 121px in a 94px box.
-  std::snprintf(weather_detail, sizeof(weather_detail), "%u%%%s",
-                weather_snapshot.current.rain_probability_percent,
-                weather_snapshot.stale ? text(Text::StaleSuffix) : "");
-  std::snprintf(indoor_value, sizeof(indoor_value), "%.1f C",
-                snapshot.indoor.temperature_c);
-  std::snprintf(indoor_detail, sizeof(indoor_detail), "RH %u%%",
-                snapshot.indoor.humidity_percent);
-  tile(parent, market.secondary_label.c_str(), index_value, index_detail, index,
-       false, false, market.valid);
-  tile(parent, weather_snapshot.current.location.c_str(), weather_value,
-       weather_detail, weather, true, false, weather_snapshot.valid,
-       weather_snapshot.current.condition.c_str());
-  tile(parent, text(Text::TileIndoor), indoor_value, indoor_detail, indoor, false, true,
-       snapshot.indoor.valid);
-  divider(parent, {bounds.x, index.bottom(), bounds.width, kSeparatorWidth});
-  divider(parent, {bounds.x, weather.bottom(), bounds.width, kSeparatorWidth});
+  tile(parent, market.secondary_label.c_str(), index_value, index_detail,
+       stacked_tile_cell(bounds, 0, count), false, false, market.valid);
+
+  if (has_range) {
+    const MarketRange range = market_intraday_range(market.intraday_samples);
+    char range_value[24];
+    char range_detail[24];
+    std::snprintf(range_value, sizeof(range_value), "%d", range.high);
+    std::snprintf(range_detail, sizeof(range_detail), "%d", range.low);
+    const Rect cell = stacked_tile_cell(bounds, 1, count);
+    tile(parent, text(Text::TileRange), range_value, range_detail, cell, false,
+         false, true);
+    divider(parent, {bounds.x, cell.y - kStackedTileGap / 2, bounds.width,
+                     kSeparatorWidth});
+  }
 }
+
 
 void render_tray(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
                  Rect bounds, std::size_t page_index, std::size_t page_count,
-                 UiContext* context) {
-  const SystemTrayLayout cells = system_tray_layout(bounds);
-  const std::string clock = format_minute_clock(snapshot.clock.hero);
+                 UiContext* context, bool home) {
+  const SystemTrayLayout cells = system_tray_layout(bounds, home);
+  // Home puts the date in the tray's first cell instead of the time. The hero
+  // clock two rows below is already the time, and repeating it in 20px type
+  // spends the one cell that could say something else. It also takes the date
+  // out of the hero block, which is what was crowding the clock.
+  //
+  // Only the clock label is registered with the context: the label-only
+  // repaint path exists for the minute rollover, and the date does not change
+  // on a minute boundary.
+  const std::string leading =
+      home ? snapshot.clock.date : format_minute_clock(snapshot.clock.hero);
   lv_obj_t* clock_label =
-      label(parent, clock.c_str(), cells.time, medium_font(),
+      label(parent, leading.c_str(), cells.time, medium_font(),
             LV_TEXT_ALIGN_LEFT);
-  if (context != nullptr) context->staging_clock_label = clock_label;
+  if (context != nullptr && !home) context->staging_clock_label = clock_label;
 
   const std::string network_text = tray_network_text(snapshot.setup);
   lv_obj_t* network_label = label(parent, network_text.c_str(), cells.network,
@@ -381,7 +389,7 @@ lv_obj_t* render_page(UiContext& context,
   if (page_shows_tray(page)) {
     render_tray(replacement, snapshot,
                {0, 0, local_bounds.width, kSystemTrayHeight}, page_index,
-               page_count, &context);
+               page_count, &context, page == app_core::PageId::Home);
   }
   const Rect content = content_bounds(local_bounds, page);
 

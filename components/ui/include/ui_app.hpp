@@ -105,9 +105,11 @@ void render_market_sidebar(lv_obj_t* parent,
 // comment for what Home does about page position instead. page_index/
 // page_count are passed straight through to the tray's own page_dots cell;
 // Setup calls this with (0, 0), which draws no dots at all.
+// `home` swaps the leading cell from the time to the date: Home's hero clock
+// already carries the time.
 void render_tray(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
                  Rect bounds, std::size_t page_index, std::size_t page_count,
-                 UiContext* context = nullptr);
+                 UiContext* context = nullptr, bool home = false);
 void render_market(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
                    const app_core::MarketData& market, Rect bounds,
                    std::size_t page_index, std::size_t page_count,

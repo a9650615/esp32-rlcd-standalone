@@ -48,7 +48,6 @@ void render_home(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
   lv_obj_t* clock_label =
       label(parent, clock.c_str(), layout.hero, hero_font(), LV_TEXT_ALIGN_LEFT);
   if (context != nullptr) context->staging_clock_label = clock_label;
-  label(parent, snapshot.clock.date.c_str(), layout.date, row_font());
   // Nothing at all when the clock is synced: a correct clock does not need to
   // announce where it came from, and the row it frees is the space Home was
   // spending on saying so.

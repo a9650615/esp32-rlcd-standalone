@@ -54,6 +54,7 @@ constexpr Row kRows[] = {
     {"MARKET", "市場"},
     {"WEATHER", "天氣"},
     {"HISTORY", "歷史"},
+    {"DAY RANGE", "當日區間"},
     {"STATUS", "狀態"},
     {"TAIWAN MARKET", "台股"},
     {"US MARKET", "美股"},
