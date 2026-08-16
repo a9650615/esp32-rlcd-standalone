@@ -66,6 +66,12 @@ CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 # The rule that keeps this survivable predates it: the Wi-Fi password and the
 # setup-page password are never logged. That was a "someone needs a USB cable"
 # mistake before and is an "anyone on the LAN" one now.
+# Two HTTP servers (the portal and the firmware-upload listener), net_log's
+# listener and client, and a TLS client for the weather/market fetches. The
+# default of 16 leaves no headroom for that, and the symptom of running out is
+# a failure in whichever subsystem happens to ask next.
+CONFIG_LWIP_MAX_SOCKETS=24
+
 CONFIG_NET_LOG_ENABLE=y
 # Pushes install without the button press. Same reasoning and the same risk
 # profile as the log mirror above: this is the developer's build, on a desk.

@@ -8,6 +8,7 @@
 #include <esp_timer.h>
 #include <lwip/sockets.h>
 #include <lwip/inet.h>
+#include <esp_heap_caps.h>
 #include <mbedtls/base64.h>
 
 #include <algorithm>
@@ -779,6 +780,12 @@ void portal_start() {
   ++upload_config.ctrl_port;
   upload_config.max_uri_handlers = 2;
   upload_config.lru_purge_enable = true;
+  // One route that one machine at a time uses. The default is 7, and two
+  // servers at 7 each is 14 of CONFIG_LWIP_MAX_SOCKETS before net_log's
+  // listener and client, let alone a TLS client for the weather or market
+  // fetch. Running the socket table dry starves whatever asks next, which is
+  // how a change to the update path turns into a failure somewhere unrelated.
+  upload_config.max_open_sockets = 4;
   // The receive timeout has to outlast the confirmation window: the client
   // holds the request open the whole time it is waiting for an answer.
   upload_config.recv_wait_timeout = 30;
@@ -789,7 +796,13 @@ void portal_start() {
     if (result != ESP_OK) {
       ESP_LOGE(kTag, "upload route unavailable: %s", esp_err_to_name(result));
     } else {
-      ESP_LOGI(kTag, "firmware upload listening on port %u", kUploadPort);
+      // Logged because the second server is the change most likely to run the
+      // board out of something, and a number here is what turns "it rolled
+      // back" into a diagnosis.
+      ESP_LOGI(kTag,
+               "firmware upload listening on port %u (free internal heap %u)",
+               kUploadPort,
+               static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)));
     }
   } else {
     ESP_LOGE(kTag, "upload server failed to start; pushes will not be accepted");
