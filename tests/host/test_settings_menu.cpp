@@ -8,29 +8,36 @@
 #include <string>
 
 // One button moves the cursor and there is no way to go back up, so a cursor
-// that stopped at the last row would be one you could never leave.
-HOST_TEST(settings_cursor_wraps_so_every_item_stays_reachable) {
+// that stopped at the last row would be one you could never leave. Runtime,
+// Battery, and Firmware are display-only and deliberately skipped (see
+// settings_display_only_rows_cannot_be_focused below), so only the four
+// actionable rows are expected to come back around.
+HOST_TEST(settings_cursor_wraps_so_every_focusable_item_stays_reachable) {
   ui::SettingsMenu menu;
   const ui::SettingsItem first = menu.focused();
 
   std::set<int> visited;
+  // count() is a safe upper bound on how long the cycle could possibly be;
+  // the loop stops itself the moment it actually wraps back to the start.
   for (std::size_t step = 0; step < ui::SettingsMenu::count(); ++step) {
     visited.insert(static_cast<int>(menu.focused()));
     menu.focus_next();
+    if (menu.focused() == first) break;
   }
-  // Every item seen exactly once, and back at the start.
-  EXPECT_EQ(static_cast<int>(visited.size()),
-            static_cast<int>(ui::SettingsMenu::count()));
+  // Language, Volume, WifiSetup, CheckUpdates - the four actionable rows.
+  EXPECT_EQ(static_cast<int>(visited.size()), 4);
   EXPECT_TRUE(menu.focused() == first);
 }
 
-// Locks in the operator-specified order itself, not just that some order is
-// self-consistent: frequently-used rows lead, rows nobody interacts with
-// trail, and the version row - which does nothing when selected - sinks
-// furthest of all, since with two physical buttons every row above the one
-// you want costs a press to walk past whether or not that row does anything.
+// Locks in the operator-specified render order itself, not just that some
+// order is self-consistent: frequently-used rows lead, rows nobody interacts
+// with trail, and the version row - which does nothing when selected - sinks
+// furthest of all. Checked against the enum's own declared order rather than
+// by walking focus_next(), because Runtime/Battery/Firmware are no longer
+// focus_next()-reachable at all (see settings_display_only_rows_cannot_be_
+// focused below) - they still render in this order, only the cursor skips
+// them.
 HOST_TEST(settings_items_are_ordered_by_how_often_they_are_actually_used) {
-  ui::SettingsMenu menu;
   const ui::SettingsItem expected_order[] = {
       ui::SettingsItem::Language,     ui::SettingsItem::Volume,
       ui::SettingsItem::WifiSetup,    ui::SettingsItem::CheckUpdates,
@@ -40,9 +47,25 @@ HOST_TEST(settings_items_are_ordered_by_how_often_they_are_actually_used) {
   static_assert(sizeof(expected_order) / sizeof(expected_order[0]) ==
                     ui::SettingsMenu::count(),
                 "update this test's expected order alongside SettingsItem");
-  for (const ui::SettingsItem expected : expected_order) {
-    EXPECT_TRUE(menu.focused() == expected);
+  for (std::size_t i = 0; i < ui::SettingsMenu::count(); ++i) {
+    EXPECT_TRUE(static_cast<ui::SettingsItem>(i) == expected_order[i]);
+  }
+}
+
+// The actual defect being fixed: a display-only row used to still be able to
+// take focus, so a press on it was a press that did nothing. Asserted by
+// walking every focus_next() step and checking these three by name, not by
+// checking that they merely end up last - a future reorder that moves one of
+// them earlier in the enum must not silently make it focusable again.
+HOST_TEST(settings_display_only_rows_cannot_be_focused) {
+  ui::SettingsMenu menu;
+  const ui::SettingsItem first = menu.focused();
+  for (std::size_t step = 0; step < ui::SettingsMenu::count(); ++step) {
+    EXPECT_TRUE(menu.focused() != ui::SettingsItem::Runtime);
+    EXPECT_TRUE(menu.focused() != ui::SettingsItem::Battery);
+    EXPECT_TRUE(menu.focused() != ui::SettingsItem::Firmware);
     menu.focus_next();
+    if (menu.focused() == first) break;
   }
 }
 
@@ -60,14 +83,13 @@ HOST_TEST(settings_activation_only_acts_where_acting_makes_sense) {
   ui::set_language(ui::Language::English);
   ui::SettingsMenu menu;
 
-  // The version row is display-only; pressing select on it must be inert
-  // rather than doing something surprising. Sought by name, not reached by a
-  // fixed number of focus_next() calls, so this test does not silently
-  // start checking the wrong row if the menu's order changes again.
-  while (menu.focused() != ui::SettingsItem::Firmware) menu.focus_next();
-  EXPECT_TRUE(menu.activate() == ui::SettingsAction::None);
-  EXPECT_TRUE(ui::language() == ui::Language::English);
-
+  // Runtime, Battery, and Firmware used to be checked here too - focus_next()
+  // walked to each by name and confirmed activate() returned None. They are
+  // no longer reachable that way at all (see
+  // settings_display_only_rows_cannot_be_focused), which subsumes this: a
+  // row activate() can never be called on cannot swallow a press regardless
+  // of what activate() would have done. Only the four actionable rows remain
+  // here.
   while (menu.focused() != ui::SettingsItem::Language) menu.focus_next();
   EXPECT_TRUE(menu.activate() == ui::SettingsAction::LanguageChanged);
   EXPECT_TRUE(ui::language() == ui::Language::TraditionalChinese);
@@ -80,10 +102,6 @@ HOST_TEST(settings_activation_only_acts_where_acting_makes_sense) {
   EXPECT_TRUE(menu.activate() == ui::SettingsAction::StartUpdateCheck);
   while (menu.focused() != ui::SettingsItem::WifiSetup) menu.focus_next();
   EXPECT_TRUE(menu.activate() == ui::SettingsAction::EnterWifiSetup);
-  while (menu.focused() != ui::SettingsItem::Runtime) menu.focus_next();
-  EXPECT_TRUE(menu.activate() == ui::SettingsAction::None);
-  while (menu.focused() != ui::SettingsItem::Battery) menu.focus_next();
-  EXPECT_TRUE(menu.activate() == ui::SettingsAction::None);
 
   while (menu.focused() != ui::SettingsItem::Volume) menu.focus_next();
   ui::set_volume_preset(ui::VolumePreset::Medium);

@@ -154,6 +154,12 @@ class SettingsMenu {
   // Wraps at the end rather than stopping. With one button to move and no way
   // to go back up, a cursor that stops at the bottom is a cursor you cannot
   // return from.
+  //
+  // Skips Runtime, Battery, and Firmware: all three are display-only (see
+  // activate() in the .cpp), so landing the cursor on one would just be a
+  // press that does nothing. They still render in place - see
+  // settings_item_label() - only the cursor treats them as if they were not
+  // there.
   void focus_next();
 
   // Applies the item's own behaviour where that behaviour is purely local

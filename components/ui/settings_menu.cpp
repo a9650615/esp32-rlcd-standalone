@@ -6,6 +6,24 @@ namespace {
 VolumePreset g_volume_preset = VolumePreset::Medium;
 void (*g_volume_preset_store)(VolumePreset) = nullptr;
 
+// Runtime, Battery, and Firmware are display-only: activate() returns None
+// for all three (see below), so pressing select on one does nothing. That
+// used to mean the row still ate a press for nothing; skipping them here
+// means the cursor can never land on one in the first place. Keyed off
+// activate()'s own behaviour by listing the same three rows, not off
+// position in the enum, so a future reorder cannot silently make one
+// focusable again without also making it do something when selected.
+constexpr bool is_focusable(SettingsItem item) {
+  switch (item) {
+    case SettingsItem::Runtime:
+    case SettingsItem::Battery:
+    case SettingsItem::Firmware:
+      return false;
+    default:
+      return true;
+  }
+}
+
 }  // namespace
 
 VolumePreset volume_preset() { return g_volume_preset; }
@@ -37,7 +55,16 @@ const char* volume_preset_name(VolumePreset value) {
 }
 
 void SettingsMenu::focus_next() {
-  focused_ = static_cast<SettingsItem>((focused_index() + 1) % count());
+  // Bounded by count(): every non-focusable item skipped is one fewer than
+  // count() possible stops, so this always finds the next focusable row
+  // (there is always at least one - Language) without ever spinning past
+  // a full lap.
+  std::size_t next = focused_index();
+  for (std::size_t step = 0; step < count(); ++step) {
+    next = (next + 1) % count();
+    if (is_focusable(static_cast<SettingsItem>(next))) break;
+  }
+  focused_ = static_cast<SettingsItem>(next);
 }
 
 SettingsAction SettingsMenu::activate() {
@@ -66,12 +93,11 @@ SettingsAction SettingsMenu::activate() {
                              : SettingsAction::StartUpdateCheck;
     case SettingsItem::Runtime:
     case SettingsItem::Battery:
-      // Display only, like the firmware row.
-      return SettingsAction::None;
     case SettingsItem::Firmware:
-      // Display only. Selecting the version row does nothing on purpose:
-      // there is no sensible action, and inventing one would make the row a
-      // trap for someone pressing their way down the list.
+      // Display only, and unreachable via focus_next() (see is_focusable()
+      // above) - this branch is defensive/exhaustiveness only, not a path
+      // the UI can actually take. Kept returning None rather than removed:
+      // if a setter for focused_ is ever added, this stays correct.
       return SettingsAction::None;
     case SettingsItem::Count:
       break;

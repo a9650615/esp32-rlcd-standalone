@@ -970,23 +970,43 @@ extern "C" void app_main() {
   // is absent or unresponsive should mean no sound, not no boot. Nothing
   // plays here - audio_init() only readies the I2S/codec path, and leaves
   // the amplifier off until a /beep request asks for a tone.
+  //
+  // A disabled module logging a warning every boot teaches people to skim
+  // past real warnings, so "compiled out" and "compiled in but failed" get
+  // told apart here. audio's stub and es8311/i2s's real failures can return
+  // the exact same code (esp_codec_dev's ESP_CODEC_DEV_NOT_SUPPORT is
+  // literally ESP_ERR_NOT_SUPPORTED, and the i2s driver returns it for real
+  // config failures too), so the return value can't be trusted to tell them
+  // apart - unlike airplay below, this one case needs the #ifdef.
   const esp_err_t audio_result = audio::audio_init();
+#ifdef CONFIG_AUDIO_ENABLE
   if (audio_result == ESP_OK) {
     ESP_LOGI(kTag, "startup diagnostics audio=ready (ES8311)");
   } else {
     ESP_LOGW(kTag, "startup diagnostics audio=unavailable: %s",
              esp_err_to_name(audio_result));
   }
+#else
+  ESP_LOGI(kTag, "startup diagnostics audio=disabled (CONFIG_AUDIO_ENABLE=n)");
+#endif
 
   // Same non-fatal treatment as audio_init() just above, for the same
-  // reason: this board's primary job is the display, and CONFIG_AIRPLAY_
-  // ENABLE=n (or a real AirPlay stack that fails to start) must mean no
-  // AirPlay, not no boot. No #ifdef here either way - airplay.hpp's
-  // inline no-ops make this call and this log line correct whether or not
-  // the module is compiled in.
+  // reason: this board's primary job is the display, and a real AirPlay
+  // stack that fails to start must mean no AirPlay, not no boot. No #ifdef
+  // around the call itself - airplay.hpp's inline no-ops make it correct
+  // either way. Unlike audio just above, the disabled-vs-failed split here
+  // can lean on the return code instead of a second #ifdef:
+  // ESP_ERR_NOT_SUPPORTED is airplay_init()'s stub signature and only its
+  // stub signature - the real path's raop_init() returns ESP_OK or one of
+  // ESP_ERR_RAOP_* (0x7000+, esp_raop_receiver.h), never
+  // ESP_ERR_NOT_SUPPORTED, so this can't misclassify a genuine startup
+  // failure as "not compiled in".
   const esp_err_t airplay_result = airplay::airplay_init();
   if (airplay_result == ESP_OK) {
     ESP_LOGI(kTag, "startup diagnostics airplay=ready");
+  } else if (airplay_result == ESP_ERR_NOT_SUPPORTED) {
+    ESP_LOGI(kTag,
+             "startup diagnostics airplay=disabled (CONFIG_AIRPLAY_ENABLE=n)");
   } else {
     ESP_LOGW(kTag, "startup diagnostics airplay=unavailable: %s",
              esp_err_to_name(airplay_result));
