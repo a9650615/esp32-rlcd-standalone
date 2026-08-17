@@ -26,6 +26,7 @@ add_executable(host_tests
     test_ota.cpp
     test_settings_menu.cpp
     test_history.cpp
+    test_audio_drain.cpp
     ../../components/app_core/app_snapshot.cpp
     ../../components/app_core/history.cpp
     ../../components/app_core/page_registry.cpp
@@ -54,6 +55,7 @@ target_include_directories(host_tests PRIVATE
     ../../components/market/include
     ../../components/net_log/include
     ../../components/ota/include
+    ../../modules/audio/include
     ../../.tools/esp-idf/components/json/cJSON
 )
 if(HOST_DEMO_MISSING_PAGE)

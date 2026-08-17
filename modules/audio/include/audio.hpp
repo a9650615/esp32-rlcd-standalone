@@ -4,6 +4,8 @@
 
 #include <esp_err.h>
 
+#include <cstddef>
+
 // Codec/tone output for the board's ES8311 codec (0x18 on the shared I2C
 // bus, see board_i2c.hpp) and its I2S TX link (pins in board_pins.hpp) -
 // enough to play a short alarm/notification tone through the speaker on the
@@ -76,6 +78,51 @@ esp_err_t audio_play_diagnostic_sweep(bool enable_amplifier = true);
 // audio_play_diagnostic_sweep().
 esp_err_t audio_play_diagnostic_sweep_async(bool enable_amplifier = true);
 
+// --- Streaming: one open codec/I2S session held across an entire call,
+// for a source that hands over PCM in chunks over an indefinite period -
+// modules/airplay's eventual RAOP receiver, once that module exists and the
+// operator supplies the RSA key it needs (see modules/airplay's own
+// README). Not wired to anything yet: nothing in this module or main/
+// app_main.cpp calls these three functions today.
+//
+// Deliberately a separate set of functions from audio_play_tone(), not
+// built on top of it or sharing a "session" abstraction with it - see the
+// long comment above the streaming code in audio.cpp for why forcing a
+// tone (one call, known total duration, generated up front) and a stream
+// (a task-owned session of unknown length, arriving in chunks) through one
+// shape was rejected. audio_play_tone()/_async() are entirely unchanged by
+// this and continue to work exactly as before.
+//
+// Opens the codec/I2S channel at `sample_rate`, always 16-bit interleaved
+// stereo (every path in this module already uses that format; the I2S
+// peripheral rejects mono outright, so there is no channels parameter).
+// Refuses (ESP_ERR_INVALID_STATE) if a tone, a sweep, or another stream is
+// already using the shared codec/I2S resource - the same busy guard
+// audio_play_tone_async() uses, so a tone requested mid-stream is refused
+// exactly like an overlapping tone would be, and vice versa. Held until
+// audio_stream_close() - or, if that is never called (the writer task
+// dies, or simply stops), until an internal watchdog notices no
+// audio_stream_write() call has arrived in several seconds and closes it
+// on the caller's behalf; either way the amplifier ends low and the busy
+// slot is released.
+esp_err_t audio_stream_open(int sample_rate);
+
+// Writes one chunk of interleaved 16-bit PCM at the rate given to
+// audio_stream_open(). Blocking, like esp_codec_dev_write() itself. The
+// amplifier and the tray indicator go active on the first call after
+// audio_stream_open() succeeds, not on open() itself, and stay active for
+// the rest of the session - opening a stream that never receives any data
+// must stay silent and invisible. A write failure closes the stream
+// immediately rather than leaving it open in a state nothing will recover
+// from.
+esp_err_t audio_stream_write(const void* data, size_t length_bytes);
+
+// Ends the stream: drains, drops the amplifier, clears the tray indicator,
+// closes the codec/I2S session, and releases the busy slot - always safe
+// to call, including when no stream is open (a no-op) or after the
+// watchdog above has already closed it.
+esp_err_t audio_stream_close();
+
 // No tray-indicator registration function here: audio_init() registers this
 // module's own icon directly with app_core's tray registry (see
 // tray_registry.hpp) as part of its own setup, and write_tone_step() (in
@@ -105,6 +152,14 @@ inline esp_err_t audio_play_diagnostic_sweep(bool = true) {
 inline esp_err_t audio_play_diagnostic_sweep_async(bool = true) {
   return ESP_ERR_NOT_SUPPORTED;
 }
+inline esp_err_t audio_stream_open(int /*sample_rate*/) {
+  return ESP_ERR_NOT_SUPPORTED;
+}
+inline esp_err_t audio_stream_write(const void* /*data*/,
+                                    size_t /*length_bytes*/) {
+  return ESP_ERR_NOT_SUPPORTED;
+}
+inline esp_err_t audio_stream_close() { return ESP_OK; }
 
 #endif  // CONFIG_AUDIO_ENABLE
 

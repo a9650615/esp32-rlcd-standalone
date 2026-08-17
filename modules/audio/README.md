@@ -292,6 +292,132 @@ needs to go away cleanly, the fix belongs upstream in `esp_codec_dev` (skip
 the defensive disable when the channel is already `I2S_CHAN_STATE_READY`),
 not in this module.
 
+## Streaming: `audio_stream_open()` / `audio_stream_write()` / `audio_stream_close()`
+
+The main remaining engineering work before AirPlay can make sound. The tone
+path above generates a fixed-length buffer, opens the codec, writes it, and
+closes - a stream is a different shape in four ways: a different sample
+rate (44.1 kHz stereo, AirPlay's rate, instead of this module's own 16 kHz),
+one codec/I2S session held across a whole listening session instead of one
+per call, data arriving in chunks from another task indefinitely instead of
+generated up front, and the amplifier held for the session instead of
+raised and dropped per tone.
+
+**Not built on top of `audio_play_tone()`, and not sharing a "session"
+abstraction with it - three separate functions instead.** A tone's
+lifetime is one call with a known total duration before the first byte is
+written; a stream's lifetime is a task-owned session of unknown length
+that can end by the caller simply going quiet, never mind calling anything.
+Forcing both through one shape would have meant bending the tone path -
+the one thing in this module verified across several hardware rounds
+already - around a session concept it does not need, for the sake of a
+feature that has no real caller yet. The two paths share the DMA-drain
+formula (`audio_drain.hpp`, below) and the GPIO/tray sequencing convention,
+duplicated in a handful of lines rather than factored into a third
+abstraction neither fully fits. `audio_play_tone()`/`audio_play_tone_async()`
+are entirely unchanged by this work.
+
+**Sample rate: no `channels` parameter, and no hardcoded rate whitelist.**
+Every path in this module already writes interleaved 16-bit stereo -
+`esp_codec_dev`'s I2S data interface rejects an odd channel count outright
+- so a `channels` argument that could only ever be 2 does not need to
+exist. `audio_stream_open(sample_rate)` does not validate `sample_rate`
+against a hand-maintained list either: `esp_codec_dev_open()` already
+fails cleanly (`ESP_CODEC_DEV_NOT_SUPPORT`) when the ES8311 driver's own
+clock-coefficient table (`coeff_div[]` in the managed
+`espressif__esp_codec_dev` component's `es8311.c`) has no row for the
+requested rate, and duplicating that table by hand here is exactly the
+kind of second copy that drifts from the real one.
+
+Read directly, that table has rows for both rates this module actually
+needs: **16000 Hz** (four MCLK ratios) and **44100 Hz** (four MCLK ratios:
+11.2896/5.6448/2.8224/1.4112 MHz, i.e. 256x/128x/64x/32x). 44100's 256x row
+matches `I2S_STD_CLK_DEFAULT_CONFIG`'s own default MCLK multiple, so no
+`mclk_multiple` override is needed to reach it.
+
+**Switching rates needs the codec closed and reopened - confirmed by
+reading `esp_codec_dev.c`, not assumed.** `esp_codec_dev_open()` is a
+silent no-op ("Input already open") if the device is already open; it does
+not reconfigure anything in that case. The actual reconfiguration - both
+the codec's own `set_fs()` and, via the I2S data interface's `set_fmt()`,
+the I2S peripheral's own clock generator (`i2s_channel_reconfig_std_clock()`,
+in `audio_codec_data_i2s.c`) - only runs on a *fresh* open. So a tone at
+16 kHz and a stream at 44.1 kHz on the same board simply take turns
+calling `esp_codec_dev_open()`/`esp_codec_dev_close()` on the one shared
+`g_codec_dev`/I2S channel `audio_init()` already set up; nothing about
+switching rates needs a second I2S channel or codec device.
+
+**Concurrency: the same busy guard `audio_play_tone_async()` already
+uses, now covering a session instead of one task's brief run.**
+`audio_stream_open()` claims `g_playback_busy` for the entire stream and
+gives it back only at `audio_stream_close()` or via the watchdog below - so
+a tone requested mid-stream is refused exactly like an overlapping tone
+would be (same `ESP_ERR_INVALID_STATE`), and a stream requested mid-tone is
+refused the same way in the other direction. Neither direction needed new
+code; both already fell out of reusing one semaphore for a longer hold.
+
+**The amplifier ends low on every exit path, including one nobody called
+`audio_stream_close()` on.** Three mechanisms, not one:
+- The normal path: `audio_stream_close()` drains (see below), drops
+  GPIO46, clears the tray indicator, and closes the codec.
+- A write failure: `audio_stream_write()` treats a failed
+  `esp_codec_dev_write()` as a broken pipe, not a reason to leave the
+  amplifier on hoping the next call does better - it closes the stream
+  immediately, on the same call that discovered the failure.
+- **Abandonment** - the writer task dies, or simply stops calling without
+  ever closing: an internal `esp_timer` watchdog, re-armed on every
+  `audio_stream_open()`/`audio_stream_write()` call, force-closes the
+  stream if `kStreamWatchdogTimeoutMs` (2 s) passes with no write. This is
+  the one case a tone never had to handle - a tone's caller cannot vanish
+  mid-call the way a stream's owning task can - and it is why the watchdog
+  runs on its own `esp_timer` task rather than trusting the writer to
+  clean up after itself. A separate mutex (`g_stream_mutex`, distinct from
+  the session-lifetime `g_playback_busy` above) protects the handful of
+  state variables and hardware calls the watchdog and the owning task can
+  otherwise race on.
+
+**Drain-before-drop, generalized to any rate.** The tone path's `kDrainMs`
+used to be a literal derived once, at compile time, from the DMA ring depth
+(`dma_desc_num * dma_frame_num` frames) at this module's one fixed 16 kHz
+rate. `audio_drain.hpp` turns that into `drain_ms_for_rate(sample_rate_hz)`
+- the ring depth is a fixed hardware property of the I2S channel regardless
+of rate, but how many milliseconds that many frames take to clock out
+depends on the rate, so the streaming path (or any future caller at a
+different rate) derives its own wait from the same formula instead of
+reusing a 16 kHz-shaped constant. This is also the one piece of this
+module with no ESP-IDF dependency, so it is the one piece with a host
+test (`tests/host/test_audio_drain.cpp`) - everything else here touches a
+real I2S/codec driver and has no host-testable form.
+
+**No debug route for this.** `/beep`/`/beep-sweep` exist because a real
+tone is exactly what they claim to be; a `/stream=`-style route that
+fabricated audio just to exercise this path would be the same fabrication
+problem this whole session's UI work has been removing (see the market
+chart honesty fix, the dither test card's own labelling as synthetic).
+There is no real consumer yet - `modules/airplay`'s RAOP receiver is the
+eventual one, wired up in a later pass, once the operator supplies the RSA
+key that module needs before it can run at all - so exercising this against
+real, or clearly-labelled synthetic, audio is deferred to that pass rather
+than built now against nothing.
+
+**What is verified, and what only flows once real audio does.** Read
+directly from source: which sample rates the ES8311 path accepts, that
+switching them needs a close/reopen not a live reconfigure, and that
+`esp_codec_dev_open()`'s already-open case is a no-op (all above). Host-
+tested: `drain_ms_for_rate()`'s arithmetic. **Not yet run on hardware at
+all** - there is no caller, so none of the following has ever executed
+once: that `audio_stream_open(44100)` actually succeeds against the real
+ES8311 (as opposed to the coefficient table merely having a matching row
+on paper), that a real multi-chunk `audio_stream_write()` session produces
+continuous, glitch-free audio rather than clicks at chunk boundaries, that
+the watchdog's 2 s timeout is the right number for a real network-jittery
+AirPlay session (too short risks closing a healthy stream during a
+buffering stall; too long risks leaving the amplifier on for multiple
+seconds after a real failure), and that the tray indicator's active window
+actually spans a whole streaming session correctly on the physical panel.
+All of that needs the AirPlay integration pass this task deliberately does
+not include.
+
 ## Verifying the tray's speaker indicator
 
 Non-blocking playback is what makes this possible at all: with the old

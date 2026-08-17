@@ -18,7 +18,9 @@
 #include <es8311_codec.h>
 #include <esp_codec_dev.h>
 #include <esp_codec_dev_defaults.h>
+#include <esp_timer.h>
 
+#include "audio_drain.hpp"
 #include "board_i2c.hpp"
 #include "board_pins.hpp"
 #include "tray_registry.hpp"
@@ -79,24 +81,14 @@ constexpr int kFadeMs = 5;
 constexpr int kSilenceLeadMs = 20;
 constexpr int kSilenceTrailMs = 20;
 
-// Explicit, not left at whatever I2S_CHANNEL_DEFAULT_CONFIG happens to
-// default to, because kDrainMs below is derived from these same two numbers:
-// if the channel's actual DMA depth ever changes, it has to change here too,
-// in the one place both the channel config and the drain wait read it from.
-constexpr size_t kDmaDescNum = 6;
-constexpr size_t kDmaFrameNum = 240;
-
-// i2s_channel_write() (called by esp_codec_dev_write()) returns once data is
-// memcpy'd into a free DMA descriptor, not once that descriptor has actually
-// been clocked out - see audio_codec_data_i2s.c / i2s_common.c. The ring
-// holds kDmaDescNum * kDmaFrameNum frames total, so in the worst case
-// (queue full when the last write lands) that much audio can still be
-// in flight after esp_codec_dev_write() has already returned. Dropping
-// GPIO46 or disabling the channel before this much time has passed can cut
-// off the tail of the fade-out and the trailing silence - exactly the click
-// the lead/trail silence exists to prevent.
-constexpr uint32_t kDrainMs =
-    (kDmaDescNum * kDmaFrameNum * 1000 + kSampleRateHz - 1) / kSampleRateHz;
+// kDmaDescNum/kDmaFrameNum (audio_drain.hpp) are what setup_i2s() below
+// configures the channel with; kDrainMs is drain_ms_for_rate() evaluated at
+// this module's one fixed tone rate. See audio_drain.hpp's own comment for
+// why esp_codec_dev_write() returning is not proof the samples it just
+// queued have reached the pin yet, and why the streaming path (a different,
+// caller-chosen rate) derives its own wait from the same formula rather than
+// reusing this literal constant.
+constexpr uint32_t kDrainMs = drain_ms_for_rate(kSampleRateHz);
 
 // ES8311 register map is documented up to 0x45; dumping it is cheap (one
 // byte per I2C transaction) and is the only evidence that actually shows
@@ -319,9 +311,11 @@ esp_err_t setup_codec() {
 }
 
 // One interleaved-stereo sample count worth of silence, used as the lead-in
-// and lead-out around the amplifier switching.
-std::vector<int16_t> make_silence(int duration_ms) {
-  const size_t frames = static_cast<size_t>(kSampleRateHz) * duration_ms / 1000;
+// and lead-out around the amplifier switching. Takes the sample rate
+// explicitly, not kSampleRateHz - the streaming path uses this too, at
+// whatever rate a session actually opened at.
+std::vector<int16_t> make_silence(int duration_ms, uint32_t sample_rate_hz) {
+  const size_t frames = static_cast<size_t>(sample_rate_hz) * duration_ms / 1000;
   return std::vector<int16_t>(frames * kChannels, 0);
 }
 
@@ -407,9 +401,9 @@ void dump_registers() {
 // line never raised, the amplifier is not actually controlled by this pin.
 bool write_tone_step(int frequency_hz, int duration_ms,
                      bool enable_amplifier = true) {
-  std::vector<int16_t> lead = make_silence(kSilenceLeadMs);
+  std::vector<int16_t> lead = make_silence(kSilenceLeadMs, kSampleRateHz);
   std::vector<int16_t> tone = make_tone(frequency_hz, duration_ms);
-  std::vector<int16_t> trail = make_silence(kSilenceTrailMs);
+  std::vector<int16_t> trail = make_silence(kSilenceTrailMs, kSampleRateHz);
 
   bool ok = true;
   int result = esp_codec_dev_write(g_codec_dev, lead.data(),
@@ -602,7 +596,7 @@ esp_err_t audio_play_diagnostic_sweep(bool enable_amplifier) {
 
     // Silence between steps, amplifier already low (write_tone_step's own
     // cleanup), so the operator hears distinct steps rather than one slide.
-    std::vector<int16_t> gap = make_silence(kSweepGapMs);
+    std::vector<int16_t> gap = make_silence(kSweepGapMs, kSampleRateHz);
     esp_codec_dev_write(g_codec_dev, gap.data(),
                         static_cast<int>(gap.size() * sizeof(int16_t)));
   }
@@ -618,13 +612,24 @@ esp_err_t audio_play_diagnostic_sweep(bool enable_amplifier) {
 namespace {
 
 // One playback at a time, refused rather than queued if one is already
-// running. Not decorative: esp_codec_dev's own open()/close() (see
-// esp_codec_dev.c in the managed component) guard against a redundant call
-// only with a plain bool on the codec_dev_t struct - there is no mutex
-// anywhere in that struct. Two genuinely overlapping playbacks (e.g. two
-// requests reaching this module from separate tasks at once) would race
-// that bool with no protection at all; this closes that off by construction
-// rather than leaving it as a latent, hard-to-reproduce bug.
+// running - a tone, a sweep, and (see audio_stream_open() below) a
+// streaming session all draw on this same one I2S channel and one codec
+// device, so all three share this one guard. Not decorative: esp_codec_dev's
+// own open()/close() (see esp_codec_dev.c in the managed component) guard
+// against a redundant call only with a plain bool on the codec_dev_t struct -
+// there is no mutex anywhere in that struct. Two genuinely overlapping
+// playbacks (e.g. two requests reaching this module from separate tasks at
+// once) would race that bool with no protection at all; this closes that
+// off by construction rather than leaving it as a latent, hard-to-reproduce
+// bug.
+//
+// A tone/sweep requested while a stream is open is refused exactly like two
+// overlapping tones would be - claim_playback_slot() cannot tell why the
+// slot is taken, only that it is. A stream is expected to run for an entire
+// session (far longer than a tone), so this is a real, not theoretical,
+// case: whoever owns the stream (audio_stream_close()) must give the slot
+// back when the session ends, or nothing else in this module can ever play
+// again.
 //
 // This is NOT the explanation for an
 // "i2s_common: i2s_channel_disable(...): the channel has not been enabled
@@ -684,6 +689,135 @@ void sweep_task(void* argument) {
   vTaskDelete(nullptr);
 }
 
+// --- Streaming: one open codec/I2S session held across an entire call,
+// rather than one generated buffer per call. The eventual consumer is
+// modules/airplay's RAOP receiver (not wired up yet - see audio.hpp's own
+// comment on audio_stream_open()), which hands over PCM in chunks,
+// indefinitely, instead of handing over one fixed-length buffer up front.
+//
+// Deliberately NOT built on top of write_tone_step()/audio_play_tone(): a
+// tone's lifetime is one call, with its total duration known before the
+// first byte is written; a stream's lifetime is a session of unknown
+// length, arriving from a task this module does not own, and ending in
+// ways a tone never has to consider (the caller simply stops calling, or
+// its task dies). Forcing both shapes through one abstraction would have
+// meant either bending the tone path - the one thing in this module
+// verified across several hardware rounds already - around a session
+// concept it does not need, or growing the streaming path around
+// assumptions (a known total duration) that do not hold for it. The two
+// paths share the DMA-drain formula (audio_drain.hpp) and the exact GPIO/
+// tray sequencing convention (see write_tone_step() vs. the functions
+// below), duplicated in a handful of lines rather than factored into a
+// third abstraction neither one fully fits.
+//
+// g_stream_mutex is a genuinely different lock from g_playback_busy above:
+// g_playback_busy is held for an entire session (claimed at
+// audio_stream_open(), given back at audio_stream_close() or by the
+// watchdog) to keep a tone/sweep from running at the same time as a
+// stream; g_stream_mutex is a short-lived critical-section lock around
+// this module's own stream state and hardware calls, needed because the
+// watchdog timer below runs on the esp_timer task, not the caller's -
+// without it, a force-close firing at the exact moment a real write is in
+// flight could tear down state out from under it.
+SemaphoreHandle_t g_stream_mutex = nullptr;
+esp_timer_handle_t g_stream_watchdog = nullptr;
+bool g_stream_open = false;
+// Set once real audio starts flowing (see audio_stream_write()), not at
+// open() - opening a stream that never receives a chunk must never touch
+// GPIO46 or the tray at all.
+bool g_stream_amp_active = false;
+uint32_t g_stream_sample_rate = 0;
+
+// A stream is "abandoned" - the writer task died, or simply stopped
+// calling audio_stream_write() without ever calling audio_stream_close() -
+// rather than merely idle: real audio (AirPlay included) does not have
+// multi-second gaps between chunks in normal operation, so this is
+// generous against a genuine network hiccup while still bounding how long
+// the amplifier can be left on by something that is never coming back.
+constexpr uint32_t kStreamWatchdogTimeoutMs = 2000;
+
+// Ends the session: trailing silence, the same drain wait
+// write_tone_step() uses (here at whatever rate the stream opened at, via
+// drain_ms_for_rate()), amplifier and tray indicator cleared, codec closed,
+// busy slot released. Safe to call when no stream is open (checked first) -
+// both audio_stream_close() and the watchdog below rely on that. Caller
+// must already hold g_stream_mutex.
+void close_stream_locked() {
+  if (!g_stream_open) return;
+  if (g_stream_watchdog != nullptr) esp_timer_stop(g_stream_watchdog);
+  if (g_stream_amp_active) {
+    std::vector<int16_t> trail = make_silence(kSilenceTrailMs, g_stream_sample_rate);
+    esp_codec_dev_write(g_codec_dev, trail.data(),
+                        static_cast<int>(trail.size() * sizeof(int16_t)));
+    vTaskDelay(pdMS_TO_TICKS(drain_ms_for_rate(g_stream_sample_rate)));
+    // Unconditional once amp_active is true, on every path that reaches
+    // here - the same guarantee write_tone_step() makes for the tone path:
+    // this line is what actually satisfies "the amplifier ends low on
+    // every exit path", not merely the intent to reach it.
+    gpio_set_level(board::kAudioAmpEnable, 0);
+    ESP_LOGI(kTag, "audio stream: GPIO46 (amp enable) reads %d after dropping",
+             gpio_get_level(board::kAudioAmpEnable));
+    ESP_LOGI(kTag, "tray indicator: requesting slot %d active=false",
+             static_cast<int>(g_tray_indicator.slot));
+    app_core::set_tray_indicator_active(g_tray_indicator, false);
+  }
+  esp_codec_dev_close(g_codec_dev);
+  g_stream_open = false;
+  g_stream_amp_active = false;
+  // Balances whichever of audio_stream_open()/claim_playback_slot() first
+  // claimed this - always exactly one give per one take, since this only
+  // runs at all when g_stream_open was true, which only becomes true after
+  // a successful claim.
+  xSemaphoreGive(g_playback_busy);
+}
+
+// Runs on the esp_timer task, not the stream's own caller - see
+// g_stream_mutex's own comment above for why this takes it before touching
+// anything. A bounded wait, not portMAX_DELAY: this is a one-shot timer
+// firing because writes stopped, so nothing should be holding the mutex
+// for long; if a real write is somehow still in flight, that write's own
+// audio_stream_write() call already re-armed the watchdog, so skipping
+// this particular firing loses nothing.
+void stream_watchdog_fired(void*) {
+  if (g_stream_mutex == nullptr) return;
+  if (xSemaphoreTake(g_stream_mutex, pdMS_TO_TICKS(100)) != pdTRUE) return;
+  if (g_stream_open) {
+    ESP_LOGW(kTag,
+             "audio stream: no write for %u ms; treating it as abandoned and "
+             "closing it",
+             static_cast<unsigned>(kStreamWatchdogTimeoutMs));
+    close_stream_locked();
+  }
+  xSemaphoreGive(g_stream_mutex);
+}
+
+// Lazily created on first stream use, same reasoning as g_playback_busy
+// above.
+bool ensure_stream_primitives() {
+  if (g_stream_mutex == nullptr) {
+    g_stream_mutex = xSemaphoreCreateMutex();
+    if (g_stream_mutex == nullptr) return false;
+  }
+  if (g_stream_watchdog == nullptr) {
+    const esp_timer_create_args_t args = {
+        .callback = &stream_watchdog_fired,
+        .arg = nullptr,
+        .dispatch_method = ESP_TIMER_TASK,
+        .name = "audio_stream_wd",
+    };
+    if (esp_timer_create(&args, &g_stream_watchdog) != ESP_OK) return false;
+  }
+  return true;
+}
+
+// (Re)starts the abandoned-stream countdown; called at open and on every
+// write, so it only ever fires after a genuine gap.
+void arm_stream_watchdog() {
+  esp_timer_stop(g_stream_watchdog);  // harmless if not currently running
+  esp_timer_start_once(g_stream_watchdog,
+                       static_cast<uint64_t>(kStreamWatchdogTimeoutMs) * 1000);
+}
+
 }  // namespace
 
 esp_err_t audio_play_tone_async(int frequency_hz, int duration_ms) {
@@ -727,6 +861,157 @@ esp_err_t audio_play_diagnostic_sweep_async(bool enable_amplifier) {
   (void)request.release();  // the task owns it now
   ESP_LOGI(kTag, "diagnostic sweep started (amplifier %s)",
            enable_amplifier ? "enabled" : "bypassed");
+  return ESP_OK;
+}
+
+// Opens one PCM streaming session: claims the shared busy slot for the
+// whole session (see g_playback_busy's own comment - not released until
+// audio_stream_close() or the watchdog runs), then opens the codec/I2S
+// channel at `sample_rate`. Always 16-bit, interleaved stereo - the one
+// format every path in this module already uses (the I2S peripheral
+// rejects an odd channel count outright), so there is no channels
+// parameter to get wrong.
+//
+// No hardcoded whitelist of accepted rates: the ES8311 driver's own clock-
+// coefficient table (es8311.c) is what actually decides, via
+// esp_codec_dev_open() -> codec->set_fs() -> ESP_CODEC_DEV_NOT_SUPPORT on
+// no match, and duplicating that table here by hand is exactly the kind of
+// second copy that drifts. Confirmed present in that table, by reading it
+// directly: 16000 Hz (this module's own tone rate) and 44100 Hz (AirPlay's
+// rate) both have rows, so both are expected to succeed; 44100's row pairs
+// with an 11.2896 MHz MCLK (256x), which is I2S_STD_CLK_DEFAULT_CONFIG's
+// own default multiple - no mclk_multiple override needed.
+//
+// Amplifier and tray indicator are not touched here - see
+// audio_stream_write() for why opening a stream that never receives a
+// chunk must be silent and invisible.
+esp_err_t audio_stream_open(int sample_rate) {
+  if (g_codec_dev == nullptr) {
+    ESP_LOGW(kTag, "audio_stream_open called before a successful audio_init()");
+    return ESP_ERR_INVALID_STATE;
+  }
+  if (sample_rate <= 0) {
+    ESP_LOGW(kTag, "audio_stream_open: invalid sample_rate %d", sample_rate);
+    return ESP_ERR_INVALID_ARG;
+  }
+  if (!ensure_stream_primitives()) {
+    ESP_LOGE(kTag, "audio stream: mutex/watchdog allocation failed");
+    return ESP_ERR_NO_MEM;
+  }
+  if (!claim_playback_slot()) {
+    ESP_LOGW(kTag, "audio_stream_open refused: playback already in progress");
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  xSemaphoreTake(g_stream_mutex, portMAX_DELAY);
+  esp_codec_dev_sample_info_t sample_info{};
+  sample_info.bits_per_sample = 16;
+  sample_info.channel = kChannels;
+  sample_info.sample_rate = static_cast<uint32_t>(sample_rate);
+  // esp_codec_dev_open() is a silent no-op ("Input already open", see
+  // esp_codec_dev.c) if the device is already open, rather than
+  // reconfiguring it - claim_playback_slot() above is what guarantees this
+  // is never reached while it already is, not this call. This is also why
+  // switching rates (e.g. this stream's 44.1 kHz vs. the tone path's fixed
+  // 16 kHz) needs the codec closed and reopened, never merely reconfigured
+  // while open: reopening is the only path that actually calls back down
+  // into the I2S data interface's set_fmt(), which is what reconfigures
+  // the I2S peripheral's own clock generator (i2s_channel_reconfig_std_
+  // clock(), confirmed by reading audio_codec_data_i2s.c) and the codec's
+  // set_fs().
+  const int result = esp_codec_dev_open(g_codec_dev, &sample_info);
+  if (result != ESP_CODEC_DEV_OK) {
+    ESP_LOGW(kTag,
+             "audio stream: codec open failed at %d Hz: %d - see es8311.c's "
+             "coeff_div[] table if this is neither 16000 nor 44100",
+             sample_rate, result);
+    xSemaphoreGive(g_stream_mutex);
+    xSemaphoreGive(g_playback_busy);
+    return ESP_FAIL;
+  }
+  // Re-applied on every open, same as audio_play_tone(): nothing here
+  // assumes the codec remembers a volume from a previous, since-closed
+  // session.
+  esp_codec_dev_set_out_vol(g_codec_dev, g_volume_percent);
+  g_stream_sample_rate = static_cast<uint32_t>(sample_rate);
+  g_stream_amp_active = false;
+  g_stream_open = true;
+  arm_stream_watchdog();
+  xSemaphoreGive(g_stream_mutex);
+
+  ESP_LOGI(kTag, "audio stream opened: %d Hz", sample_rate);
+  return ESP_OK;
+}
+
+// Writes one chunk of interleaved 16-bit stereo PCM at the rate given to
+// audio_stream_open(). Blocking, exactly like esp_codec_dev_write() itself
+// (and like the tone path's own writes) - the caller's own task is
+// expected to own pacing this, the same way it owns decoding.
+//
+// The first successful call after audio_stream_open() - not open() itself -
+// is what raises the amplifier and marks the tray indicator active, via
+// the identical lead-in-silence-then-GPIO46-then-tray sequence
+// write_tone_step() uses (kept as a separate, duplicated sequence rather
+// than a shared helper - see this section's own opening comment for why).
+// Both then stay set for the rest of the session; every later call in the
+// same session only writes data and re-arms the watchdog.
+//
+// Every call re-arms the abandoned-stream watchdog: this is the "still
+// alive" signal that timer is measuring the absence of.
+esp_err_t audio_stream_write(const void* data, size_t length_bytes) {
+  if (g_stream_mutex == nullptr) {
+    ESP_LOGW(kTag, "audio_stream_write called with no stream ever opened");
+    return ESP_ERR_INVALID_STATE;
+  }
+  xSemaphoreTake(g_stream_mutex, portMAX_DELAY);
+  if (!g_stream_open) {
+    xSemaphoreGive(g_stream_mutex);
+    ESP_LOGW(kTag, "audio_stream_write called with no stream open");
+    return ESP_ERR_INVALID_STATE;
+  }
+  arm_stream_watchdog();
+
+  if (!g_stream_amp_active) {
+    std::vector<int16_t> lead = make_silence(kSilenceLeadMs, g_stream_sample_rate);
+    esp_codec_dev_write(g_codec_dev, lead.data(),
+                        static_cast<int>(lead.size() * sizeof(int16_t)));
+    ESP_LOGI(kTag, "tray indicator: requesting slot %d active=true",
+             static_cast<int>(g_tray_indicator.slot));
+    app_core::set_tray_indicator_active(g_tray_indicator, true);
+    gpio_set_level(board::kAudioAmpEnable, 1);
+    ESP_LOGI(kTag, "audio stream: GPIO46 (amp enable) reads %d after raising",
+             gpio_get_level(board::kAudioAmpEnable));
+    g_stream_amp_active = true;
+  }
+
+  const int result = esp_codec_dev_write(g_codec_dev, const_cast<void*>(data),
+                                         static_cast<int>(length_bytes));
+  const bool ok = (result == ESP_CODEC_DEV_OK);
+  if (!ok) {
+    // A write failure is a real driver problem, not a reason to leave the
+    // stream open hoping the next call does better - "the amplifier ends
+    // low on every exit path" applies to this one too, immediately, rather
+    // than waiting kStreamWatchdogTimeoutMs for the watchdog to notice
+    // nothing is working.
+    ESP_LOGW(kTag,
+             "audio stream: write failed (%d); closing the stream rather "
+             "than leaving it half-broken",
+             result);
+    close_stream_locked();
+  }
+  xSemaphoreGive(g_stream_mutex);
+  return ok ? ESP_OK : ESP_FAIL;
+}
+
+// Ends the session and guarantees the amplifier is left low - see
+// close_stream_locked()'s own comment for the actual sequence. Always
+// returns ESP_OK: safe (and a no-op) to call whether or not a stream is
+// actually open, including after the watchdog has already force-closed it.
+esp_err_t audio_stream_close() {
+  if (g_stream_mutex == nullptr) return ESP_OK;  // never opened; nothing to do
+  xSemaphoreTake(g_stream_mutex, portMAX_DELAY);
+  close_stream_locked();
+  xSemaphoreGive(g_stream_mutex);
   return ESP_OK;
 }
 
