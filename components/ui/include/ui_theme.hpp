@@ -5,9 +5,11 @@
 // For app_core::TrayIndicatorBitmap, which tray_indicator_icon() renders.
 #include "tray_registry.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <array>
 #include <cstddef>
+#include <string_view>
 
 #ifndef UI_THEME_GEOMETRY_ONLY
 #include <lvgl.h>
@@ -161,9 +163,230 @@ struct WifiIconParts {
 };
 
 struct BatteryIconParts {
+  // The level bar. Shown only while not charging - see charging_bolt below
+  // for what covers it while charging, and build_battery_charging_composite()
+  // (ui_theme.hpp) for why showing both at once was tried twice and
+  // rejected both times.
   lv_obj_t* fill = nullptr;
   int body_width = 0;
+  // The charging overlay: one canvas, opaque, positioned exactly over
+  // `fill`'s own footprint, its content built once at construction
+  // (battery_icon(), ui_theme.cpp) rather than recomputed per level update
+  // - see build_battery_charging_composite()'s own comment for exactly
+  // what it draws (a solid field with the bolt knocked out of it) and why
+  // it no longer depends on charge level at all.
+  lv_obj_t* charging_bolt = nullptr;
 };
+
+// The nub the battery outline reserves at its right end (see battery_icon()),
+// pulled out as a named constant rather than left as a literal duplicated in
+// both the drawing code and this geometry function.
+inline constexpr int kBatteryIconNubWidth = 3;
+
+// The exact inner Rect a fully-filled level bar reaches: battery_icon()'s
+// own `body_width - 4` wide, `bounds.height - 4` tall, inset by 2px on the
+// left/top from the outline. Exposed as its own pure function - rather than
+// left as arithmetic duplicated wherever something needs to know it - so
+// that both the fill bar and the charging bolt bitmap are positioned by
+// calling this exact same function, not by two copies of the same formula
+// that could drift apart. This is what "the charging variant occupies
+// exactly the same rectangle as the level variant" means as a guarantee
+// rather than a claim: they share the computation, not just the intent.
+constexpr Rect battery_fill_rect(const Rect bounds) {
+  const int body_width = bounds.width - kBatteryIconNubWidth - 1;
+  return {bounds.x + 2, bounds.y + 2, body_width - 4, bounds.height - 4};
+}
+
+// The charging bolt, drawn as itself: one string per row, read top to
+// bottom, 'X' is ink, '.' is background. Generated, not hand-placed - see
+// UPSTREAM.md for full provenance. Declared here, ahead of the LVGL guard,
+// so the host build can see it: this and build_battery_charging_composite()
+// are pure bit-pattern logic with no LVGL or ESP-IDF dependency, and belong
+// in tests/host rather than only ever being checked by screenshotting a
+// real panel.
+//
+// Source: Bootstrap Icons' `lightning-charge-fill` (a solid filled shape,
+// not an outline - it survives reduction to this size far better than the
+// outlined Material Symbols glyph an earlier version of this used, per the
+// operator's own instruction), vendored at
+// components/ui/assets/lightning-charge-fill.svg, MIT licensed - see
+// UPSTREAM.md for the pinned commit. The upstream glyph is vertical; the
+// tray needs it horizontal.
+//
+// To regenerate (e.g. after tuning threshold/min-stroke, or if the
+// vendored SVG is updated):
+//   python3 scripts/svg-to-bitmap.py components/ui/assets/lightning-charge-fill.svg
+//   --width 22 --height 10 --rotate 90 --threshold 0.35 --min-stroke 1
+//   --emit-rows kChargingBoltRows
+// and paste the printed array back in below. --rotate 90 turns the
+// upstream vertical glyph horizontal *before* rasterising, not after -
+// rotating the finished bitmap instead would re-jaggify an already-
+// rasterised shape. Threshold 0.35 (not the naive-looking 0.5) is what
+// keeps tapered tips instead of dropping them.
+//
+// --min-stroke 1 (the tool's stated default is 2) is deliberate, not a
+// typo: this glyph is a solid fill, already chunky by construction (the
+// whole reason it was chosen over the outlined Material Symbols one), and
+// at min-stroke 2 the dilation step puffs up the shape's own naturally
+// tapered tips into round blobs that visually detach from the tapering
+// line feeding into them - checked with scipy.ndimage.label, the
+// min-stroke-2 mask split into multiple connected components where the
+// min-stroke-1 mask is exactly one. Dilation exists to stop a taper
+// thinning into a dotted line on an *outline* glyph; a solid fill does not
+// have that failure mode, so forcing the same fix onto it just introduces
+// a different one. Do not hand-edit the rows below to tweak the shape -
+// regenerate instead, or this comment stops being true.
+inline constexpr std::string_view kChargingBoltRows[] = {
+    "..........X...........",
+    ".........XXX..........",
+    "....XXX..XXXX.........",
+    ".....XXXXXXXXX........",
+    "......XXXXXXXXX.......",
+    ".......XXXXXXXXX......",
+    "........XXXXXXXXX.....",
+    ".........XXXX..XXX....",
+    "..........XXX.........",
+    "...........X..........",
+};
+inline constexpr int kChargingBoltWidth = 22;
+inline constexpr int kChargingBoltHeight =
+    sizeof(kChargingBoltRows) / sizeof(kChargingBoltRows[0]);
+
+// The one runnable check hand-authored-looking pixel art like this actually
+// needs: a row one character short of kChargingBoltWidth would read past
+// its own end in build_battery_charging_composite() below - std::string_view
+// does not null-terminate the way a bare const char* would stop a strlen()
+// at. This catches that at compile time, before it ever becomes a stray
+// pixel (or worse) that only a screenshot would reveal.
+constexpr bool charging_bolt_rows_match_declared_width() {
+  for (const std::string_view& row : kChargingBoltRows) {
+    if (row.size() != static_cast<std::size_t>(kChargingBoltWidth)) return false;
+  }
+  return true;
+}
+static_assert(charging_bolt_rows_match_declared_width(),
+             "every kChargingBoltRows entry must be exactly kChargingBoltWidth "
+             "characters wide");
+
+// Recomputes the *entire* charging overlay - not just the bolt - into
+// `out`: bit set means final ink colour black, bit clear means white, for
+// every pixel of a `width`x`height` rect, packed row-major MSB-first at
+// `(width+7)/8` bytes/row (the same tightly-packed I1 layout
+// tray_indicator_icon()'s own comment documents).
+//
+// A pixel is black exactly when it is *not* part of the bolt shape: solid
+// black field, bolt knocked out of it to white. The level bar is not shown
+// while charging - no `filled`/charge-boundary concept is involved at all,
+// which is why this function does not take one.
+//
+// Two other designs were tried on the panel first, both with a glyph
+// already verified as one connected shape (see kChargingBoltRows's own
+// provenance comment - this was not the earlier rounds' problem, both
+// alternatives below failed with a known-good glyph feeding them):
+//   - Clipped (AND-NOT): ink iff a column had charged AND the pixel was not
+//     part of the bolt, nothing drawn past the charge boundary. At a
+//     realistic charge level the boundary cuts through the bolt's kink, so
+//     only one of its two strokes survives and the remainder reads as a
+//     plain wedge, not a bolt.
+//   - Inverted (XOR): ink iff exactly one of "column charged" and "part of
+//     the bolt" held, so the bolt's full silhouette stayed visible on both
+//     sides of the boundary, one half white-on-black and the other
+//     black-on-white. Still did not read as one shape: the eye segments
+//     the two halves by brightness before it can fuse them, regardless of
+//     which side of the boundary either half falls on.
+// Both failures share a cause a boundary-dependent design cannot avoid: a
+// bolt this wide, split by any boundary partway across it, reads as two
+// marks rather than one. Solid fill with the bolt knocked out avoids the
+// split entirely - there is no boundary within the overlay for the eye to
+// segment against. Losing the level bar while charging costs nothing real:
+// terminal voltage under charge is the charger's output, not the cell's
+// state, so there is no trustworthy level to show at that moment anyway -
+// which is the reason this icon exists at all. Do not re-litigate either
+// rejected alternative without a hardware screenshot of that *specific*
+// alternative against this glyph, the way both rejections above are.
+//
+// Pure: reads only its arguments, writes only to `out` (silently does
+// nothing if `out` is too small for width x height - a canvas one pixel
+// too wide must not scribble past its own buffer). No global state, so it
+// needs no cleanup between calls: every call fully repaints `out` from
+// scratch.
+//
+// `stride` (bytes between the start of one row and the next) is the
+// caller's to supply, not this function's to guess. An earlier version
+// computed it here as a bare `(width + 7) / 8` - the tightest possible
+// pack; that turned out not to be the actual bug that round (LVGL's own
+// `lv_draw_buf_width_to_stride()`, in LVGL's lv_draw_buf.c, agrees with
+// that bare formula exactly under this project's current
+// `LV_DRAW_BUF_STRIDE_ALIGN`, confirmed against the panel - the on-screen
+// smearing that round had a different, unrelated cause), but deriving the
+// stride from LVGL rather than assuming one is still the right call: a
+// build with a different alignment value would otherwise drift silently.
+// The firmware call site passes LVGL's own computed stride; tests/host
+// pass whatever stride they want to prove this honours, tight or padded.
+inline void build_battery_charging_composite(uint8_t* out, std::size_t out_capacity,
+                                              int width, int height,
+                                              int stride) {
+  if (out == nullptr || stride <= 0 || stride * 8 < width || height <= 0 ||
+      static_cast<std::size_t>(stride) * static_cast<std::size_t>(height) >
+          out_capacity) {
+    return;
+  }
+  std::fill(out, out + stride * height, uint8_t{0});
+  const int offset_x = (width - kChargingBoltWidth) / 2;
+  const int offset_y = (height - kChargingBoltHeight) / 2;
+  for (int y = 0; y < height; ++y) {
+    const int row = y - offset_y;
+    const bool row_in_bolt = row >= 0 && row < kChargingBoltHeight;
+    const std::string_view line =
+        row_in_bolt ? kChargingBoltRows[row] : std::string_view{};
+    for (int x = 0; x < width; ++x) {
+      const int col = x - offset_x;
+      const bool bolt =
+          row_in_bolt && col >= 0 && col < kChargingBoltWidth && line[col] == 'X';
+      if (!bolt) {
+        out[y * stride + x / 8] |= static_cast<uint8_t>(0x80 >> (x % 8));
+      }
+    }
+  }
+}
+
+// Copies `tight_bits` - packed at the tight (width+7)/8 bytes/row every
+// hand-authored bitmap in this codebase already uses (see
+// app_core::TrayIndicatorBitmap's own comment, and kChargingBoltRows above)
+// - into `out`, laid out the way an LVGL I1 canvas actually needs instead:
+// `palette_bytes` left untouched at the front (LVGL's own
+// lv_canvas_set_palette() claims that space - see
+// g_charging_bolt_bitmap's comment in ui_theme.cpp for the full mechanism),
+// then each row starting at a multiple of `stride` bytes, which is not
+// necessarily the tight pack either (see build_battery_charging_composite()
+// above for why this file no longer assumes it is). Both `palette_bytes`
+// and `stride` are the caller's to supply, typically from
+// i1_canvas_storage_bytes()/i1_canvas_stride() (ui_theme.cpp) rather than
+// computed here - this function only repacks, it does not decide layout.
+//
+// Pure, and the shared building block behind every static tray-indicator
+// icon (see bind_i1_canvas() in ui_theme.cpp): modules keep authoring the
+// tight, LVGL-agnostic format app_core::TrayIndicatorBitmap documents, and
+// this is the one place that gets translated into what LVGL's canvas
+// actually requires, rather than every bitmap's own build function having
+// to know LVGL's palette-and-stride rules for itself.
+inline void repack_i1_bits(const uint8_t* tight_bits, uint8_t* out,
+                           std::size_t out_capacity, int width, int height,
+                           int stride, int palette_bytes) {
+  const int tight_stride = (width + 7) / 8;
+  if (tight_bits == nullptr || out == nullptr || width <= 0 || height <= 0 ||
+      stride <= 0 || stride * 8 < width || palette_bytes < 0 ||
+      static_cast<std::size_t>(palette_bytes) +
+              static_cast<std::size_t>(stride) * static_cast<std::size_t>(height) >
+          out_capacity) {
+    return;
+  }
+  for (int y = 0; y < height; ++y) {
+    std::copy(tight_bits + y * tight_stride,
+              tight_bits + y * tight_stride + tight_stride,
+              out + palette_bytes + y * stride);
+  }
+}
 
 // A tray-registry indicator's icon: one LVGL canvas object showing exactly
 // the bytes its module registered (see app_core::TrayIndicatorBitmap) -
@@ -201,17 +424,74 @@ void humidity_icon(lv_obj_t* parent, Rect bounds, bool inverse = false);
 // turn pages. A no-op when hints.visible is false.
 WifiIconParts wifi_icon(lv_obj_t* parent, Rect bounds, bool connected);
 void set_wifi_icon_state(const WifiIconParts& parts, bool connected);
+
+// The shared building block behind every I1 canvas in this file
+// (battery_icon()'s charging overlay, tray_indicator_icon()'s module
+// bitmaps): the two things that have each cost their own debugging round
+// on this exact panel - LVGL's I1 palette living in the first
+// i1_canvas_stride/-storage bytes of the buffer, not a separate allocation
+// (see g_charging_bolt_bitmap's comment, ui_theme.cpp), and LVGL padding
+// each row to its own stride rather than a tight (width+7)/8 pack - only
+// need working out once.
+//
+// i1_canvas_stride(): LVGL's own row stride for a `width`-pixel I1 row
+// (wraps lv_draw_buf_width_to_stride() - never recompute this as
+// (width+7)/8, see build_battery_charging_composite()'s own comment for
+// why that drifts). i1_canvas_storage_bytes(): the minimum size a buffer
+// passed to bind_i1_canvas() must be. bind_i1_canvas() itself creates the
+// canvas, binds `storage` (which must already hold pixel data starting at
+// i1_canvas_stride()'s own palette offset - see repack_i1_bits() above for
+// how a tight-packed bitmap gets there, or build_battery_charging_composite
+// for content computed directly at the right offset) and sets its
+// 2-colour palette; `storage` must outlive the returned canvas, since LVGL
+// keeps the pointer rather than copying.
+// Where pixel data starts within an I1 canvas buffer - everything before
+// this is LVGL's own palette (lv_draw_buf_set_palette() writes there
+// directly; lv_draw_buf_goto_xy() skips exactly this many bytes before
+// reading the first pixel). Genuinely constexpr - LV_COLOR_INDEXED_PALETTE_
+// SIZE and sizeof(lv_color32_t) are both compile-time - so every caller
+// that needs this offset (i1_canvas_storage_bytes below,
+// build_battery_charging_composite's and repack_i1_bits's callers) uses
+// this one definition rather than each re-deriving the same "8".
+constexpr int i1_canvas_pixel_offset() {
+  return LV_COLOR_INDEXED_PALETTE_SIZE(LV_COLOR_FORMAT_I1) *
+         static_cast<int>(sizeof(lv_color32_t));
+}
+int i1_canvas_stride(int width);
+std::size_t i1_canvas_storage_bytes(int width, int height);
+// `background_opa` is separate from `ink`'s (always LV_OPA_COVER) because
+// callers disagree on it: the battery overlay is a self-contained
+// replacement for everything underneath it (LV_OPA_COVER), while a tray
+// indicator's off pixels must stay transparent so the tray's own
+// background shows through rather than a second, redundant white square
+// (LV_OPA_TRANSP).
+lv_obj_t* bind_i1_canvas(lv_obj_t* parent, int x, int y, int width, int height,
+                        uint8_t* storage, lv_color_t background,
+                        lv_opa_t background_opa, lv_color_t ink);
+
+// `charging` is a separate flag, not folded into `valid`: an invalid
+// reading draws an empty body (nothing measured), while charging draws a
+// solid body with a bolt reversed out of it (a real reading exists, it is
+// just not a trustworthy level - see ui_data.hpp's
+// battery_percent_trustworthy()). The two must stay tellable apart.
 BatteryIconParts battery_icon(lv_obj_t* parent, Rect bounds, uint8_t percent,
-                              bool valid);
+                              bool valid, bool charging);
 void set_battery_icon_level(const BatteryIconParts& parts, uint8_t percent,
-                            bool valid);
+                            bool valid, bool charging);
 // Renders a module's registered 1-bit bitmap as an LVGL canvas
 // (LV_COLOR_FORMAT_I1) positioned at `bounds` - core blits the bytes and
 // never interprets them. Returns an all-null TrayIndicatorIcon if `bitmap`
 // is empty (nothing registered for this slot) or the canvas could not be
 // created. See app_core::TrayIndicatorBitmap for the exact byte layout a
-// module must supply.
-TrayIndicatorIcon tray_indicator_icon(lv_obj_t* parent, Rect bounds,
+// module must supply - that layout is deliberately simple (tight-packed,
+// LVGL-agnostic) and stays the module's problem to author; repacking it
+// into what LVGL's own canvas actually needs (see repack_i1_bits() and
+// bind_i1_canvas() above) is this function's problem, not every module's.
+// `slot` (an index into app_core::kMaxTrayIndicators) selects which of
+// this function's own per-slot storage buffers to repack into - a fixed,
+// small number of persistent backing buffers, not one shared buffer three
+// modules could stomp on if more than one icon were ever visible at once.
+TrayIndicatorIcon tray_indicator_icon(lv_obj_t* parent, Rect bounds, int slot,
                                       const app_core::TrayIndicatorBitmap& bitmap);
 // Shows or hides the whole icon - not a per-part toggle like wifi_icon's
 // rings, since a tray-registry icon is one opaque bitmap, not several

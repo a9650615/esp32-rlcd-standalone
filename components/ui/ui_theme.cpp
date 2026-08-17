@@ -329,14 +329,91 @@ void set_wifi_icon_state(const WifiIconParts& parts, bool connected) {
   }
 }
 
+// LVGL's own row stride for an I1 canvas this wide - never recomputed as a
+// bare (width+7)/8. That bare formula is what a prior version of this
+// function used, and what LVGL's own stride agrees with only when the
+// sdkconfig's row-padding value happens to be 1 (see
+// LV_DRAW_BUF_STRIDE_ALIGN) and disagrees the moment it isn't: the panel
+// showed progressive diagonal smearing, each row landing one alignment
+// step further off than the last. Asking LVGL directly leaves nothing for
+// a future alignment change to drift out of sync with.
+int i1_canvas_stride(int width) {
+  return static_cast<int>(
+      lv_draw_buf_width_to_stride(width, LV_COLOR_FORMAT_I1));
+}
+
+// LVGL's I1 palette lives in the *first*
+// LV_COLOR_INDEXED_PALETTE_SIZE(I1) * sizeof(lv_color32_t) bytes of the
+// very buffer passed to lv_canvas_set_buffer(), not in separate storage:
+// lv_draw_buf_set_palette() writes each entry directly into
+// `draw_buf->data`, and the software renderer's lv_draw_buf_goto_xy() skips
+// exactly that many bytes before reading the first pixel. A buffer that
+// starts pixel data at byte 0 instead renders nothing: both palette
+// entries end up holding whatever the first pixel-writing call put there,
+// typically indistinguishable, so index 0 and index 1 map to the same
+// colour regardless of which bit was set. This is the minimum size a
+// buffer passed to bind_i1_canvas() must be.
+std::size_t i1_canvas_storage_bytes(int width, int height) {
+  return static_cast<std::size_t>(i1_canvas_pixel_offset()) +
+        static_cast<std::size_t>(i1_canvas_stride(width)) * height;
+}
+
+lv_obj_t* bind_i1_canvas(lv_obj_t* parent, int x, int y, int width, int height,
+                        uint8_t* storage, lv_color_t background,
+                        lv_opa_t background_opa, lv_color_t ink) {
+  lv_obj_t* canvas = lv_canvas_create(parent);
+  if (canvas == nullptr) return nullptr;
+  apply_surface(canvas);
+  lv_canvas_set_buffer(canvas, storage, width, height, LV_COLOR_FORMAT_I1);
+  lv_canvas_set_palette(canvas, 0, lv_color_to_32(background, background_opa));
+  lv_canvas_set_palette(canvas, 1, lv_color_to_32(ink, LV_OPA_COVER));
+  lv_obj_set_pos(canvas, x, y);
+  lv_obj_set_size(canvas, width, height);
+  return canvas;
+}
+
+namespace {
+
+// Generous fixed backing store for the charging overlay canvas - LVGL's
+// I1-format canvas buffer must outlive the canvas object, so it cannot be a
+// stack-local sized exactly to whatever Rect a given call receives (there is
+// only ever one real caller, the tray's battery cell, but the function stays
+// written in terms of `bounds` like the rest of this file rather than
+// hardcoding that cell's numbers here). i1_canvas_pixel_offset() (8, for
+// I1's 2 palette entries) plus 8 bytes/row (covers up to 64px wide) * 16
+// rows is generous headroom over this cell's actual ~22x10 -
+// i1_canvas_storage_bytes() computes the real, tighter bound at runtime,
+// and every write into this buffer is bounds-checked against its actual
+// sizeof() as the capacity, so this only needs to be *at least* big
+// enough, not exact.
+uint8_t g_charging_bolt_bitmap[i1_canvas_pixel_offset() + 8 * 16];
+
+}  // namespace
+
 // Outline plus a terminal nub, with an inner bar whose width tracks the
-// charge. An invalid reading leaves the body empty rather than drawing 0%,
-// which would be a number nobody measured.
+// charge when not charging. While charging, the level bar is covered by an
+// opaque overlay - a solid field with the bolt knocked out of it - rather
+// than shown alongside the bolt: see build_battery_charging_composite()'s
+// own comment for why every design that tried to show both a boundary-
+// dependent level and the bolt in the same overlay was rejected on real
+// hardware. An invalid reading leaves the body empty rather than drawing
+// 0%, which would be a number nobody measured.
+//
+// The charging overlay is one canvas, opaque over the whole fill rect, its
+// buffer built once, here, rather than recomputed on every level update:
+// build_battery_charging_composite()'s output no longer depends on charge
+// level at all, so unlike an earlier version of this function, there is
+// nothing left for a level update to change about it - only whether it is
+// shown, which set_battery_icon_level() still toggles.
+//
+// Both the fill bar and the overlay are positioned from
+// battery_fill_rect(bounds) - the same call, not two copies of the same
+// arithmetic - so the icon's outer footprint and the charging overlay's
+// footprint can't drift apart.
 BatteryIconParts battery_icon(lv_obj_t* parent, Rect bounds, uint8_t percent,
-                              bool valid) {
+                              bool valid, bool charging) {
   BatteryIconParts parts{};
-  const int nub_width = 3;
-  const int body_width = bounds.width - nub_width - 1;
+  const int body_width = bounds.width - kBatteryIconNubWidth - 1;
   lv_obj_t* body = lv_obj_create(parent);
   if (body != nullptr) {
     apply_surface(body);
@@ -347,26 +424,58 @@ BatteryIconParts battery_icon(lv_obj_t* parent, Rect bounds, uint8_t percent,
     lv_obj_set_style_radius(body, 1, 0);
   }
   line_segment(parent, bounds.x + body_width + 1,
-               bounds.y + bounds.height / 4, nub_width, bounds.height / 2,
-               false);
-  parts.fill = line_segment(parent, bounds.x + 2, bounds.y + 2, 1,
-                            bounds.height - 4, false);
+               bounds.y + bounds.height / 4, kBatteryIconNubWidth,
+               bounds.height / 2, false);
+  const Rect fill_rect = battery_fill_rect(bounds);
+  parts.fill =
+      line_segment(parent, fill_rect.x, fill_rect.y, 1, fill_rect.height, false);
   parts.body_width = body_width;
-  set_battery_icon_level(parts, percent, valid);
+
+  // Written starting i1_canvas_pixel_offset() into the buffer, never at
+  // byte 0, and at i1_canvas_stride()'s own row pitch, never a bare
+  // (width+7)/8 - see both functions' own comments for why each of those
+  // has already cost a debugging round on real hardware.
+  build_battery_charging_composite(
+      g_charging_bolt_bitmap + i1_canvas_pixel_offset(),
+      sizeof(g_charging_bolt_bitmap) - i1_canvas_pixel_offset(),
+      fill_rect.width, fill_rect.height, i1_canvas_stride(fill_rect.width));
+  // Opaque over its whole area - index 0 (background) is solid white, not
+  // transparent, because this canvas is a self-contained replacement for
+  // everything build_battery_charging_composite() already decided, not a
+  // partial layer relying on anything showing through it.
+  parts.charging_bolt =
+      bind_i1_canvas(parent, fill_rect.x, fill_rect.y, fill_rect.width,
+                    fill_rect.height, g_charging_bolt_bitmap,
+                    lv_color_white(), LV_OPA_COVER, lv_color_black());
+
+  set_battery_icon_level(parts, percent, valid, charging);
   return parts;
 }
 
 void set_battery_icon_level(const BatteryIconParts& parts, uint8_t percent,
-                            bool valid) {
+                            bool valid, bool charging) {
   if (parts.fill == nullptr) return;
   if (!valid) {
     lv_obj_set_style_bg_opa(parts.fill, LV_OPA_TRANSP, 0);
+    if (parts.charging_bolt != nullptr) {
+      lv_obj_set_style_opa(parts.charging_bolt, LV_OPA_TRANSP, 0);
+    }
     return;
   }
   lv_obj_set_style_bg_opa(parts.fill, LV_OPA_COVER, 0);
   const int usable = parts.body_width - 4;
   const int filled = usable * (percent > 100 ? 100 : percent) / 100;
-  lv_obj_set_width(parts.fill, filled < 1 ? 1 : filled);
+  const int fill_width = filled < 1 ? 1 : filled;
+  lv_obj_set_width(parts.fill, fill_width);
+
+  // The overlay's own content never changes (built once, in battery_icon())
+  // - charging only ever toggles whether it is shown, the same one-line
+  // pattern set_tray_indicator_icon_visible() already uses for a static
+  // bitmap that also never changes after construction.
+  if (parts.charging_bolt != nullptr) {
+    lv_obj_set_style_opa(parts.charging_bolt,
+                         charging ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+  }
 }
 
 // One LV_COLOR_FORMAT_I1 canvas, backed directly by the module's own bytes
@@ -385,25 +494,45 @@ void set_battery_icon_level(const BatteryIconParts& parts, uint8_t percent,
 // anything else this module calls) ever writes through the canvas buffer -
 // lv_canvas_set_px()/set_palette() touch different backing storage, and
 // this canvas is never used as a draw target, only ever blitted read-only.
-TrayIndicatorIcon tray_indicator_icon(lv_obj_t* parent, Rect bounds,
+namespace {
+
+// One persistent backing buffer per tray-indicator slot - sized the same
+// generous way g_charging_bolt_bitmap is (see its own comment): headroom
+// over today's actual 16x12 module icons, not an exact fit, since
+// i1_canvas_storage_bytes() bounds-checks every write against this array's
+// real sizeof() rather than assuming it matches.
+uint8_t g_tray_indicator_storage[app_core::kMaxTrayIndicators]
+                                [i1_canvas_pixel_offset() + 8 * 16];
+
+}  // namespace
+
+TrayIndicatorIcon tray_indicator_icon(lv_obj_t* parent, Rect bounds, int slot,
                                       const app_core::TrayIndicatorBitmap& bitmap) {
   TrayIndicatorIcon icon{};
-  if (bitmap.pixels == nullptr || bitmap.width == 0 || bitmap.height == 0) {
+  if (bitmap.pixels == nullptr || bitmap.width == 0 || bitmap.height == 0 ||
+      slot < 0 || slot >= app_core::kMaxTrayIndicators) {
     return icon;
   }
-  lv_obj_t* canvas = lv_canvas_create(parent);
-  if (canvas == nullptr) return icon;
-  apply_surface(canvas);
-  lv_canvas_set_buffer(canvas, const_cast<uint8_t*>(bitmap.pixels), bitmap.width,
-                       bitmap.height, LV_COLOR_FORMAT_I1);
-  // Palette index 0 (bit clear) is the "off" pixel and must be fully
-  // transparent so the tray's own background shows through rather than a
-  // second, redundant white square; index 1 (bit set) is solid ink.
-  lv_canvas_set_palette(canvas, 0, lv_color_to_32(lv_color_white(), LV_OPA_TRANSP));
-  lv_canvas_set_palette(canvas, 1, lv_color_to_32(lv_color_black(), LV_OPA_COVER));
-  lv_obj_set_pos(canvas, bounds.x, bounds.y);
-  lv_obj_set_size(canvas, bitmap.width, bitmap.height);
-  icon.canvas = canvas;
+  uint8_t* storage = g_tray_indicator_storage[slot];
+  // The module's own bytes are tight-packed ((width+7)/8/row, byte 0 is
+  // pixel data) - app_core::TrayIndicatorBitmap's own documented contract,
+  // and deliberately unaware of LVGL's own layout rules. Repacked here,
+  // once per call, into what the canvas this function is about to bind
+  // actually needs: see repack_i1_bits()'s own comment for why tight-packed
+  // bits handed to LVGL directly render as nothing (palette clobbered) or a
+  // diagonally smeared mess (wrong stride) - both of which have already
+  // happened once each on this exact panel, for this exact reason, in
+  // battery_icon()'s charging overlay.
+  repack_i1_bits(bitmap.pixels, storage, sizeof(g_tray_indicator_storage[0]),
+                bitmap.width, bitmap.height, i1_canvas_stride(bitmap.width),
+                i1_canvas_pixel_offset());
+  // Index 0 (bit clear) stays transparent so the tray's own background
+  // shows through rather than a second, redundant white square; index 1
+  // (bit set) is solid ink - unchanged from before this fix, only how the
+  // buffer underneath it is laid out has changed.
+  icon.canvas = bind_i1_canvas(parent, bounds.x, bounds.y, bitmap.width,
+                              bitmap.height, storage, lv_color_white(),
+                              LV_OPA_TRANSP, lv_color_black());
   return icon;
 }
 

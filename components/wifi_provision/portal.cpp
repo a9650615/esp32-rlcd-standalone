@@ -263,6 +263,45 @@ std::string query_pw(httpd_req_t* req) {
   return pw;
 }
 
+// httpd_req_recv() already times out on its own - portal_start() sets
+// config.recv_wait_timeout to 20s - but every recv loop in this file used to
+// retry that timeout unconditionally (`if (received == HTTPD_SOCK_ERR_TIMEOUT)
+// continue;`), forever. That is indistinguishable from no timeout being
+// configured at all: a connection that goes quiet without ever closing hangs
+// the handler, and this server is single-task (portal_start()'s
+// httpd_config_t), so one hung handler is every other route - /shot,
+// /restart, /beep, the next OTA attempt - hanging with it. This is exactly
+// what left a board with no cable unrecoverable short of a power cycle after
+// one interrupted push.
+//
+// Bounded instead: give up after this many consecutive timeouts rather than
+// retrying without limit. 20s (recv_wait_timeout) times this constant is the
+// total silence tolerated before a stalled transfer is treated as dead - 2
+// minutes, generous for a slow or momentarily-congested LAN, finite so a
+// connection that never resumes is caught within a couple of minutes instead
+// of never.
+constexpr int kMaxConsecutiveRecvTimeouts = 6;
+
+// httpd_req_recv(), but a run of HTTPD_SOCK_ERR_TIMEOUT gives up after
+// kMaxConsecutiveRecvTimeouts instead of retrying forever - see that
+// constant's own comment. Returns exactly what httpd_req_recv() would,
+// including HTTPD_SOCK_ERR_TIMEOUT once the retry budget itself runs out, so
+// every caller's existing `if (received <= 0) { ...fail...; }` already does
+// the right thing with no other change: HTTPD_SOCK_ERR_TIMEOUT is -3, and
+// every failure path in this file already treats a non-positive result as a
+// dead transfer, not a value it needs to special-case. Used by every POST
+// handler in this file that reads a body - the Wi-Fi credential form, the
+// OTA upload, and the two small option forms - not just the OTA path: a
+// stalled connection on any of them hangs the same single-task server the
+// same way.
+int recv_with_bounded_retry(httpd_req_t* req, char* buffer, size_t max_len) {
+  for (int attempt = 0; attempt < kMaxConsecutiveRecvTimeouts; ++attempt) {
+    const int received = httpd_req_recv(req, buffer, max_len);
+    if (received != HTTPD_SOCK_ERR_TIMEOUT) return received;
+  }
+  return HTTPD_SOCK_ERR_TIMEOUT;
+}
+
 esp_err_t root_get_handler(httpd_req_t* req) {
   const std::string pw = query_pw(req);
   if (portal_password_ok(pw)) {
@@ -298,9 +337,8 @@ esp_err_t root_post_handler(httpd_req_t* req) {
   char buffer[kMaxFormBody];
   size_t received = 0;
   while (received < req->content_len) {
-    const int chunk = httpd_req_recv(req, buffer + received,
-                                     req->content_len - received);
-    if (chunk == HTTPD_SOCK_ERR_TIMEOUT) continue;
+    const int chunk = recv_with_bounded_retry(req, buffer + received,
+                                              req->content_len - received);
     if (chunk <= 0) return ESP_FAIL;
     received += static_cast<size_t>(chunk);
   }
@@ -409,10 +447,9 @@ esp_err_t ota_post_handler(httpd_req_t* req) {
     // putting a prompt on the panel for someone to walk over and answer.
     while (preamble_len < ota::kImagePrefixBytes &&
            preamble_len < req->content_len) {
-      const int received = httpd_req_recv(
+      const int received = recv_with_bounded_retry(
           req, reinterpret_cast<char*>(preamble) + preamble_len,
           ota::kImagePrefixBytes - preamble_len);
-      if (received == HTTPD_SOCK_ERR_TIMEOUT) continue;
       if (received <= 0) {
         ESP_LOGE(kTag, "POST /ota -> transfer died before the header arrived");
         return ESP_FAIL;
@@ -487,10 +524,9 @@ esp_err_t ota_post_handler(httpd_req_t* req) {
     remaining -= preamble_len;
   }
   while (remaining > 0) {
-    const int received = httpd_req_recv(
+    const int received = recv_with_bounded_retry(
         req, reinterpret_cast<char*>(buffer.get()),
         remaining < kChunkBytes ? remaining : kChunkBytes);
-    if (received == HTTPD_SOCK_ERR_TIMEOUT) continue;
     if (received <= 0) {
       ESP_LOGE(kTag, "POST /ota -> transfer died with %u bytes left",
                static_cast<unsigned>(remaining));
@@ -541,9 +577,8 @@ esp_err_t ota_url_post_handler(httpd_req_t* req) {
   char buffer[kMaxFormBody];
   size_t received = 0;
   while (received < req->content_len) {
-    const int chunk =
-        httpd_req_recv(req, buffer + received, req->content_len - received);
-    if (chunk == HTTPD_SOCK_ERR_TIMEOUT) continue;
+    const int chunk = recv_with_bounded_retry(req, buffer + received,
+                                              req->content_len - received);
     if (chunk <= 0) return ESP_FAIL;
     received += static_cast<size_t>(chunk);
   }
@@ -605,9 +640,8 @@ esp_err_t update_post_handler(httpd_req_t* req) {
   char buffer[kMaxFormBody];
   size_t received = 0;
   while (received < req->content_len) {
-    const int chunk =
-        httpd_req_recv(req, buffer + received, req->content_len - received);
-    if (chunk == HTTPD_SOCK_ERR_TIMEOUT) continue;
+    const int chunk = recv_with_bounded_retry(req, buffer + received,
+                                              req->content_len - received);
     if (chunk <= 0) return ESP_FAIL;
     received += static_cast<size_t>(chunk);
   }
@@ -702,6 +736,24 @@ esp_err_t shot_get_handler(httpd_req_t* req) {
 }
 
 const httpd_uri_t kShotGet = {"/shot", HTTP_GET, shot_get_handler, nullptr};
+
+// Forces the tray's charging bolt and the settings row's "Charging" text on
+// without a cable - see wifi_provision::debug_force_charging()'s own
+// comment for why this is a legitimate debug tool rather than fabricated
+// sensor data. GET, not POST: the same "idempotent, changes nothing a real
+// physical action already does" reasoning /dither-card gives for being a
+// GET. No route back short of a reboot, also matching /dither-card - this
+// exists for one screenshot, not a toggle to leave lying around.
+esp_err_t force_charging_get_handler(httpd_req_t* req) {
+  wifi_provision::debug_force_charging();
+  httpd_resp_sendstr(req,
+                     "Charging forced on the next battery sample (up to "
+                     "~30s); GET /shot after to see it. Reboot to clear.\n");
+  return ESP_OK;
+}
+
+const httpd_uri_t kForceChargingGet = {"/force-charging", HTTP_GET,
+                                       force_charging_get_handler, nullptr};
 
 // Reboots the board. The last thing that still required a USB cable: verifying
 // anything that only happens at startup - a setting restored from NVS, the
@@ -926,6 +978,7 @@ void portal_start() {
 #ifndef NDEBUG
                                  &kShotGet,    &kRestartPost, &kBeepPost,
                                  &kBeepSweepPost, &kDitherCardGet,
+                                 &kForceChargingGet,
 #endif
   };
   for (const httpd_uri_t* route : routes) {

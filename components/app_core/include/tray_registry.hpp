@@ -15,10 +15,18 @@ inline constexpr int kMaxTrayIndicators = 4;
 // ever blits these bytes, and never interprets what they depict or knows
 // who supplied them. Row-major, MSB-first (bit 7 of byte 0 is pixel x=0),
 // each row padded up to a whole byte: stride = (width + 7) / 8 bytes,
-// buffer size = stride * height. This is not a coincidence: it is exactly
-// the layout LVGL's own `LV_COLOR_FORMAT_I1` canvases expect at this
-// project's `CONFIG_LV_DRAW_BUF_STRIDE_ALIGN=1` (see ui::tray_indicator_icon
-// in ui_theme.cpp), so a module's bytes reach the screen unconverted.
+// buffer size = stride * height.
+//
+// This is *not* the layout LVGL's own `LV_COLOR_FORMAT_I1` canvas actually
+// wants on its wire, despite an earlier version of this comment claiming
+// it was: LVGL reserves palette bytes at the front of the buffer
+// (lv_draw_buf_set_palette() writes there directly) and pads each row to
+// its own stride (lv_draw_buf_width_to_stride()), which is not always this
+// tight pack. `ui::tray_indicator_icon()` (ui_theme.cpp) repacks a
+// module's bytes into that real layout before handing them to LVGL - see
+// its own comment, and ui::repack_i1_bits()'s, for why. This tight,
+// LVGL-agnostic format is deliberately kept as what a module authors,
+// specifically so no module has to know any of that.
 //
 // `pixels` must stay valid for the module's entire lifetime - in practice a
 // static const array, the same way this project's compiled-in fonts and

@@ -262,7 +262,24 @@ void render_home_tile(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
   switch (kind) {
     case HomeTileKind::Battery:
       title = text(Text::TileBattery);
-      std::snprintf(value, sizeof(value), "%u%%", snapshot.battery.percent);
+      // battery_percent_trustworthy(), the same gate the tray icon and the
+      // settings row use: this tile is otherwise the third place on the
+      // same screen a charging cell's percentage would have read as a
+      // confident, wrong number while those two already said "Charging".
+      //
+      // choose_home_tile()/home_battery_notable() are unchanged in this
+      // pass on purpose - only what this tile prints once chosen. Whether
+      // an untrustworthy percentage should still be able to make the tile
+      // flap in as "notable" while sagging past kHomeLowBatteryPercent
+      // right after being unplugged is a real question, but there is no
+      // evidence yet that it actually happens, and changing tile-priority
+      // behaviour on a hunch risks trading this defect for a different one.
+      if (battery_percent_trustworthy(snapshot.battery,
+                                      snapshot.battery_runtime.trend)) {
+        std::snprintf(value, sizeof(value), "%u%%", snapshot.battery.percent);
+      } else {
+        std::snprintf(value, sizeof(value), "%s", text(Text::StatusCharging));
+      }
       std::snprintf(detail, sizeof(detail), "%s",
                     snapshot.battery.overvoltage_warning
                         ? text(Text::StatusOvervoltage)
@@ -416,14 +433,15 @@ void render_tray(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
   // settings page where it is the number a calibration is compared against.
   const WifiIconParts wifi =
       wifi_icon(parent, cells.network, snapshot.setup.connected);
-  // battery_percent_trustworthy(), not battery.valid alone: while charging,
-  // the measured voltage is the charger's output, not the cell's state of
-  // charge, so the fill bar would be confidently wrong rather than merely
-  // absent - see that function's own comment.
+  // valid and charging passed separately, not collapsed into one bool: an
+  // invalid reading draws an empty body (nothing measured); charging covers
+  // the level bar with a solid field with the bolt knocked out of it (a
+  // real reading exists, it is just not necessarily a trustworthy level,
+  // which is also why the level is not worth showing alongside the bolt) -
+  // see battery_icon()'s own comment.
   const BatteryIconParts battery = battery_icon(
-      parent, cells.battery, snapshot.battery.percent,
-      battery_percent_trustworthy(snapshot.battery,
-                                  snapshot.battery_runtime.trend));
+      parent, cells.battery, snapshot.battery.percent, snapshot.battery.valid,
+      battery_is_charging(snapshot.battery, snapshot.battery_runtime.trend));
   TrayIndicatorIcon indicator_icons[app_core::kMaxTrayIndicators]{};
   for (int i = 0; i < app_core::kMaxTrayIndicators; ++i) {
     // Only drawn when system_tray_layout() actually gave this slot room -
@@ -437,7 +455,7 @@ void render_tray(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
     // tick.
     if (cells.indicators[i].width <= 0) continue;
     const app_core::TrayIndicatorSlot slot = app_core::tray_indicator_slot(i);
-    indicator_icons[i] = tray_indicator_icon(parent, cells.indicators[i], slot.bitmap);
+    indicator_icons[i] = tray_indicator_icon(parent, cells.indicators[i], i, slot.bitmap);
     set_tray_indicator_icon_visible(indicator_icons[i], slot.active);
   }
   if (context != nullptr) {
@@ -644,11 +662,11 @@ bool update_visible_fields(UiContext& context,
   // In place, like the label path it replaces: a battery sample every 30s must
   // not cost a page rebuild, which is a visible full repaint on this panel.
   set_wifi_icon_state(context.network_icon, snapshot.setup.connected);
-  // See the initial-draw call site's own comment on battery_percent_trustworthy().
+  // See the initial-draw call site's own comment on valid vs. charging.
   set_battery_icon_level(
       context.battery_icon_parts, snapshot.battery.percent,
-      battery_percent_trustworthy(snapshot.battery,
-                                  snapshot.battery_runtime.trend));
+      snapshot.battery.valid,
+      battery_is_charging(snapshot.battery, snapshot.battery_runtime.trend));
   set_setup_status_if_changed(context.setup_status_label,
                               setup_status_text(snapshot.setup.status),
                               snapshot.setup.error);

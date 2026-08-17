@@ -40,11 +40,17 @@ constexpr const char* kSizeRampLabels[kSwatchCount] = {
     "64px", "48px", "32px", "24px", "16px", "12px"};
 
 constexpr int kMaxSwatchSize = 64;
-// Ceiling-divide, matching lv_canvas_set_buffer()'s own I1 stride formula
-// (see tray_indicator_icon()'s comment in ui_theme.cpp for why that is
-// exactly (width + 7) / 8 in this project, with no extra padding) - one
-// static backing array per swatch, sized for the largest size ramp entry
-// and reused as-is (smaller swatches simply use fewer of their own bytes).
+// ponytail: this tight (width+7)/8 ceiling-divide, and swatch_canvas()
+// below binding it to lv_canvas_set_buffer() at byte 0, is the same
+// pattern ui::tray_indicator_icon() (ui_theme.cpp) had until it was found
+// to render nothing/smeared on real hardware - LVGL reserves palette bytes
+// at the buffer's front and pads rows to its own stride, neither of which
+// this accounts for. Not yet fixed here (this card is debug-only and
+// nobody had looked closely at it), but see ui::repack_i1_bits() /
+// ui::bind_i1_canvas() / ui::i1_canvas_stride() for the corrected pattern
+// if this ever gets the same look. One static backing array per swatch,
+// sized for the largest size ramp entry and reused as-is (smaller swatches
+// simply use fewer of their own bytes).
 constexpr int kMaxSwatchStride = (kMaxSwatchSize + 7) / 8;
 
 uint8_t g_density_bitmaps[kSwatchCount][kMaxSwatchStride * kMaxSwatchSize];

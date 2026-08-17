@@ -26,6 +26,22 @@ bool station_has_ip();
 
 void set_battery(const app_core::BatteryData& battery);
 
+#ifndef NDEBUG
+// Forces every subsequent set_battery() to report charging=true, so the
+// tray's charging bolt and the settings row's "Charging" text can be
+// screenshotted (GET /shot) without an actual cable - see portal.cpp's GET
+// /force-charging, same reasoning as request_dither_card (ui_app.hpp): this
+// only forces a display state the operator can already reach by plugging
+// in, not a fabricated reading, which is why it is legitimate where
+// inventing sensor data would not be.
+//
+// One-way, like the dither card: there is no route back short of a reboot,
+// which is enough for a one-off screenshot and not worth a second route.
+// Debug builds only - does not exist in the symbol table of a release
+// build, the same as every other route in this file's #ifndef NDEBUG block.
+void debug_force_charging();
+#endif
+
 // Same pattern as set_battery: callable from any task, merges the one field
 // into the shared snapshot and republishes. Keeps this component the single
 // AppSnapshot owner/publisher rather than letting each provider task manage

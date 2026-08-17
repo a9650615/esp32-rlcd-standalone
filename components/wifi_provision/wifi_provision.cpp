@@ -28,6 +28,10 @@ constexpr uint64_t kConnectTimeoutUs = 15 * 1000 * 1000ULL;
 app_core::AppSnapshot snapshot_;
 std::optional<wifi_config::StateMachine> state_machine_;
 std::string ap_ssid_;
+#ifndef NDEBUG
+// See debug_force_charging()'s own comment (wifi_provision.hpp).
+bool g_debug_force_charging = false;
+#endif
 // Regenerated fresh on every entry into SetupAp; never written to NVS or
 // logged. Gates the setup HTTP portal - the AP itself is open.
 std::string portal_password_;
@@ -266,9 +270,33 @@ bool station_has_ip() {
 void set_battery(const app_core::BatteryData& battery) {
   lock();
   snapshot_.battery = battery;
+#ifndef NDEBUG
+  if (g_debug_force_charging && snapshot_.battery.valid) {
+    // Logged only on the false->true transition, not on every ~30s sample
+    // while it stays forced - enough to answer "did the flag even take
+    // effect" without spamming the log for the rest of the test. Without
+    // this, GET /force-charging having reached this function at all was
+    // only visible by inference from a screenshot.
+    if (!snapshot_.battery.charging) {
+      ESP_LOGI(kTag,
+              "debug_force_charging: overriding charging=false to true "
+              "(mV=%d percent=%u)",
+              snapshot_.battery.millivolts, snapshot_.battery.percent);
+    }
+    snapshot_.battery.charging = true;
+  }
+#endif
   ui::publish_snapshot(snapshot_);
   unlock();
 }
+
+#ifndef NDEBUG
+void debug_force_charging() {
+  lock();
+  g_debug_force_charging = true;
+  unlock();
+}
+#endif
 
 void set_ota(const app_core::OtaData& ota) {
   lock();

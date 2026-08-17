@@ -399,3 +399,32 @@ HOST_TEST(battery_percent_is_trustworthy_only_when_valid_and_not_charging) {
   EXPECT_TRUE(!ui::battery_percent_trustworthy(
       battery, app_core::PowerTrend::Charging));
 }
+
+// battery_percent_trustworthy() above is defined as
+// "valid && !battery_is_charging(...)" - this is the direct test of the
+// half that changed meaning: battery_is_charging() itself, which the tray
+// icon now also calls on its own (it needs to know "charging" independent
+// of "valid", unlike the settings row and Home tile, which only ever need
+// the combined trustworthy answer).
+HOST_TEST(battery_is_charging_is_the_or_of_the_fast_and_slow_signals) {
+  app_core::BatteryData battery;
+  battery.charging = false;
+  EXPECT_TRUE(!ui::battery_is_charging(battery, app_core::PowerTrend::Steady));
+  EXPECT_TRUE(
+      !ui::battery_is_charging(battery, app_core::PowerTrend::Discharging));
+
+  battery.charging = true;
+  EXPECT_TRUE(ui::battery_is_charging(battery, app_core::PowerTrend::Steady));
+
+  battery.charging = false;
+  EXPECT_TRUE(ui::battery_is_charging(battery, app_core::PowerTrend::Charging));
+
+  // Deliberately independent of BatteryData::valid: an invalid reading is a
+  // separate concern (nothing was measured) from charging (something was
+  // measured, and it looks like a charger). battery_percent_trustworthy()
+  // is where the two get combined into one "should this row show a
+  // number" answer; this function alone must not require valid.
+  battery.valid = false;
+  battery.charging = true;
+  EXPECT_TRUE(ui::battery_is_charging(battery, app_core::PowerTrend::Steady));
+}
