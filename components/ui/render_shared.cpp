@@ -416,9 +416,14 @@ void render_tray(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
   // settings page where it is the number a calibration is compared against.
   const WifiIconParts wifi =
       wifi_icon(parent, cells.network, snapshot.setup.connected);
-  const BatteryIconParts battery =
-      battery_icon(parent, cells.battery, snapshot.battery.percent,
-                   snapshot.battery.valid);
+  // battery_percent_trustworthy(), not battery.valid alone: while charging,
+  // the measured voltage is the charger's output, not the cell's state of
+  // charge, so the fill bar would be confidently wrong rather than merely
+  // absent - see that function's own comment.
+  const BatteryIconParts battery = battery_icon(
+      parent, cells.battery, snapshot.battery.percent,
+      battery_percent_trustworthy(snapshot.battery,
+                                  snapshot.battery_runtime.trend));
   TrayIndicatorIcon indicator_icons[app_core::kMaxTrayIndicators]{};
   for (int i = 0; i < app_core::kMaxTrayIndicators; ++i) {
     // Only drawn when system_tray_layout() actually gave this slot room -
@@ -639,8 +644,11 @@ bool update_visible_fields(UiContext& context,
   // In place, like the label path it replaces: a battery sample every 30s must
   // not cost a page rebuild, which is a visible full repaint on this panel.
   set_wifi_icon_state(context.network_icon, snapshot.setup.connected);
-  set_battery_icon_level(context.battery_icon_parts, snapshot.battery.percent,
-                         snapshot.battery.valid);
+  // See the initial-draw call site's own comment on battery_percent_trustworthy().
+  set_battery_icon_level(
+      context.battery_icon_parts, snapshot.battery.percent,
+      battery_percent_trustworthy(snapshot.battery,
+                                  snapshot.battery_runtime.trend));
   set_setup_status_if_changed(context.setup_status_label,
                               setup_status_text(snapshot.setup.status),
                               snapshot.setup.error);

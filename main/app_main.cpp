@@ -37,6 +37,7 @@
 #include <esp_log.h>
 #include <esp_system.h>
 #include <freertos/FreeRTOS.h>
+#include <freertos/idf_additions.h>
 #include <freertos/task.h>
 
 namespace {
@@ -421,6 +422,15 @@ std::string take_found_url() {
   return url;
 }
 
+// HTTPS plus a JSON parse - never touches flash, so its stack lives in
+// PSRAM (see run_update_action()'s xTaskCreateWithCaps call) rather than
+// costing internal DRAM: this exact task, on demand at the exact moment a
+// button was pressed, is what starved net_log's listener when it was made
+// permanent instead - see the git history on this function for that
+// attempt and why it was reverted. Self-deletes with vTaskDeleteWithCaps,
+// not vTaskDelete: required for a task created via xTaskCreateWithCaps,
+// and self-deletion through it is explicitly supported (idf_additions.c's
+// prvTaskDeleteWithCapsTask()).
 void update_check_task(void*) {
   const ota::ReleaseInfo release = ota::check_latest_release();
   ESP_LOGI(kTag, "update check: ok=%d newer=%d version=%s", release.ok,
@@ -449,7 +459,7 @@ void update_check_task(void*) {
     status += " - " + release.notes;
   }
   ui::set_update_status(status, installable);
-  vTaskDelete(nullptr);
+  vTaskDeleteWithCaps(nullptr);
 }
 
 // Puts the confirm prompt on the panel and takes it away again. Routed through
@@ -484,10 +494,23 @@ void run_update_action(bool install) {
     return;
   }
   // 16384 B: an HTTPS handshake plus a JSON parse, the same shape as
-  // weather_monitor_task, which needed this much for the same reasons.
-  if (xTaskCreate(&update_check_task, "ota_check", 16384, nullptr,
-                  tskIDLE_PRIORITY + 1, nullptr) != pdPASS) {
-    ESP_LOGE(kTag, "update check task creation failed");
+  // weather_monitor_task, which needed this much for the same reasons. In
+  // PSRAM (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT), not internal RAM - see
+  // update_check_task's own comment. This is still created on demand, right
+  // here, at the moment the row is pressed: that used to be the fragile
+  // part (a 16 KiB *internal* request at the worst possible moment for the
+  // heap to grant it); moving it to PSRAM removes the internal-RAM cost
+  // entirely instead of moving it to boot, so on-demand creation stops
+  // being a problem rather than needing to be avoided.
+  if (xTaskCreateWithCaps(&update_check_task, "ota_check", 16384, nullptr,
+                          tskIDLE_PRIORITY + 1, nullptr,
+                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+    ESP_LOGE(kTag,
+             "update check task creation failed: free PSRAM=%u largest "
+             "PSRAM block=%u",
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)),
+             static_cast<unsigned>(
+                 heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)));
     ui::set_update_status("Device busy");
   }
 }
@@ -583,6 +606,19 @@ app_core::HistorySample take_slot() {
 
 constexpr uint32_t kBatterySamplePeriodMs = 30'000;
 
+// Both smoothing (item 3: consecutive 30 s samples moved 4078/4050/4069 mV on
+// real hardware) and the fast charging signal (item 1: a sustained high
+// reading, not a single one) read from the same short rolling window of raw
+// millivolts - see app_core::smoothed_battery_millivolts() and
+// app_core::voltage_suggests_charging(). 4 samples is 2 minutes at this
+// task's cadence: long enough to tell noise from a real reading, short
+// enough that a charger being plugged in is still noticed in a couple of
+// minutes rather than the hour PowerTrend::Charging needs.
+constexpr int kBatteryRecentWindow = 4;
+int g_battery_recent_mv[kBatteryRecentWindow] = {};
+int g_battery_recent_count = 0;
+int g_battery_recent_next = 0;
+
 // Samples the battery divider roughly every 30 s and publishes it through
 // wifi_provision's existing snapshot owner; never touches lv_* directly.
 [[noreturn]] void battery_monitor_task(void*) {
@@ -598,9 +634,13 @@ constexpr uint32_t kBatterySamplePeriodMs = 30'000;
       ESP_LOGI(kTag, "battery valid=%d mV=%d percent=%u", battery.valid,
                battery.millivolts, battery.percent);
 
-      battery.overvoltage_warning =
-          app_core::battery_overvoltage_warning(battery.millivolts);
-      const bool danger = app_core::battery_overvoltage_danger(battery.millivolts);
+      // Raw, not smoothed: overvoltage detection must not wait out a
+      // smoothing window before flagging a real condition, and history
+      // (accumulate_battery below) already does its own 5-minute averaging
+      // over many more samples than this window holds.
+      const int raw_mv = battery.millivolts;
+      battery.overvoltage_warning = app_core::battery_overvoltage_warning(raw_mv);
+      const bool danger = app_core::battery_overvoltage_danger(raw_mv);
 
       // Detection only: this board has no charger-enable GPIO, so firmware
       // cannot stop or limit charging - these are warnings, not protection.
@@ -608,22 +648,38 @@ constexpr uint32_t kBatterySamplePeriodMs = 30'000;
         ESP_LOGE(kTag,
                  "battery overvoltage danger: %d mV (limit %d mV); firmware "
                  "cannot stop charging on this board",
-                 battery.millivolts, app_core::kBatteryOvervoltageDangerMillivolts);
+                 raw_mv, app_core::kBatteryOvervoltageDangerMillivolts);
       } else if (!danger && was_danger) {
-        ESP_LOGI(kTag, "battery overvoltage danger cleared: %d mV",
-                 battery.millivolts);
+        ESP_LOGI(kTag, "battery overvoltage danger cleared: %d mV", raw_mv);
       }
       if (battery.overvoltage_warning && !was_warning) {
         ESP_LOGW(kTag, "battery overvoltage warning: %d mV (limit %d mV)",
-                 battery.millivolts, app_core::kBatteryOvervoltageWarningMillivolts);
+                 raw_mv, app_core::kBatteryOvervoltageWarningMillivolts);
       } else if (!battery.overvoltage_warning && was_warning) {
-        ESP_LOGI(kTag, "battery overvoltage warning cleared: %d mV",
-                 battery.millivolts);
+        ESP_LOGI(kTag, "battery overvoltage warning cleared: %d mV", raw_mv);
       }
       was_warning = battery.overvoltage_warning;
       was_danger = danger;
 
-      accumulate_battery(battery.millivolts);
+      accumulate_battery(raw_mv);
+
+      // A read that came back implausible (battery.valid false) must not
+      // pollute the smoothing/charging window with a reading nobody trusts -
+      // skipped entirely, same reasoning history.hpp's samples give a gap
+      // rather than interpolating one.
+      if (battery.valid) {
+        g_battery_recent_mv[g_battery_recent_next] = raw_mv;
+        g_battery_recent_next = (g_battery_recent_next + 1) % kBatteryRecentWindow;
+        if (g_battery_recent_count < kBatteryRecentWindow) ++g_battery_recent_count;
+
+        battery.charging = app_core::voltage_suggests_charging(
+            g_battery_recent_mv, g_battery_recent_count);
+        const int smoothed_mv = app_core::smoothed_battery_millivolts(
+            g_battery_recent_mv, g_battery_recent_count);
+        battery.millivolts = smoothed_mv;
+        battery.percent = app_core::battery_percent(smoothed_mv);
+      }
+
       wifi_provision::set_battery(battery);
     } else {
       ESP_LOGW(kTag, "battery ADC read failed");
@@ -923,6 +979,22 @@ extern "C" void app_main() {
            static_cast<unsigned>(psram_bytes));
   if (psram_bytes == 0) fatal_loop("required PSRAM unavailable", ESP_ERR_NOT_FOUND);
 
+  // PSRAM free is not the number that decides whether xTaskCreate() can
+  // hand out an internal stack later - that comes out of internal DRAM,
+  // which PSRAM's own multi-MB of headroom says nothing about. Logged here,
+  // before display/LVGL/audio/Wi-Fi have claimed anything, and again at the
+  // end of this function once every long-lived task exists, specifically so
+  // a fragmentation-only failure (total looks fine, no single block is big
+  // enough) is visible without needing hardware in hand to reproduce it -
+  // see largest_free_block, not just free_size, for that: a request can
+  // fail with tens of KiB still free if nothing contiguous is that big.
+  ESP_LOGI(kTag,
+           "startup diagnostics internal RAM free=%u largest_free_block=%u "
+           "(at boot)",
+           static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+           static_cast<unsigned>(
+               heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)));
+
   // Retain the log from here rather than from when the socket opens. Every
   // startup decision below - the language restored from NVS, the history
   // restored from flash, the rollback guard's reading of the slot - is logged
@@ -1167,4 +1239,17 @@ extern "C" void app_main() {
                   tskIDLE_PRIORITY + 1, nullptr) != pdPASS) {
     ESP_LOGE(kTag, "history recorder task creation failed");
   }
+
+  // The other half of the pair at the top of this function: every
+  // permanent stack this board holds at boot - audio's I2S/DMA buffers,
+  // the codec device, and every monitor task above - now exists. Note what
+  // this number does NOT include: update_check_task's and the audio
+  // tone/sweep tasks' stacks, which are on demand and in PSRAM (see their
+  // own comments) precisely so they never show up in this budget at all.
+  ESP_LOGI(kTag,
+           "startup diagnostics internal RAM free=%u largest_free_block=%u "
+           "(after startup)",
+           static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+           static_cast<unsigned>(
+               heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)));
 }

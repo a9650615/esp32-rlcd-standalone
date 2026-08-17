@@ -54,6 +54,17 @@ std::string row_value(SettingsItem item, const app_core::BatteryData& battery,
       // divider reads below a plausible cell voltage.
       if (!battery.valid) return "--";
       char buffer[24];
+      // While charging, the measured voltage is the charger's output, not
+      // the cell's state of charge - a percentage computed from it would be
+      // confidently wrong, not merely imprecise (see
+      // battery_percent_trustworthy(), ui_data.hpp). Millivolts still shown:
+      // it is real regardless of charging state, and is exactly the number
+      // a multimeter comparison needs.
+      if (!battery_percent_trustworthy(battery, runtime.trend)) {
+        std::snprintf(buffer, sizeof(buffer), "%d mV  %s", battery.millivolts,
+                      text(Text::StatusCharging));
+        return buffer;
+      }
       std::snprintf(buffer, sizeof(buffer), "%d mV  %u%%", battery.millivolts,
                     static_cast<unsigned>(battery.percent));
       return buffer;

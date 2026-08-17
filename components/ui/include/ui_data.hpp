@@ -1245,6 +1245,24 @@ constexpr bool home_battery_notable(const app_core::BatteryData& battery) {
                            battery.percent <= kHomeLowBatteryPercent);
 }
 
+// True only when the percentage is worth showing as a number: a valid
+// reading, and neither the fast voltage-based signal
+// (BatteryData::charging) nor the slow slope-based one
+// (PowerTrend::Charging) thinks the cell is on a charger. While charging,
+// the terminal voltage is the charger's output, not the cell's state of
+// charge - the percentage would read high regardless of how full the cell
+// actually is, which is confidently wrong rather than merely imprecise.
+// The two charging signals are read from different tasks/cadences (see
+// BatteryData::charging's own comment on why they stay separate fields) but
+// combining them here, at render time, is just reading two already-valid
+// snapshot fields - not the cross-task overwrite hazard that comment warns
+// against.
+constexpr bool battery_percent_trustworthy(const app_core::BatteryData& battery,
+                                           app_core::PowerTrend trend) {
+  return battery.valid && !battery.charging &&
+        trend != app_core::PowerTrend::Charging;
+}
+
 // Priority, highest first: a battery problem (over-voltage or low charge)
 // outranks a weather alert, which outranks a plain informative reading -
 // weather (even without an alert), then market, then indoor, then a plain

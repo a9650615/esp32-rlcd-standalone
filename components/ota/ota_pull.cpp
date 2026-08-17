@@ -1,10 +1,12 @@
 #include "ota_pull.hpp"
 
 #include <esp_crt_bundle.h>
+#include <esp_heap_caps.h>
 #include <esp_http_client.h>
 #include <esp_log.h>
 #include <esp_system.h>
 #include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include <freertos/task.h>
 
 #include <memory>
@@ -181,6 +183,37 @@ const char* pull_result_message(PullResult result) {
 
 namespace {
 
+// Genuinely writes flash (pull_from_url() feeds ota::Session, which calls
+// esp_ota_write()), so unlike modules/audio's tone/sweep tasks and
+// main/app_main.cpp's update_check_task, this one's stack must stay in
+// internal RAM - a task whose stack lives in PSRAM must never run while the
+// flash cache is disabled, which is exactly the window a flash write opens
+// (see freertos/Kconfig's FREERTOS_TASK_CREATE_ALLOW_EXT_MEM help text).
+// Nothing here moves to PSRAM.
+//
+// One at a time, refused rather than allowed to race: without this, the
+// settings row's install action and a POST /ota-url arriving over the LAN
+// at the same moment could each start a pull_task, and two ota::Session
+// instances would then call esp_ota_begin()/esp_ota_write() against the
+// same partition concurrently - a genuine latent defect, found while this
+// module was being changed for an unrelated reason, not something the two
+// concurrent-pull case had ever been exercised against. Same non-blocking
+// try-lock shape as modules/audio's g_playback_busy, for the same reason:
+// refuse cleanly and immediately rather than block the caller (the LVGL
+// thread, or an HTTP handler) until a slot frees up.
+SemaphoreHandle_t g_pull_busy = nullptr;
+
+// Lazily created on first use, same reasoning as modules/audio's
+// claim_playback_slot(): nothing needs this before the first pull request.
+bool claim_pull_slot() {
+  if (g_pull_busy == nullptr) {
+    g_pull_busy = xSemaphoreCreateBinary();
+    if (g_pull_busy == nullptr) return false;
+    xSemaphoreGive(g_pull_busy);  // seed with one token: "available"
+  }
+  return xSemaphoreTake(g_pull_busy, 0) == pdTRUE;
+}
+
 void pull_task(void* argument) {
   // Owns the copy the caller handed over, so the URL cannot go out of scope
   // while the download is still running.
@@ -188,24 +221,37 @@ void pull_task(void* argument) {
   const PullResult result = pull_from_url(*url);
   if (result == PullResult::Armed) {
     ESP_LOGW(kTag, "pulled firmware armed; restarting");
-    esp_restart();
+    esp_restart();  // Does not return; nothing left to release.
   }
   // pull_from_url already put the reason on the panel. Nothing to reboot for;
   // the running image is untouched and the carousel simply carries on.
   ESP_LOGE(kTag, "firmware pull failed: %s", pull_result_message(result));
+  xSemaphoreGive(g_pull_busy);
   vTaskDelete(nullptr);
 }
 
 }  // namespace
 
 bool start_pull(const std::string& url) {
+  if (!claim_pull_slot()) {
+    ESP_LOGW(kTag, "firmware pull refused: a pull is already in progress");
+    return false;
+  }
   auto owned = std::make_unique<std::string>(url);
   // 16384 B: 4096 would not survive the TLS handshake. weather_monitor_task
   // needed this much for the handshake alone, and this additionally holds a
-  // 4 KiB read buffer.
+  // 4 KiB read buffer. Internal RAM - see pull_task's own comment for why
+  // this one cannot move to PSRAM the way the other two on-demand tasks in
+  // this same pass did.
   if (xTaskCreate(&pull_task, "ota_pull", 16384, owned.get(),
                   tskIDLE_PRIORITY + 1, nullptr) != pdPASS) {
-    ESP_LOGE(kTag, "firmware pull task creation failed");
+    ESP_LOGE(kTag,
+             "firmware pull task creation failed: free internal=%u largest "
+             "block=%u",
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+             static_cast<unsigned>(
+                 heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)));
+    xSemaphoreGive(g_pull_busy);
     return false;
   }
   // The task owns it now.

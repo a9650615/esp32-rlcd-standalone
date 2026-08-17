@@ -369,3 +369,33 @@ HOST_TEST(settings_layout_fits_and_rows_do_not_overlap) {
   // content bounds, not just somewhere inside the wider safe canvas.
   EXPECT_TRUE(layout.status.bottom() <= content.bottom());
 }
+
+HOST_TEST(battery_percent_is_trustworthy_only_when_valid_and_not_charging) {
+  app_core::BatteryData battery;
+  battery.valid = true;
+  battery.charging = false;
+  EXPECT_TRUE(ui::battery_percent_trustworthy(battery,
+                                              app_core::PowerTrend::Steady));
+  EXPECT_TRUE(ui::battery_percent_trustworthy(
+      battery, app_core::PowerTrend::Discharging));
+
+  // Invalid reading: no percentage was ever computed to trust.
+  battery.valid = false;
+  EXPECT_TRUE(!ui::battery_percent_trustworthy(battery,
+                                               app_core::PowerTrend::Steady));
+
+  // The fast, voltage-based signal (BatteryData::charging) withholds trust
+  // on its own, regardless of what the slower PowerTrend says.
+  battery.valid = true;
+  battery.charging = true;
+  EXPECT_TRUE(!ui::battery_percent_trustworthy(battery,
+                                               app_core::PowerTrend::Steady));
+
+  // The slow, slope-based signal (PowerTrend::Charging) also withholds
+  // trust on its own, even when the fast signal has not (yet) caught up -
+  // this is exactly the early-charge case (a depleted cell charging well
+  // below the ~4.15 V fast threshold) the fast signal alone would miss.
+  battery.charging = false;
+  EXPECT_TRUE(!ui::battery_percent_trustworthy(
+      battery, app_core::PowerTrend::Charging));
+}

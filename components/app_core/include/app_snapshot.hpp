@@ -201,14 +201,35 @@ struct SetupData {
 // lets the UI flag a reading that looks wrong.
 struct BatteryData {
   bool valid = false;
+  // Smoothed (see smoothed_battery_millivolts() below), not the raw sample -
+  // consecutive raw readings moved 4078/4050/4069 mV on real hardware, which
+  // alone moved the displayed percent. overvoltage_warning below is computed
+  // from the raw reading instead, on purpose: a real overvoltage condition
+  // must not wait out a smoothing window before it is flagged.
   int millivolts = 0;
   uint8_t percent = 0;
   bool overvoltage_warning = false;
+  // True when recent voltage readings suggest external power is present -
+  // see voltage_suggests_charging() below. This board has no charge-detect
+  // line to read (Waveshare documents the CHG pin as an LED only; the
+  // charger IC's own STAT output, confirmed against the schematic, does not
+  // reach any ESP32-S3 GPIO either), so this is inferred from the one thing
+  // available: the terminal voltage a charger holds up near its CV setpoint
+  // regardless of the cell's actual state of charge. Deliberately separate
+  // from AppSnapshot::battery_runtime's PowerTrend::Charging (a slower,
+  // slope-based signal from a different task's history) rather than folded
+  // into it - see that field's own comment on why the two must not merge.
+  // A caller wanting the fuller picture reads both; this field alone
+  // answers "should the percentage be trusted right now".
+  bool charging = false;
   // No RuntimeEstimate here on purpose - see AppSnapshot::battery_runtime
   // below for where it lives and why. This struct is republished wholesale
   // every ~30 s by the battery sampler; a field belonging to a different
   // task on a different cadence must not be able to ride along with that
   // assignment and get silently overwritten with a default-constructed one.
+  // charging above is fine here specifically because it is produced by that
+  // same sampler, on the same cadence - not a different task's field riding
+  // along.
 };
 
 // Applies the board's 3x sense divider and a calibration_permille trim
@@ -232,6 +253,42 @@ bool battery_reading_valid(int millivolts);
 // discharge-curve table (a naive linear 3000-4200 mV map is badly wrong
 // mid-curve). Clamped to 0..100 at both ends.
 uint8_t battery_percent(int millivolts);
+
+// Plain moving average over whatever recent calibrated millivolts readings
+// the caller kept - not a fuel-gauge model, just enough smoothing that the
+// displayed value stops visibly jittering when consecutive ADC samples move
+// by tens of millivolts on their own (observed on hardware: 4078, 4050,
+// 4069 mV within a couple of minutes - each one a legitimate reading, but
+// showing every one of them makes the percentage read as "wrong" even
+// though the underlying voltage barely moved). `recent_millivolts` may be in
+// any order - only the values are used - and `count` must be > 0.
+int smoothed_battery_millivolts(const int* recent_millivolts, int count);
+
+// Fast charging signal from voltage alone: evidence within the couple of
+// minutes it takes to collect `count` readings, not the hour
+// PowerTrend::Charging (history.hpp) needs to see a slope. A cell under any
+// real load does not sit at or above kChargingVoltageThresholdMillivolts
+// (~4.15 V - comfortably below a single-cell charger's ~4.20 V CV
+// regulation point, and above where a real load pulls a full cell down
+// within a few minutes of being unplugged), so every one of the caller's
+// last `count` raw readings landing up there - not just one - is treated as
+// evidence external power is present.
+//
+// Honest false positive, stated rather than hidden: a genuinely full cell,
+// unplugged moments ago, reads identically to one still charging for as
+// long as it takes a real load to pull it back down - typically a couple
+// of minutes, which is also roughly this function's own reaction time.
+// There is no hardware signal on this board to tell the two cases apart -
+// Waveshare documents the CHG pin as an LED only, and the charger IC's own
+// STAT output (confirmed against the schematic) does not reach any
+// ESP32-S3 GPIO either.
+//
+// Takes raw (unsmoothed) readings deliberately, not
+// smoothed_battery_millivolts()'s output: smoothing lags a real voltage
+// step by close to its own window, which would slow down the one signal
+// this function exists to make fast.
+inline constexpr int kChargingVoltageThresholdMillivolts = 4150;
+bool voltage_suggests_charging(const int* recent_millivolts, int count);
 
 // Overvoltage thresholds for a single-cell Li-ion pack, above a normal
 // 4200 mV CC/CV termination plus typical charger/ADC tolerance. These are

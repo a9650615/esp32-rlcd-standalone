@@ -244,6 +244,21 @@ uint8_t battery_percent(int millivolts) {
   return 0;  // unreachable: breakpoints cover [3000, 4200] contiguously.
 }
 
+int smoothed_battery_millivolts(const int* recent_millivolts, int count) {
+  if (recent_millivolts == nullptr || count <= 0) return 0;
+  long sum = 0;
+  for (int i = 0; i < count; ++i) sum += recent_millivolts[i];
+  return static_cast<int>(sum / count);
+}
+
+bool voltage_suggests_charging(const int* recent_millivolts, int count) {
+  if (recent_millivolts == nullptr || count <= 0) return false;
+  for (int i = 0; i < count; ++i) {
+    if (recent_millivolts[i] < kChargingVoltageThresholdMillivolts) return false;
+  }
+  return true;
+}
+
 bool battery_overvoltage_warning(int millivolts) {
   return millivolts >= kBatteryOvervoltageWarningMillivolts;
 }

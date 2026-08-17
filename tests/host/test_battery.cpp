@@ -85,6 +85,71 @@ HOST_TEST(battery_overvoltage_does_not_fire_on_a_genuinely_full_cell_or_real_har
   EXPECT_TRUE(!app_core::battery_overvoltage_danger(4071));
 }
 
+HOST_TEST(smoothed_battery_millivolts_averages_recent_readings) {
+  // The exact jitter observed on real hardware within a couple of minutes:
+  // each sample was itself legitimate, but showing every one moved the
+  // displayed percent for no real reason.
+  const int recent[] = {4078, 4050, 4069};
+  EXPECT_EQ(app_core::smoothed_battery_millivolts(recent, 3),
+            (4078 + 4050 + 4069) / 3);
+}
+
+HOST_TEST(smoothed_battery_millivolts_handles_one_reading_and_none) {
+  const int one[] = {3820};
+  EXPECT_EQ(app_core::smoothed_battery_millivolts(one, 1), 3820);
+  EXPECT_EQ(app_core::smoothed_battery_millivolts(nullptr, 0), 0);
+  EXPECT_EQ(app_core::smoothed_battery_millivolts(one, 0), 0);
+}
+
+HOST_TEST(smoothed_battery_millivolts_is_order_independent) {
+  // A plain average, not a weighted or time-aware one - the caller's ring
+  // buffer wraps without preserving insertion order, so the result must not
+  // depend on it.
+  const int forward[] = {4000, 4100, 4200};
+  const int shuffled[] = {4200, 4000, 4100};
+  EXPECT_EQ(app_core::smoothed_battery_millivolts(forward, 3),
+            app_core::smoothed_battery_millivolts(shuffled, 3));
+}
+
+HOST_TEST(voltage_suggests_charging_requires_every_recent_reading_above_threshold) {
+  // All at or above kChargingVoltageThresholdMillivolts (4150): sustained.
+  const int all_high[] = {4180, 4190, 4200, 4150};
+  EXPECT_TRUE(app_core::voltage_suggests_charging(all_high, 4));
+
+  // Exactly one below threshold - even briefly dropping below is not
+  // "sustained", the whole point of requiring every recent reading.
+  const int one_low[] = {4180, 4190, 4149, 4200};
+  EXPECT_TRUE(!app_core::voltage_suggests_charging(one_low, 4));
+
+  // A single high reading (count == 1) is enough evidence for this
+  // function - the "not a single sample" caution in its own comment is
+  // about the false-positive case, not about needing count > 1 to fire.
+  const int single[] = {4150};
+  EXPECT_TRUE(app_core::voltage_suggests_charging(single, 1));
+
+  // Normal discharging voltages, nowhere near the threshold.
+  const int discharging[] = {3820, 3800, 3790};
+  EXPECT_TRUE(!app_core::voltage_suggests_charging(discharging, 3));
+}
+
+HOST_TEST(voltage_suggests_charging_handles_the_exact_threshold_and_empty_input) {
+  const int exactly_at[] = {app_core::kChargingVoltageThresholdMillivolts};
+  EXPECT_TRUE(app_core::voltage_suggests_charging(exactly_at, 1));
+  const int one_below[] = {app_core::kChargingVoltageThresholdMillivolts - 1};
+  EXPECT_TRUE(!app_core::voltage_suggests_charging(one_below, 1));
+  EXPECT_TRUE(!app_core::voltage_suggests_charging(nullptr, 0));
+  EXPECT_TRUE(!app_core::voltage_suggests_charging(exactly_at, 0));
+}
+
+HOST_TEST(voltage_suggests_charging_honest_false_positive_a_full_cell_just_unplugged) {
+  // The exact case the function's own comment names: a genuinely full cell,
+  // disconnected moments ago, reads identically to one still charging.
+  // Documented behaviour, not a bug - this test exists so a future change
+  // that "fixes" it without a real signal to base the fix on gets noticed.
+  const int full_cell_off_charger[] = {4180, 4170, 4160};
+  EXPECT_TRUE(app_core::voltage_suggests_charging(full_cell_off_charger, 3));
+}
+
 // Locks down the ownership split app_snapshot.hpp documents on
 // AppSnapshot::battery_runtime: wifi_provision's set_battery() (every ~30 s,
 // a different task than the ~5 min history/runtime estimator) does exactly

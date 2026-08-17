@@ -10,8 +10,10 @@
 
 #include <driver/gpio.h>
 #include <driver/i2s_std.h>
+#include <esp_heap_caps.h>
 #include <esp_log.h>
 #include <freertos/FreeRTOS.h>
+#include <freertos/idf_additions.h>
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 
@@ -647,6 +649,20 @@ namespace {
 // blocking problem into a task-pool blocking problem).
 SemaphoreHandle_t g_playback_busy = nullptr;
 constexpr uint32_t kPlaybackTaskStackBytes = 4096;
+// I2S and I2C only - audio_play_tone()/audio_play_diagnostic_sweep() never
+// touch flash, so this stack can live in PSRAM (xTaskCreateWithCaps below)
+// rather than costing internal DRAM, which this board is short of and
+// PSRAM (7-8 MB free) is not. Confirmed against
+// FREERTOS_TASK_CREATE_ALLOW_EXT_MEM's own Kconfig help text (freertos/
+// Kconfig): the one universal rule for every target is "never accessed
+// while the cache is disabled" - true here, since nothing in this task
+// writes flash - and the ESP32-only caution about ROM/Bluetooth/Wi-Fi calls
+// does not apply on this board's ESP32-S3 (that option defaults to n only
+// for IDF_TARGET_ESP32, y everywhere else, this project's sdkconfig
+// included). Still an on-demand task, not a permanent one - see
+// main/app_main.cpp's update_check_task for why permanent was the wrong
+// fix and PSRAM is the right one.
+constexpr UBaseType_t kPlaybackTaskCaps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
 
 // Lazily created on first use rather than at audio_init() time - nothing
 // needs it before the first play request, and an audio_init() that fails
@@ -669,13 +685,16 @@ struct ToneRequest {
 // Owns the request the caller handed over (same pattern as ota::pull_task),
 // runs the existing blocking audio_play_tone() on its own task so the HTTP
 // handler that started it is free immediately, then releases the busy slot
-// and deletes itself - a task function returning without vTaskDelete(NULL)
-// is not a real exit on FreeRTOS.
+// and deletes itself - vTaskDeleteWithCaps(NULL), not vTaskDelete(NULL): a
+// task created by xTaskCreateWithCaps() must be torn down by the matching
+// *WithCaps deleter, which frees the PSRAM stack buffer plain vTaskDelete()
+// does not know about (self-deletion is explicitly supported - see
+// idf_additions.c's prvTaskDeleteWithCapsTask()).
 void tone_task(void* argument) {
   std::unique_ptr<ToneRequest> request(static_cast<ToneRequest*>(argument));
   audio_play_tone(request->frequency_hz, request->duration_ms);
   xSemaphoreGive(g_playback_busy);
-  vTaskDelete(nullptr);
+  vTaskDeleteWithCaps(nullptr);
 }
 
 struct SweepRequest {
@@ -686,7 +705,7 @@ void sweep_task(void* argument) {
   std::unique_ptr<SweepRequest> request(static_cast<SweepRequest*>(argument));
   audio_play_diagnostic_sweep(request->enable_amplifier);
   xSemaphoreGive(g_playback_busy);
-  vTaskDelete(nullptr);
+  vTaskDeleteWithCaps(nullptr);
 }
 
 // --- Streaming: one open codec/I2S session held across an entire call,
@@ -830,9 +849,19 @@ esp_err_t audio_play_tone_async(int frequency_hz, int duration_ms) {
     return ESP_ERR_INVALID_STATE;
   }
   auto request = std::make_unique<ToneRequest>(ToneRequest{frequency_hz, duration_ms});
-  if (xTaskCreate(&tone_task, "audio_tone", kPlaybackTaskStackBytes, request.get(),
-                  tskIDLE_PRIORITY + 1, nullptr) != pdPASS) {
-    ESP_LOGE(kTag, "audio tone task creation failed");
+  // PSRAM stack (kPlaybackTaskCaps), not internal RAM - see that constant's
+  // own comment. Logged with the PSRAM numbers, not the internal-RAM ones,
+  // on the rare chance this genuinely has none left: naming the wrong heap
+  // would send whoever reads this log to the wrong culprit.
+  if (xTaskCreateWithCaps(&tone_task, "audio_tone", kPlaybackTaskStackBytes,
+                          request.get(), tskIDLE_PRIORITY + 1, nullptr,
+                          kPlaybackTaskCaps) != pdPASS) {
+    ESP_LOGE(kTag,
+             "audio tone task creation failed: free PSRAM=%u largest "
+             "PSRAM block=%u",
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)),
+             static_cast<unsigned>(
+                 heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)));
     xSemaphoreGive(g_playback_busy);
     return ESP_ERR_NO_MEM;
   }
@@ -852,9 +881,17 @@ esp_err_t audio_play_diagnostic_sweep_async(bool enable_amplifier) {
     return ESP_ERR_INVALID_STATE;
   }
   auto request = std::make_unique<SweepRequest>(SweepRequest{enable_amplifier});
-  if (xTaskCreate(&sweep_task, "audio_sweep", kPlaybackTaskStackBytes, request.get(),
-                  tskIDLE_PRIORITY + 1, nullptr) != pdPASS) {
-    ESP_LOGE(kTag, "audio sweep task creation failed");
+  // See audio_play_tone_async()'s own comment: PSRAM stack, PSRAM numbers
+  // if it fails.
+  if (xTaskCreateWithCaps(&sweep_task, "audio_sweep", kPlaybackTaskStackBytes,
+                          request.get(), tskIDLE_PRIORITY + 1, nullptr,
+                          kPlaybackTaskCaps) != pdPASS) {
+    ESP_LOGE(kTag,
+             "audio sweep task creation failed: free PSRAM=%u largest "
+             "PSRAM block=%u",
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)),
+             static_cast<unsigned>(
+                 heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)));
     xSemaphoreGive(g_playback_busy);
     return ESP_ERR_NO_MEM;
   }
