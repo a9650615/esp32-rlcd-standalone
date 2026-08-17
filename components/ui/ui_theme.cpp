@@ -364,6 +364,18 @@ lv_obj_t* bind_i1_canvas(lv_obj_t* parent, int x, int y, int width, int height,
   lv_obj_t* canvas = lv_canvas_create(parent);
   if (canvas == nullptr) return nullptr;
   apply_surface(canvas);
+  // apply_surface() leaves every surface opaque white - correct for most
+  // objects, but a canvas's own background is a style layer LVGL paints
+  // *underneath* whatever the I1 palette's index 0 resolves to, not the
+  // palette itself. A caller that asked for a transparent background (a
+  // tray indicator sitting on something other than white) would otherwise
+  // still get an opaque white square behind its "transparent" pixels -
+  // this is the bug both callers happened not to trigger, not a case for
+  // hardcoding transparency here instead: the battery overlay's opaque
+  // white request is just as real a requirement as the tray's transparent
+  // one.
+  lv_obj_set_style_bg_color(canvas, background, 0);
+  lv_obj_set_style_bg_opa(canvas, background_opa, 0);
   lv_canvas_set_buffer(canvas, storage, width, height, LV_COLOR_FORMAT_I1);
   lv_canvas_set_palette(canvas, 0, lv_color_to_32(background, background_opa));
   lv_canvas_set_palette(canvas, 1, lv_color_to_32(ink, LV_OPA_COVER));
@@ -373,6 +385,29 @@ lv_obj_t* bind_i1_canvas(lv_obj_t* parent, int x, int y, int width, int height,
 }
 
 namespace {
+
+// Mirrors lv_draw_buf_width_to_stride()'s own formula for LV_COLOR_FORMAT_I1
+// (see width_to_stride() in LVGL's lv_draw_buf.c: round the 1-bit-per-pixel
+// byte width up to LV_DRAW_BUF_STRIDE_ALIGN) so the two fixed backing
+// stores below can be *proven* sufficient at compile time instead of only
+// ever being caught by their own runtime bounds checks - the same
+// static_assert convention every other hardcoded size in this codebase
+// already follows (kChargingBoltRows above, ui_strings.cpp's kRows,
+// history.hpp's HistoryBlob). i1_canvas_stride() remains the one function
+// every real write actually calls; this is a compile-time mirror of the
+// same arithmetic, not a replacement for it, and LV_DRAW_BUF_STRIDE_ALIGN is
+// the one piece of that formula that could change under this project - it
+// is read by name here rather than assumed to stay 1.
+constexpr int i1_canvas_stride_bound(int width) {
+  const int width_bytes = (width + 7) / 8;  // 1 bit/pixel, rounded up
+  return ((width_bytes + LV_DRAW_BUF_STRIDE_ALIGN - 1) / LV_DRAW_BUF_STRIDE_ALIGN) *
+         LV_DRAW_BUF_STRIDE_ALIGN;
+}
+constexpr std::size_t i1_canvas_storage_bound(int width, int height) {
+  return static_cast<std::size_t>(i1_canvas_pixel_offset()) +
+        static_cast<std::size_t>(i1_canvas_stride_bound(width)) *
+            static_cast<std::size_t>(height);
+}
 
 // Generous fixed backing store for the charging overlay canvas - LVGL's
 // I1-format canvas buffer must outlive the canvas object, so it cannot be a
@@ -387,6 +422,23 @@ namespace {
 // sizeof() as the capacity, so this only needs to be *at least* big
 // enough, not exact.
 uint8_t g_charging_bolt_bitmap[i1_canvas_pixel_offset() + 8 * 16];
+
+// Proves "generous headroom" above rather than asserting it in prose: the
+// tray's battery cell (kTrayBatteryIconWidth x kTrayIconHeight, ui_data.hpp)
+// is the one input battery_fill_rect() ever actually receives in this
+// firmware, so its real charging-bolt canvas size is knowable at compile
+// time, not just "~22x10". An icon cell grown past what this buffer holds
+// now fails the build, rather than being silently rejected by
+// build_battery_charging_composite()'s own bounds check at first boot.
+static_assert(
+    sizeof(g_charging_bolt_bitmap) >=
+        i1_canvas_storage_bound(
+            battery_fill_rect({0, 0, kTrayBatteryIconWidth, kTrayIconHeight})
+                .width,
+            battery_fill_rect({0, 0, kTrayBatteryIconWidth, kTrayIconHeight})
+                .height),
+    "g_charging_bolt_bitmap is too small for the tray battery cell's actual "
+    "charging-overlay canvas - grow its fixed backing store");
 
 }  // namespace
 
@@ -503,6 +555,22 @@ namespace {
 // real sizeof() rather than assuming it matches.
 uint8_t g_tray_indicator_storage[app_core::kMaxTrayIndicators]
                                 [i1_canvas_pixel_offset() + 8 * 16];
+
+// Proves the "today's actual 16x12" claim above rather than leaving it a
+// claim nothing checks: 16x12 (duplicated here as a literal, not included
+// from modules/audio/audio.cpp's own kIconWidth/kIconHeight) is the largest
+// icon any in-tree module currently registers. Core deliberately stays
+// unaware of which modules exist or what they draw - see
+// tray_indicator_icon()'s own comment - so this cannot generalise to every
+// module a future registration might add without breaking that decoupling;
+// repack_i1_bits()'s runtime bounds check stays the actual backstop for a
+// module this project has never seen. This only catches this codebase's
+// own comment going stale, or this buffer shrinking under it.
+static_assert(sizeof(g_tray_indicator_storage[0]) >=
+                  i1_canvas_storage_bound(16, 12),
+              "g_tray_indicator_storage's per-slot buffer is too small for "
+              "today's largest known tray-indicator icon (16x12) - grow its "
+              "fixed backing store");
 
 }  // namespace
 
