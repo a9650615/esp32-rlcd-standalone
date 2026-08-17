@@ -57,6 +57,14 @@ idf_component_register(
         esp_hw_support
         lwip
         pthread
+        esp_wifi
+        # The allowed direction (modules/README.md rule 4): this module
+        # feeds decoded PCM into modules/audio's streaming sink and
+        # registers its own tray icon directly with app_core's registry,
+        # the same way modules/audio itself does - neither audio nor
+        # app_core ever includes anything from here.
+        audio
+        app_core
 )
 
 # --- The RSA key: builder-supplied, never in this repository ---

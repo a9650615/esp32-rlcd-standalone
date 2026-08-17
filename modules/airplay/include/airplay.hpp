@@ -4,31 +4,35 @@
 
 #include <esp_err.h>
 
-// AirPlay 1 (RAOP) receiver skeleton - see modules/airplay/Kconfig.projbuild
+// AirPlay 1 (RAOP) receiver - see modules/airplay/Kconfig.projbuild
 // (CONFIG_AIRPLAY_ENABLE) and modules/airplay/README.md. Vendors
 // esp-raop-receiver (the RAOP protocol: RTSP, RTP, mDNS advertisement, DMAP
 // metadata) plus Apple's own open-source ALAC decoder in place of upstream's
 // prebuilt libalac.a - see modules/airplay/UPSTREAM.md for the provenance of
 // both.
 //
-// This is a skeleton, not a feature yet: airplay_init() below starts a real
-// RAOP receiver - RTSP/RTP sockets, mDNS advertisement, ALAC decoding of real
-// audio - but the decoded PCM currently goes nowhere (see airplay.cpp). No
-// caller wires this to modules/audio, the tray, or main/app_main.cpp yet;
-// that integration is a deliberately separate pass. Every function still
-// exists unconditionally so a future caller never writes an #ifdef of its
-// own, same contract as modules/audio/include/audio.hpp.
+// airplay_init() starts a real RAOP receiver - RTSP/RTP sockets, mDNS
+// advertisement, ALAC decoding of real audio - and feeds the decoded PCM
+// into modules/audio's streaming sink (audio::audio_stream_open()/_write()/
+// _close()) for the session's lifetime, using the RAOP receiver's own
+// connected/disconnected events as the session boundary (see airplay.cpp's
+// handle_event()). It also registers this module's own tray indicator,
+// active only while a session is open, and disables Wi-Fi power save for
+// the session's duration. Every function exists unconditionally so a
+// caller never writes an #ifdef of its own, same contract as
+// modules/audio/include/audio.hpp.
 namespace airplay {
 
 #ifdef CONFIG_AIRPLAY_ENABLE
 
 // Starts mDNS advertisement and the RAOP receiver (RTSP listener, RTP/ALAC
-// decode path). Decoded PCM is discarded, not played - see the namespace
-// comment above and airplay.cpp's discard_audio(). This proves the receiver
-// itself runs; it does not yet make sound.
+// decode path), and registers this module's tray indicator. From here on,
+// a connecting AirPlay client's decoded audio reaches modules/audio's
+// streaming sink for real - see the namespace comment above.
 //
-// A failure here must never be treated as fatal by a future caller, same
-// reasoning as audio::audio_init(): this board's primary job is the display.
+// A failure here must never be treated as fatal by the caller, same
+// reasoning as audio::audio_init(): this board's primary job is the
+// display.
 //
 // Idempotent in the sense that a second call while already running returns
 // ESP_ERR_INVALID_STATE rather than starting a second instance - it does not

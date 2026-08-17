@@ -1,12 +1,16 @@
 config AIRPLAY_ENABLE
-    bool "Enable AirPlay (RAOP) receiver skeleton"
+    bool "Enable AirPlay (RAOP) receiver"
     default n
     help
         Vendors an AirPlay 1 (RAOP) receiver (esp-raop-receiver, from
         codeberg.org/Edu_Coder/esp-airsync - see modules/airplay/UPSTREAM.md)
         plus Apple's own open-source ALAC decoder, in place of upstream's
-        prebuilt libalac.a. Defaults off, and unlike audio's "cheap and
-        harmless when idle" default-on, this has real costs even before
+        prebuilt libalac.a. Wired into main/app_main.cpp (a non-fatal
+        airplay_init() call, same pattern as audio_init()), feeds decoded
+        PCM into modules/audio's streaming sink for the session's lifetime,
+        registers its own tray indicator, and disables Wi-Fi power save
+        while a session is open. Defaults off, and unlike audio's "cheap
+        and harmless when idle" default-on, this has real costs even before
         anyone streams to it:
 
         - The RSA key AirPlay 1's handshake needs (Apple's AirPort Express
@@ -19,10 +23,11 @@ config AIRPLAY_ENABLE
           RTSP/RTP/ALAC/mDNS work, which this board's battery-drain
           tracking makes a real, measured cost, not a hypothetical one -
           see README.md, "Power".
+        - Roughly 86KiB of flash and, once a client actually connects,
+          about 1.3MB of PSRAM for the RTP jitter buffer and decoded-PCM
+          ring (see README.md, "Buffer sizing" and "What is unverified").
 
-        This is a skeleton, not a feature: nothing in main/app_main.cpp,
-        components/ui, or modules/audio calls into this module yet, and it
-        registers no tray indicator - that integration is a deliberately
-        separate pass. Turning this on today only proves the vendored
-        receiver and ALAC decoder compile; see README.md for exactly what
-        is and is not verified.
+        Turning this on proves the receiver, ALAC decoder, and the wiring
+        into modules/audio/the tray/Wi-Fi power save all compile and link;
+        it does not prove a real handshake or a real client connects - see
+        README.md for exactly what is and is not verified.

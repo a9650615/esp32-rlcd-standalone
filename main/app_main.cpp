@@ -1,3 +1,4 @@
+#include "airplay.hpp"
 #include "app_snapshot.hpp"
 #include "audio.hpp"
 #include "battery.hpp"
@@ -975,6 +976,20 @@ extern "C" void app_main() {
   } else {
     ESP_LOGW(kTag, "startup diagnostics audio=unavailable: %s",
              esp_err_to_name(audio_result));
+  }
+
+  // Same non-fatal treatment as audio_init() just above, for the same
+  // reason: this board's primary job is the display, and CONFIG_AIRPLAY_
+  // ENABLE=n (or a real AirPlay stack that fails to start) must mean no
+  // AirPlay, not no boot. No #ifdef here either way - airplay.hpp's
+  // inline no-ops make this call and this log line correct whether or not
+  // the module is compiled in.
+  const esp_err_t airplay_result = airplay::airplay_init();
+  if (airplay_result == ESP_OK) {
+    ESP_LOGI(kTag, "startup diagnostics airplay=ready");
+  } else {
+    ESP_LOGW(kTag, "startup diagnostics airplay=unavailable: %s",
+             esp_err_to_name(airplay_result));
   }
 
   app_core::RtcDateTime clock = compile_clock();

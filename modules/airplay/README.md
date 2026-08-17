@@ -1,11 +1,15 @@
 # airplay
 
-A vendored AirPlay 1 (RAOP) receiver skeleton: it compiles, and
-`airplay_init()` starts a real RTSP/RTP/mDNS/ALAC receiver, but nothing plays
-the audio it decodes yet. See `modules/README.md` for the module contract
-this follows (`CONFIG_AIRPLAY_ENABLE`, default `n`, compiles to nothing when
-off, one-way dependency on core). See `UPSTREAM.md` for exactly what was
-vendored, from where, and what was changed.
+A vendored AirPlay 1 (RAOP) receiver: `airplay_init()` starts a real
+RTSP/RTP/mDNS/ALAC receiver and feeds the decoded PCM into `modules/audio`'s
+streaming sink for the session's lifetime, using the RAOP receiver's own
+connected/disconnected events as the session boundary. It registers its own
+tray indicator (active only while a session is open) and disables Wi-Fi
+power save for the session's duration. See `modules/README.md` for the
+module contract this follows (`CONFIG_AIRPLAY_ENABLE`, default `n`, compiles
+to nothing when off, one-way dependency on core - here, `airplay -> audio`
+and `airplay -> app_core`, never the reverse). See `UPSTREAM.md` for exactly
+what was vendored, from where, and what was changed.
 
 ## What this is, precisely
 
@@ -24,26 +28,40 @@ Two vendored upstreams (`UPSTREAM.md` has the full provenance):
 `airplay_init()`/`airplay_deinit()` in `include/airplay.hpp` are the only
 public surface. Calling `airplay_init()` starts mDNS advertisement and the
 RAOP receiver for real - RTSP listener, RTP reception, ALAC decoding of
-actual streamed audio - but its `audio_output_cb` is `airplay.cpp`'s
-`discard_audio()`, which does nothing with the PCM it receives. This proves
-the receiver runs; it does not make sound.
+actual streamed audio - and its `audio_output_cb` (`airplay.cpp`'s
+`feed_audio()`) writes every decoded chunk straight into
+`audio::audio_stream_write()`. The session's open/close boundary comes from
+the RAOP receiver's own `event_cb` (`handle_event()`): `RAOP_EVENT_CONNECTED`
+calls `audio::audio_stream_open(44100)`, disables Wi-Fi power save, and
+raises the tray indicator; `RAOP_EVENT_DISCONNECTED` closes the stream,
+restores Wi-Fi power save, and lowers the tray indicator. Every other RAOP
+event (`BUFFERING`/`PLAYING`/`STOPPED`/`PAUSED`/`VOLUME`/`METADATA`/
+`ARTWORK`/`PROGRESS`/`STALLED`) is a sub-state within one still-open session
+and is deliberately left unhandled - confirmed by reading `raop_core.c`'s
+`internal_cmd_cb()` dispatch that `CONNECTED`/`DISCONNECTED` are the only two
+that fire once each, at RTSP SETUP/TEARDOWN, rather than repeatedly within a
+session.
 
 ## What this depends on, and what depends on it
 
-Nothing calls `airplay_init()` anywhere in this repository yet. Per the
-module contract's rule 5, a module names its core touch points explicitly -
-this module's list is empty, on purpose: no `main/app_main.cpp` call, no
-tray registration, no wiring to `modules/audio`. That integration is a
-deliberately separate pass, not an oversight - see the task this module was
-built for.
+`main/app_main.cpp` calls `airplay::airplay_init()` once, alongside (and with
+the same non-fatal treatment as) `audio::audio_init()` - no `#ifdef` at that
+call site; `airplay.hpp`'s inline no-ops make the call correct whether or not
+`CONFIG_AIRPLAY_ENABLE` is on. That is this module's only core touch point;
+see "Core touch points" below.
 
 The dependency direction the module contract requires (rule 4: modules point
 at core, never the other way; and for this module specifically, `airplay ->
-audio`, never `audio -> airplay`) is upheld by construction: this module's
-`CMakeLists.txt` does not list `audio` in its `PRIV_REQUIRES`, and no file
-here includes `audio.hpp`. Whichever later pass wires decoded PCM somewhere
-real is what adds that dependency, deliberately, when it has an actual
-callback target to point at.
+audio`, never `audio -> airplay`) now holds as a real, exercised dependency
+rather than merely "upheld by construction": this module's `CMakeLists.txt`
+lists both `audio` and `app_core` in `PRIV_REQUIRES`, `airplay.cpp` includes
+`audio.hpp` and `tray_registry.hpp`, and calls
+`audio::audio_stream_open()`/`_write()`/`_close()` and
+`app_core::register_tray_indicator()`/`set_tray_indicator_active()`
+directly. Neither `audio` nor `app_core` includes anything from this module
+- registering a second tray indicator needed zero changes to
+`components/app_core/tray_registry.*` or anywhere else in `components/`,
+which is the acceptance test that registry design was built to pass.
 
 ## The RSA key situation
 
@@ -131,31 +149,69 @@ CONFIG_AIRPLAY_ENABLE=y
 ```
 
 plus a real `modules/airplay/secrets/raop_private_key.pem` (see above) to
-get past the CMake check. This proves the vendored RAOP receiver and ALAC
-decoder compile and link. It does not make an AirPlay device appear
-anywhere, because nothing calls `airplay::airplay_init()` - see "What this
-depends on" above.
+get past the CMake check. Measured with a throwaway, self-generated,
+non-functional key (deleted immediately after, purely to satisfy the
+CMake file-existence/PEM-parse check - never Apple's real key, never
+committed):
+
+- Flash: `CONFIG_AIRPLAY_ENABLE=y` is **1,684,608 bytes** (0x19b480) versus
+  **1,596,448 bytes** (0x185c20) with it off - about **86.1 KiB** for the
+  vendored RAOP receiver, ALAC decoder, and this module's own wiring, now
+  that something actually calls into all of it (previously `=y`/`=n`
+  measured identically, because the linker's `--gc-sections` stripped the
+  whole module when nothing referenced it).
+- PSRAM: **not** consumed at `airplay_init()`/`raop_init()` time - both of
+  the buffers in "Buffer sizing" below are allocated at `RAOP_INT_SETUP`,
+  i.e. only once a client actually completes the RTSP SETUP handshake. Once
+  that happens: 384 frames * `sizeof(audio_frame_t)` (2,060 bytes on this
+  32-bit target) = 791,040 bytes for the decoded-PCM ring
+  (`audio_buffer.c`), plus 352*4*384 = 540,672 bytes for the RTP jitter
+  buffer (`raop_core.c`) - **1,331,712 bytes (~1.27 MiB) combined**, matching
+  this module's own "~1.3MB" estimate in `audio_buffer.h`'s comment. This is
+  a static figure derived from the vendored source's own allocation sizes,
+  not something observed under a real session - see "What is unverified"
+  below.
+
+This proves the vendored RAOP receiver, ALAC decoder, and the wiring into
+`modules/audio`, the tray, and Wi-Fi power save all compile and link
+end-to-end, including the previously-untested `CONFIG_AIRPLAY_ENABLE=y`
+build with `CONFIG_AUDIO_ENABLE=y`. It does not prove any of it works: no
+real RSA key has ever been supplied, no client has connected, and no audio
+has ever reached the speaker - see "What is unverified" below.
 
 ## Core touch points
 
-None. Per the module contract's rule 5, this is the complete list: no call
-in `main/app_main.cpp`, no route in `components/wifi_provision/portal.cpp`,
-no tray registration. That is deliberate for this pass, not a gap to fill in
-by accident later without noticing it was intentional.
+One: `main/app_main.cpp` calls `airplay::airplay_init()` once, right after
+`audio::audio_init()`, logging readiness or unavailability but never
+treating failure as fatal. No other file in `components/` or `main/`
+references this module - the tray indicator and the audio sink are both
+reached through the same registries `modules/audio` already uses
+(`app_core::register_tray_indicator()`, `audio::audio_stream_open()`), not
+through any new core surface. That a second module's tray icon needed zero
+changes to `components/app_core/tray_registry.*` is exactly what that
+registry design set out to prove.
 
 ## What is unverified
 
-Everything runtime-related, since nothing is wired up and nothing has run on
-real hardware:
+Everything that needs a real key and a real AirPlay client, since neither
+has ever existed against this build:
 
-- **`airplay_init()`/`airplay_deinit()` have never been called.** Nothing in
-  this repository calls them. Whether `raop_init()` actually succeeds on
-  this board - mDNS starts, the RTSP listener binds, the task stacks it
-  allocates fit - is unverified.
+- **No real RSA key has ever been supplied.** Every build in this module's
+  history, including the one that produced the flash-size figure above, used
+  either no key (build fails, by design) or a throwaway self-generated key
+  that lets CMake's check pass but cannot complete AirPlay 1's actual
+  handshake. Whether `raop_init()` succeeds against a real key on this board
+  - mDNS starts, the RTSP listener binds, the task stacks it allocates fit -
+  is unverified.
 - **No AirPlay client has ever connected to this receiver.** The RSA
   handshake, RTP reception, ALAC decode path, and DMAP metadata parsing are
   all vendored as-is (bar the two changes in `UPSTREAM.md`) but have not
   been exercised end-to-end from a real sender against this vendored copy.
+- **`RAOP_EVENT_CONNECTED`/`DISCONNECTED` firing `audio_stream_open()`/
+  `_close()` for real, under a real session, is unverified.** The event
+  dispatch was confirmed by reading `raop_core.c`'s `internal_cmd_cb()`
+  source, not by observing a real SETUP/TEARDOWN pair drive this module's
+  `handle_event()`.
 - **The `EndianPortable.c` little-endian fix (see `UPSTREAM.md`) has not
   been confirmed on real hardware.** It is a correctness fix against a real,
   identified defect in how the file was ported (reasoned from source, not
@@ -170,8 +226,14 @@ real hardware:
   Wi-Fi jitter on this board.** It is a reasoned reduction from upstream's
   512-frame default (see "Buffer sizing" above), not a value validated
   against dropouts on this board's actual network environment.
-- **PSRAM/stack cost under real streaming load is unmeasured.** The
-  `CONFIG_AIRPLAY_ENABLE=y` binary size in this module's build verification
-  covers link-time cost only, not the two PSRAM buffers above (allocated at
-  `raop_init()` time, which nothing calls) or the RTSP task's actual stack
-  high-water mark under a real session.
+- **PSRAM/stack cost under real streaming load is unmeasured.** The figure
+  above is a static sum of the vendored source's own allocation sizes; the
+  RTSP/RTP/decode tasks' actual stack high-water marks, and whether PSRAM
+  fragmentation or concurrent allocations from other modules matter under a
+  real session, remain unmeasured.
+- **Audio actually reaching the speaker has never happened.** `feed_audio()`
+  writing into `audio::audio_stream_write()` is verified by build/link only;
+  whether real decoded PCM at 44.1kHz/16-bit/stereo plays back correctly -
+  and whether a notification tone requested mid-session is cleanly refused
+  rather than corrupting the stream (see `modules/audio/README.md`'s
+  streaming section) - needs a real session to confirm.

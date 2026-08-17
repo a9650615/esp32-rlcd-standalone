@@ -152,4 +152,4 @@ core, so the baseline never drifts out of sync with what core actually is.
 | Module | Kconfig symbol | Default | Purpose |
 | --- | --- | --- | --- |
 | `audio` | `CONFIG_AUDIO_ENABLE` | `y` | ES8311 codec + speaker: short tones for alarms/notifications, triggered locally or over `POST /beep` |
-| `airplay` | `CONFIG_AIRPLAY_ENABLE` | `n` (planned) | AirPlay (RAOP) receiver on top of `audio`; not yet implemented - needs a build-time RSA key supply story so the key itself never lands in this repository |
+| `airplay` | `CONFIG_AIRPLAY_ENABLE` | `n` | AirPlay 1 (RAOP) receiver feeding `audio`'s streaming sink and its own tray indicator; needs a builder-supplied RSA key at `modules/airplay/secrets/raop_private_key.pem` (gitignored, never shipped) - see `modules/airplay/README.md` |
