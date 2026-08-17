@@ -15,6 +15,14 @@ struct ReleaseInfo {
   bool update_available = false;
   // ASCII, safe for the panel and the settings page.
   std::string message;
+  // Excerpt of the release's own body text, already run through
+  // ota_notes.hpp's sanitize_release_notes() - ASCII-safe for this panel's
+  // fixed font set and truncated to a short excerpt, never the raw
+  // markdown. Empty whenever the release has no body, the field did not
+  // parse, or the raw text was not renderable (see ota_notes.hpp for why
+  // that is a real, expected case and not a bug) - which reads on screen as
+  // no notes, not as a failed request.
+  std::string notes;
 };
 
 // Asks a GitHub repository for its latest release and reports whether it

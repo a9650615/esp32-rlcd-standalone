@@ -437,7 +437,18 @@ void update_check_task(void*) {
     ESP_LOGW(kTag, "update %s available at %s", release.version.c_str(),
              release.firmware_url.c_str());
   }
-  ui::set_update_status(release.message, installable);
+  // Notes ride along only when there is an actual decision to help with -
+  // showing them next to "up to date" or an error answers a question nobody
+  // is being asked. release.notes is already ASCII-safe and pre-truncated
+  // (see ota_notes.hpp); this is the one and only place they reach the
+  // panel, through the same ui::set_update_status() the plain message
+  // always used, not through OtaData - see that struct's own comment on why
+  // it stays that way.
+  std::string status = release.message;
+  if (installable && !release.notes.empty()) {
+    status += " - " + release.notes;
+  }
+  ui::set_update_status(status, installable);
   vTaskDelete(nullptr);
 }
 

@@ -10,6 +10,7 @@
 #include <memory>
 #include <vector>
 
+#include "ota_notes.hpp"
 #include "ota_version.hpp"
 
 namespace ota {
@@ -20,7 +21,17 @@ constexpr int kTimeoutMs = 15'000;
 // A release payload with a few assets runs a few KiB. 16 KiB is generous
 // enough for a verbose release body while still bounding what an unexpected
 // response can make this allocate.
+//
+// Confirmed rather than assumed: the release body (extracted below,
+// alongside tag_name) is exactly the "verbose release body" this was
+// already sized for, so no change was needed here to carry it.
 constexpr std::size_t kMaxResponseBytes = 16 * 1024;
+// A plain character-count budget for the settings row's tiny status line
+// (components/ui/render_settings.cpp's full-width `status` row), not a
+// pixel-measured fit - see ota_notes.hpp's own comment on why. Short on
+// purpose: that row has room for a few words next to the update message,
+// not a changelog.
+constexpr std::size_t kMaxNotesChars = 80;
 
 const char* running_version() {
   const esp_app_desc_t* desc = esp_app_get_description();
@@ -130,6 +141,17 @@ ReleaseInfo check_latest_release() {
     return info;
   }
   info.version = tag->valuestring;
+
+  // GitHub returns "body": null for a release with no description, so this
+  // checks the type rather than assuming a string - same defensive shape as
+  // every other field pulled out of this response. See ota_notes.hpp for why
+  // free text from here is trustworthy at all, and why it still might not
+  // survive the trip to the panel.
+  const cJSON* body_field = cJSON_GetObjectItemCaseSensitive(root, "body");
+  if (cJSON_IsString(body_field)) {
+    info.notes = sanitize_release_notes(body_field->valuestring, kMaxNotesChars);
+  }
+
   info.firmware_url = find_asset_url(root);
   info.ok = true;
 

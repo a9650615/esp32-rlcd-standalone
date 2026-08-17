@@ -2,6 +2,7 @@
 #include "app_snapshot.hpp"
 #include "ota_decision.hpp"
 #include "ota_image.hpp"
+#include "ota_notes.hpp"
 #include "ota_prefix.hpp"
 #include "ota_version.hpp"
 #include "ui_data.hpp"
@@ -326,4 +327,65 @@ HOST_TEST(ota_layout_fits_and_does_not_overlap) {
   // The OTA page carries no tray, so it must be given the whole canvas rather
   // than the tray-reduced area every other non-Home page gets.
   EXPECT_EQ(content.height, ui::safe_canvas().height);
+}
+
+HOST_TEST(release_notes_pass_through_plain_ascii_unchanged) {
+  EXPECT_TRUE(ota::sanitize_release_notes("Fixed the settings menu.", 80) ==
+              "Fixed the settings menu.");
+  // Empty input is not an error case to report; it is simply nothing to show.
+  EXPECT_TRUE(ota::sanitize_release_notes("", 80).empty());
+}
+
+HOST_TEST(release_notes_collapse_markdown_whitespace_to_single_spaces) {
+  // Blank lines between paragraphs, leading/trailing whitespace, and a
+  // Windows line ending all collapse the same way: this row has space for a
+  // short excerpt, not the release body's own formatting.
+  EXPECT_TRUE(ota::sanitize_release_notes(
+                  "  Fixed a bug.\r\n\r\n- Also improved startup.\n", 80) ==
+              "Fixed a bug. - Also improved startup.");
+}
+
+HOST_TEST(release_notes_with_any_non_ascii_byte_are_withheld_entirely) {
+  // A real CJK character: this project's CJK font is a fixed, curated
+  // 121-glyph subset lifted from its own UI strings (check-cjk-font.py), not
+  // a general-purpose font, so a release-body character has no guaranteed
+  // glyph even when it happens to be Chinese.
+  EXPECT_TRUE(ota::sanitize_release_notes("Fixed \xe4\xbf\xae\xe5\xbe\xa9.", 80)
+                  .empty());
+  // Typographic punctuation Montserrat's own metrics were never checked
+  // against - an em dash (U+2014, UTF-8 E2 80 94) - must void the excerpt
+  // the same way, not render as a box mid-sentence.
+  EXPECT_TRUE(ota::sanitize_release_notes("Faster startup \xe2\x80\x94 a lot.",
+                                          80)
+                  .empty());
+  // A body that is entirely non-ASCII must not fall back to whatever Latin
+  // punctuation happened to survive - it must produce nothing, same as the
+  // mixed case above.
+  EXPECT_TRUE(ota::sanitize_release_notes("\xe4\xbf\xae\xe5\xbe\xa9\xe5\xa5\xbd",
+                                          80)
+                  .empty());
+}
+
+HOST_TEST(release_notes_longer_than_the_budget_ellipsise_on_a_word_boundary) {
+  const std::string result = ota::sanitize_release_notes(
+      "This release fixes the settings menu focus bug and adds AirPlay "
+      "support for the speaker.",
+      40);
+  // Within budget including the ellipsis, and the ellipsis is three literal
+  // ASCII dots - never U+2026, which is exactly the kind of character this
+  // function exists to keep off the panel.
+  EXPECT_TRUE(result.size() <= 40);
+  EXPECT_TRUE(result.substr(result.size() - 3) == "...");
+  // Cut on a word boundary, not mid-word: the text up to the cut must be a
+  // prefix of the original, not a fragment of a word that continues past it.
+  const std::string body_before_ellipsis = result.substr(0, result.size() - 3);
+  EXPECT_TRUE(
+      body_before_ellipsis ==
+      "This release fixes the settings menu");
+}
+
+HOST_TEST(release_notes_shorter_than_the_budget_need_no_ellipsis) {
+  const std::string result =
+      ota::sanitize_release_notes("Short fix.", 80);
+  EXPECT_TRUE(result == "Short fix.");
 }

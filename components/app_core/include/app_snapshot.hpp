@@ -295,6 +295,19 @@ struct OtaData {
   // is a version an attacker on the LAN chooses. The 112-byte prefix carries
   // it, so it costs nothing to take the authoritative one.
   std::string version;
+
+  // Deliberately no `notes` field here. This struct is what a LAN push's
+  // confirm prompt renders (ota_confirm.cpp's request_confirm(), driven from
+  // components/wifi_provision/portal.cpp, via main/app_main.cpp's
+  // show_update_prompt()) - the one path where the text on offer is chosen
+  // by whoever is pushing, not by GitHub. A GitHub release's body earns a
+  // different amount of trust (see components/ota/include/ota_notes.hpp) and
+  // is shown from a different place entirely: the settings row that reports
+  // an update check (main/app_main.cpp's update_check_task(), through
+  // ui::set_update_status()), which never touches OtaData at all. Adding a
+  // notes field here would make it one call site's mistake away from
+  // showing a pusher's free text on the one screen where that text has
+  // never been trustworthy.
 };
 
 // True while the update state must own the screen outright. Deliberately
