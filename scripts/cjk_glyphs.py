@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The set of CJK characters the interface can draw, derived from its sources.
 
-Shared by scripts/build-cjk-font.sh, which subsets the font to exactly these,
+Shared by scripts/build-fonts.sh, which subsets the font to exactly these,
 and scripts/check-cjk-font.py, which fails the build when the two disagree.
 One definition rather than two: a generator and a checker that each decide for
 themselves what counts will eventually disagree, and the symptom is a build

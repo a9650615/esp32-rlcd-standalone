@@ -10,11 +10,13 @@ namespace {
 // The value shown to the right of a row's label. Empty for rows that are an
 // action rather than a setting - "check for updates" has no current value, and
 // inventing one would make it look like a reading.
-std::string row_value(SettingsItem item,
-                      const app_core::BatteryData& battery) {
+std::string row_value(SettingsItem item, const app_core::BatteryData& battery,
+                      const app_core::RuntimeEstimate& runtime) {
   switch (item) {
     case SettingsItem::Language:
       return language_name(ui::language());
+    case SettingsItem::Volume:
+      return volume_preset_name(ui::volume_preset());
     case SettingsItem::CheckUpdates:
       // No value of its own: the result of a check goes in the full-width row
       // below the list, because it is a sentence rather than a figure.
@@ -28,7 +30,7 @@ std::string row_value(SettingsItem item,
       // printing a number. A runtime figure is the kind of thing that gets
       // believed and planned around, so the only case that produces one is
       // the one where the discharge was actually observed.
-      switch (battery.runtime.trend) {
+      switch (runtime.trend) {
         case app_core::PowerTrend::Charging:
           return text(Text::StatusCharging);
         case app_core::PowerTrend::Unknown:
@@ -38,8 +40,8 @@ std::string row_value(SettingsItem item,
         case app_core::PowerTrend::Discharging:
           break;
       }
-      if (!battery.runtime.known) return "--";
-      const unsigned minutes = battery.runtime.minutes_remaining;
+      if (!runtime.known) return "--";
+      const unsigned minutes = runtime.minutes_remaining;
       char buffer[24];
       std::snprintf(buffer, sizeof(buffer), "%uh %02um", minutes / 60,
                     minutes % 60);
@@ -111,7 +113,8 @@ void render_settings(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
     // the text disappears in dim rooms.
     if (is_focused) apply_setup_status_style(label_obj, true);
 
-    const std::string value = row_value(item, snapshot.battery);
+    const std::string value =
+        row_value(item, snapshot.battery, snapshot.battery_runtime);
     if (!value.empty()) {
       const Rect value_rect{row.right() - kSettingsValueWidth, row.y,
                             kSettingsValueWidth, row.height};

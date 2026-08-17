@@ -16,29 +16,57 @@
 // LVGL thread.
 namespace market {
 
-// These are indices glanced at on a wall panel, not a trading feed: neither
-// the TWSE close (which itself only updates once a day - see the comment on
-// parse_taiwan_index() in market_parse.hpp) nor "what's the S&P doing"
-// needs anything close to real-time refresh. 30 minutes is at most 48
-// requests/day per source: trivially light for the official, keyless TWSE
-// endpoint, and - more importantly - respectful of the *unofficial* Yahoo
-// endpoint, where aggressive polling is the surest way to get rate-limited
-// or blocked outright.
+// The baseline, flat interval - still what US uses unconditionally, and
+// what Taiwan falls back to outside its trading hours or while running on
+// the TWSE fallback (see kTaiwanFastRefreshIntervalSeconds and
+// market_schedule.hpp below). 30 minutes is at most 48 requests/day per
+// source: trivially light for the official, keyless TWSE endpoint, and -
+// more importantly - respectful of the *unofficial* Yahoo endpoint, where
+// aggressive polling is the surest way to get rate-limited or blocked
+// outright.
 //
-// A flat interval is used whether the market is open or closed, instead of
-// a market-hours-aware backoff. Doing that correctly needs a trading
-// calendar (holidays, half-days, two timezones) this component has no
-// access to; getting it wrong would silently reintroduce exactly the kind
-// of confidently-wrong behavior this rewrite exists to remove, to save a
-// request budget that is already trivial at 30 minutes.
+// This used to be the only interval, flat whether a market was open or
+// closed - "what's the S&P doing" still gets exactly that, unchanged (see
+// refresh_us() below; US trading hours are a second, DST-observing
+// timezone this component still has no access to, and nobody has reported
+// the same staleness complaint about that page - see market_schedule.hpp's
+// own comment for the fuller reasoning). Taiwan no longer does: the
+// operator hit the flat interval's actual cost directly - the market open
+// at 09:00 with the page still showing Friday's close - and a trading
+// calendar was never the missing piece for that, market hours were. See
+// market_schedule.hpp's taiwan_refresh_interval_seconds() for the
+// market-hours-aware decision and its own arithmetic.
 inline constexpr int kRefreshIntervalSeconds = 30 * 60;
 
-// Blocking. Fetches TWSE's MI_INDEX and updates the Taiwan cache. On any
-// failure (network, HTTP status, malformed/truncated/wrong-shape JSON, a
-// missing required field) the cache is set to invalid - never left at a
-// stale prior value and never partially filled - so the next taiwan() call
-// reports valid == false and the UI shows NO DATA. Returns true on success.
+// Taiwan's regular session, while the primary (Yahoo ^TWII) source is
+// serving the data - see market_schedule.hpp's taiwan_refresh_interval_seconds()
+// for exactly when this applies versus kRefreshIntervalSeconds above.
+inline constexpr int kTaiwanFastRefreshIntervalSeconds = 5 * 60;
+
+// Blocking. Tries Yahoo's ^TWII chart endpoint first (near-real-time,
+// unofficial); only on that source's failure does it fall back to TWSE's
+// official, keyless MI_INDEX (a once-daily closing snapshot - see the
+// comment on parse_taiwan_index() in market_parse.hpp). Never fetches
+// both in the same call: the fallback is only reached once the primary has
+// already failed, so a healthy primary costs exactly one request, not two.
+// See market_parse.hpp's select_taiwan_source() for the actual decision
+// (a pure function, host-tested there) and taiwan_using_primary_source()
+// below for which source served the current cache.
+//
+// On total failure (both sources) the cache is set to invalid - never left
+// at a stale prior value and never partially filled - so the next
+// taiwan() call reports valid == false and the UI shows NO DATA. Returns
+// true whenever either source succeeded, fallback included - see
+// select_taiwan_source()'s own comment for why a fallback success counts
+// as a real refresh for the caller's retry/interval bookkeeping.
 bool refresh_taiwan();
+
+// True if the most recently completed refresh_taiwan() was served by the
+// primary (Yahoo ^TWII); false if it fell back to TWSE, or if the last
+// call failed outright (in which case taiwan().valid is also false).
+// market_schedule.hpp's taiwan_refresh_interval_seconds() needs this to
+// decide whether the fast interval is actually buying anything.
+bool taiwan_using_primary_source();
 
 // Blocking. Fetches both S&P 500 and NASDAQ from the Yahoo-Finance-style
 // chart endpoint (two requests: this source answers one symbol per call).

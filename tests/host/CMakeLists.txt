@@ -35,6 +35,7 @@ add_executable(host_tests
     ../../components/net_time/net_time_convert.cpp
     ../../components/weather/weather_parse.cpp
     ../../components/market/market_parse.cpp
+    ../../components/market/market_schedule.cpp
     ../../components/net_log/net_log_ring.cpp
     ../../components/ota/ota_image.cpp
     ../../components/ota/ota_prefix.cpp

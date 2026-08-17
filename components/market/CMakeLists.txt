@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "market_parse.cpp"
+        "market_schedule.cpp"
         "market.cpp"
     INCLUDE_DIRS
         "include"

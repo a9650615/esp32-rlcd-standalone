@@ -7,6 +7,7 @@
 #include "display_port.hpp"
 #include "lvgl_port.hpp"
 #include "market.hpp"
+#include "market_schedule.hpp"
 #include "net_log.hpp"
 #include "net_time.hpp"
 #include "ota.hpp"
@@ -311,6 +312,88 @@ void store_language(ui::Language value) {
   nvs_close(handle);
   if (result != ESP_OK) {
     ESP_LOGW(kTag, "language not saved: %s", esp_err_to_name(result));
+  }
+}
+
+// Same namespace as language above (kUiNamespace, "ui_prefs") - one on-device
+// preference store, not a second mechanism invented for a second setting.
+constexpr char kVolumePresetKey[] = "vol_preset";
+
+// Same reasoning as load_language(): read before the first render (well
+// before the first tone can play), and fall back to the compiled-in default
+// rather than treating an unreadable NVS as fatal - this board's job is the
+// display, not the alarm.
+ui::VolumePreset load_volume_preset() {
+  if (nvs_flash_init() != ESP_OK) return ui::VolumePreset::Medium;
+  nvs_handle_t handle;
+  if (nvs_open(kUiNamespace, NVS_READONLY, &handle) != ESP_OK) {
+    return ui::VolumePreset::Medium;
+  }
+  uint8_t stored = 0;
+  const esp_err_t found = nvs_get_u8(handle, kVolumePresetKey, &stored);
+  nvs_close(handle);
+  if (found != ESP_OK ||
+      stored >= static_cast<uint8_t>(ui::VolumePreset::Count)) {
+    return ui::VolumePreset::Medium;
+  }
+  ESP_LOGI(kTag, "volume preset restored from NVS: %u", stored);
+  return static_cast<ui::VolumePreset>(stored);
+}
+
+// Registered as ui::set_volume_preset_store_handler - persistence only, same
+// as store_language above, and for the same reason it is a separate handler
+// from apply_volume_preset_change below: this one also runs from the silent
+// boot-time restore (ui::set_volume_preset(load_volume_preset())), which
+// must never make a sound.
+void store_volume_preset(ui::VolumePreset value) {
+  nvs_handle_t handle;
+  if (nvs_open(kUiNamespace, NVS_READWRITE, &handle) != ESP_OK) {
+    ESP_LOGW(kTag, "volume preset not saved: NVS unavailable");
+    return;
+  }
+  esp_err_t result = nvs_set_u8(handle, kVolumePresetKey,
+                                static_cast<uint8_t>(value));
+  if (result == ESP_OK) result = nvs_commit(handle);
+  nvs_close(handle);
+  if (result != ESP_OK) {
+    ESP_LOGW(kTag, "volume preset not saved: %s", esp_err_to_name(result));
+  }
+}
+
+// Registered as ui::set_volume_changed_handler - runs only when the Volume
+// row is actually cycled, never at boot (see that handler's own comment in
+// ui_app.hpp for why persistence and hardware application are two separate
+// handlers rather than one). Pushes the new preset's percentage into
+// modules/audio's own volume - the same audio::audio_set_volume() the
+// debug-only `POST /beep?vol=` route calls directly - and plays a short
+// confirmation tone so the row's effect is heard immediately, the same way
+// a language change is seen immediately.
+//
+// audio_set_volume() has no concept of "preset" versus "debug override":
+// whichever caller runs last simply wins, for the rest of this boot. The
+// difference is that only this path (and the silent restore at boot) ever
+// writes to NVS, so a reboot always returns to whatever preset is stored
+// here, regardless of any `?vol=` used since. This function never reads
+// AppSnapshot or app_core - it is entirely local, alarm/notification-tone
+// volume, and stays that way; see ui::VolumePreset's own comment for why an
+// eventual AirPlay path must not be wired through this at all.
+void apply_volume_preset_change() {
+  const int percent = ui::volume_preset_percent(ui::volume_preset());
+  audio::audio_set_volume(percent);
+  // Short: this is a confirmation chirp on a settings row, not an alarm -
+  // long enough to be heard as a beep, short enough not to be a nuisance on
+  // every cycle through the four presets.
+  constexpr int kConfirmFrequencyHz = 2000;
+  constexpr int kConfirmDurationMs = 150;
+  const esp_err_t result =
+      audio::audio_play_tone_async(kConfirmFrequencyHz, kConfirmDurationMs);
+  // Not fatal either way - refused only if a tone/sweep is already playing
+  // (ESP_ERR_INVALID_STATE) or audio was never initialized
+  // (ESP_ERR_NOT_SUPPORTED with CONFIG_AUDIO_ENABLE=n); worth a log line so
+  // "I changed the preset and heard nothing" has an answer in either case.
+  if (result != ESP_OK) {
+    ESP_LOGW(kTag, "volume preset confirmation tone did not play: %s",
+             esp_err_to_name(result));
   }
 }
 
@@ -650,27 +733,88 @@ constexpr uint32_t kProviderRetryPeriodMs = 5 * 60'000;
   }
 }
 
-// Refreshes both markets on the interval market.hpp itself defines (30 min).
+// Split from a single combined task into two independent ones: Taiwan's
+// interval is now market-hours-aware (a few minutes during the regular
+// session, the flat interval otherwise - see market_schedule.hpp's
+// taiwan_refresh_interval_seconds()) while US stays on the flat interval
+// unconditionally. A shared task can only sleep one duration between
+// iterations, so keeping them together would have meant either refreshing
+// US as often as Taiwan (paying for a cadence nothing asked for) or Taiwan
+// only as often as US (the exact staleness this split exists to fix).
+//
 // refresh_taiwan()/refresh_us() already set their own cache to invalid on
-// any failure (network, bad shape, rate limit) rather than leaving a stale
-// or substituted value, so taiwan()/us() are safe to publish unconditionally
-// right after each refresh call.
-[[noreturn]] void market_monitor_task(void*) {
+// any total failure (network, bad shape, both sources down for Taiwan)
+// rather than leaving a stale or substituted value, so taiwan()/us() are
+// safe to publish unconditionally right after each refresh call.
+[[noreturn]] void taiwan_market_monitor_task(void*) {
   wait_for_station_ip();
   for (;;) {
-    const bool taiwan_ok = market::refresh_taiwan();
+    const bool ok = market::refresh_taiwan();
     const app_core::MarketData taiwan = market::taiwan();
-    ESP_LOGI(kTag, "taiwan refresh ok=%d valid=%d value=%d intraday=%d",
-             taiwan_ok, taiwan.valid, taiwan.primary_value, taiwan.has_intraday);
+    const bool using_primary = market::taiwan_using_primary_source();
+    // taiwan.session_elapsed_fraction is already correct here - see its
+    // own comment in app_snapshot.hpp: market_parse.cpp's
+    // parse_yahoo_quote() computes it directly from Yahoo's own response
+    // metadata, not from anything this task needs to derive. An earlier
+    // version of this task computed it here instead, from the device's
+    // own RTC and market_schedule.hpp's hardcoded session bounds -
+    // superseded once the Yahoo-metadata approach turned out to need no
+    // clock at all and to cover the US market the RTC-based one could not.
+
+    // source= logged every cycle, not just on a fallback: without it, a
+    // silent, permanent Yahoo failure would look identical in the log to a
+    // working board that simply has no intraday chart today, and it would
+    // go unnoticed for weeks.
+    ESP_LOGI(kTag,
+             "taiwan refresh ok=%d valid=%d value=%d intraday=%d source=%s "
+             "session_fraction=%.2f",
+             ok, taiwan.valid, taiwan.primary_value, taiwan.has_intraday,
+             using_primary ? "Yahoo" : "TWSE",
+             static_cast<double>(taiwan.session_elapsed_fraction));
     wifi_provision::set_taiwan_market(taiwan);
-    const bool us_ok = market::refresh_us();
+
+    uint32_t interval_ms;
+    if (!ok) {
+      // Both sources failed - the same fast retry every other provider
+      // uses, not the fallback-only slow interval: a total outage needs to
+      // be noticed and re-tried soon, not treated as "fallback is fine".
+      interval_ms = kProviderRetryPeriodMs;
+    } else {
+      // Deciding how soon to poll again is the one thing here that still
+      // needs the device's own clock and market_schedule.hpp's session
+      // bounds - unlike session_elapsed_fraction above, this has to be
+      // answered before the next response exists to read metadata from.
+      app_core::RtcDateTime local_time{};
+      const bool have_clock = net_time::synced() && net_time::now(local_time);
+      // Without a synced clock there is no trustworthy local time to judge
+      // market hours by; the flat interval is the same safe default this
+      // refresh already used before market-hours awareness existed.
+      interval_ms = static_cast<uint32_t>(
+                        have_clock ? market::taiwan_refresh_interval_seconds(
+                                         local_time, using_primary)
+                                   : market::kRefreshIntervalSeconds) *
+                    1000;
+    }
+    vTaskDelay(pdMS_TO_TICKS(interval_ms));
+  }
+}
+
+// US stays on the flat interval market.hpp defines (30 min) - see that
+// header's own comment on kRefreshIntervalSeconds for why: US trading
+// hours are a second, DST-observing timezone this component has no access
+// to (Taiwan's fixed CST-8/no-DST offset is what makes its market-hours
+// check simple enough to do without one), and there has been no reported
+// staleness complaint about this page the way there was for Taiwan.
+[[noreturn]] void us_market_monitor_task(void*) {
+  wait_for_station_ip();
+  for (;;) {
+    const bool ok = market::refresh_us();
     const app_core::MarketData us = market::us();
-    ESP_LOGI(kTag, "us refresh ok=%d valid=%d value=%d intraday=%d", us_ok,
+    ESP_LOGI(kTag, "us refresh ok=%d valid=%d value=%d intraday=%d", ok,
              us.valid, us.primary_value, us.has_intraday);
     wifi_provision::set_us_market(us);
-    vTaskDelay(pdMS_TO_TICKS((taiwan_ok && us_ok)
-                                 ? market::kRefreshIntervalSeconds * 1000
-                                 : kProviderRetryPeriodMs));
+    vTaskDelay(pdMS_TO_TICKS(ok ? market::kRefreshIntervalSeconds * 1000
+                                : kProviderRetryPeriodMs));
   }
 }
 
@@ -861,6 +1005,17 @@ extern "C" void app_main() {
   ui::set_language(load_language());
   ui::set_language_store_handler(&store_language);
 
+  // Same silent-restore reasoning as language above: set_volume_preset()
+  // only calls its store handler on an actual change, which is exactly why
+  // the restored percentage still has to be pushed into modules/audio
+  // explicitly and directly here - no confirmation tone, this is a boot,
+  // not a settings-row press. set_volume_changed_handler (the audible,
+  // interactive path) is registered further down with the rest of this
+  // board's cross-module wiring, not here, so it cannot fire yet.
+  ui::set_volume_preset(load_volume_preset());
+  ui::set_volume_preset_store_handler(&store_volume_preset);
+  audio::audio_set_volume(ui::volume_preset_percent(ui::volume_preset()));
+
   if (!ui::start(snapshot, clock, !rtc_ok)) {
     fatal_loop("UI lifecycle initialization failed", ESP_FAIL);
   }
@@ -872,6 +1027,7 @@ extern "C" void app_main() {
   ota::set_progress_handler(&wifi_provision::set_ota);
   ui::set_setup_gesture_handler(&wifi_provision::toggle_setup);
   ui::set_update_handler(&run_update_action);
+  ui::set_volume_changed_handler(&apply_volume_preset_change);
   // Lets GET /shot answer with what is on the panel right now. No-op in a
   // release build, where the route does not exist.
   wifi_provision::set_screenshot_provider(&board::framebuffer_snapshot);
@@ -937,13 +1093,19 @@ extern "C" void app_main() {
     ESP_LOGE(kTag, "weather monitor task creation failed");
   }
 
-  // 8192 B: market::http_get() heap-allocates its response body (std::string),
-  // so unlike weather this task's stack only has to cover the TLS handshake
-  // and JSON parsing depth for two sequential HTTPS requests, not a large
-  // local buffer.
-  if (xTaskCreate(&market_monitor_task, "market_monitor", 8192, nullptr,
+  // 8192 B each: market::http_get() heap-allocates its response body
+  // (std::string), so unlike weather this task's stack only has to cover
+  // the TLS handshake and JSON parsing depth for a request or two, not a
+  // large local buffer. Two tasks, not one, now that Taiwan and US refresh
+  // on genuinely different cadences - see taiwan_market_monitor_task's own
+  // comment for why a shared task could not do that.
+  if (xTaskCreate(&taiwan_market_monitor_task, "taiwan_market_monitor", 8192,
+                  nullptr, tskIDLE_PRIORITY + 1, nullptr) != pdPASS) {
+    ESP_LOGE(kTag, "taiwan market monitor task creation failed");
+  }
+  if (xTaskCreate(&us_market_monitor_task, "us_market_monitor", 8192, nullptr,
                   tskIDLE_PRIORITY + 1, nullptr) != pdPASS) {
-    ESP_LOGE(kTag, "market monitor task creation failed");
+    ESP_LOGE(kTag, "us market monitor task creation failed");
   }
 
   // 4096 B: waits, then makes a handful of esp_netif/socket/task-creation

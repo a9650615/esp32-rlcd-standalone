@@ -56,6 +56,15 @@ bool decode_pcf85063(const uint8_t* registers, std::size_t length,
 // Providers set valid only once real data has landed. A false flag means the
 // page still renders and keeps its slot in the carousel, but shows a NO DATA
 // placeholder instead of numbers - never a fabricated value.
+// Shared by MarketData::intraday_samples and market_parse.hpp's own
+// IndexQuote::samples - one target resolution for both, not two constants
+// that could drift apart. ~4 px/point against this project's actual market
+// chart width (roughly 260 px) - see modules/market's own notes on the
+// tradeoff. Large enough that Taiwan's full 09:00-13:30 session at 5-minute
+// bars (54 of them) fits with no reduction at all; the US session at the
+// same granularity (78 bars over 6.5 hours) still needs a mild one.
+inline constexpr std::size_t kIntradaySampleCount = 64;
+
 struct MarketData {
   bool valid = false;
   std::string display_name;
@@ -70,7 +79,17 @@ struct MarketData {
   // not move" rather than "there is no intraday data" - real numbers, invented
   // shape. False means the UI must not draw a chart at all.
   bool has_intraday = false;
-  std::array<int, 8> intraday_samples{};
+  std::array<int, kIntradaySampleCount> intraday_samples{};
+  // How many of the leading intraday_samples slots hold a real, distinct
+  // point - same reason IndoorData::temperature_history_count exists: early
+  // in a session there may be fewer real bars than the array's own target
+  // resolution, and the unused trailing slots must not be read as zero-
+  // valued data. render_market.cpp reads only the first
+  // intraday_sample_count entries (via normalize_chart_samples_n) and
+  // market_intraday_range's own count parameter, never the full array
+  // width, when has_intraday is true. Meaningless (left at its 0 default)
+  // whenever has_intraday is false.
+  uint8_t intraday_sample_count = 0;
   // The session these figures are from, as the source reported it. Zero means
   // the source did not say.
   //
@@ -82,6 +101,28 @@ struct MarketData {
   uint16_t as_of_year = 0;
   uint8_t as_of_month = 0;
   uint8_t as_of_day = 0;
+  // Fraction (0.0-1.0) of the session intraday_samples actually covers, for
+  // scaling the chart's x-axis (render_market.cpp) so a session still in
+  // progress does not stretch its real samples across the same width a
+  // completed session would - every pixel of a full-width chart otherwise
+  // implies a finished trading day, which mirrors why has_intraday exists:
+  // a plausible-looking shape must not claim data that is not there.
+  //
+  // Computed by market_parse.cpp's parse_yahoo_quote() directly from the
+  // response's own meta.currentTradingPeriod.regular.start/end and the
+  // last timestamp in the response's own series - both epoch seconds, no
+  // device clock, no timezone, no DST arithmetic, and (verified live
+  // against the real endpoint before this was built) present in an
+  // ordinary chart response. This is why Taiwan and US both get a genuine
+  // value from the same mechanism, unlike an earlier version of this field
+  // that derived Taiwan's alone from market_schedule.hpp's hardcoded
+  // 09:00-13:30 constants and the board's own RTC - superseded, not kept
+  // alongside this.
+  //
+  // Default 1.0 ("complete") on purpose: a source with no notion of this
+  // (the TWSE fallback, which only ever carries a completed close) must
+  // render exactly as it always has, at full width.
+  float session_elapsed_fraction = 1.0f;
 };
 
 struct WeatherCurrent {
@@ -163,9 +204,11 @@ struct BatteryData {
   int millivolts = 0;
   uint8_t percent = 0;
   bool overvoltage_warning = false;
-  // Derived from the persisted history rather than from this reading, so it
-  // stays empty until enough of a window exists to fit - see history.hpp.
-  RuntimeEstimate runtime;
+  // No RuntimeEstimate here on purpose - see AppSnapshot::battery_runtime
+  // below for where it lives and why. This struct is republished wholesale
+  // every ~30 s by the battery sampler; a field belonging to a different
+  // task on a different cadence must not be able to ride along with that
+  // assignment and get silently overwritten with a default-constructed one.
 };
 
 // Applies the board's 3x sense divider and a calibration_permille trim
@@ -293,6 +336,19 @@ struct AppSnapshot {
   Availability availability;
   SetupData setup;
   BatteryData battery;
+  // Deliberately its own top-level field, not a member of BatteryData above:
+  // the battery sampler (every ~30 s) and the history/runtime estimator
+  // (every ~5 min) are two different tasks, on two different cadences,
+  // each publishing its own struct wholesale through wifi_provision's
+  // set_battery()/set_runtime_estimate(). When this lived inside
+  // BatteryData, set_battery()'s `snapshot_.battery = battery;` - a whole-
+  // struct assignment from a freshly-built, always-default-constructed-
+  // runtime BatteryData - silently overwrote whatever the estimator had
+  // just published, roughly nine ticks out of every ten. A comment on the
+  // setter explaining not to do that was already in place and did not
+  // prevent it; disjoint fields do, because there is no longer a shared
+  // struct for either writer's wholesale assignment to reach across into.
+  RuntimeEstimate battery_runtime;
   DemoScenario scenario = DemoScenario::TaiwanSession;
 };
 

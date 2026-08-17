@@ -1011,9 +1011,16 @@ static_assert(
 // partly-filled series spans the full width instead of running into its own
 // empty tail. `count` below 2 returns nothing usable - the caller should not
 // be drawing a line from fewer than two points.
-constexpr std::array<ChartPoint, 8> normalize_chart_samples_n(
-    const std::array<int, 8>& samples, const Rect bounds, std::size_t count) {
-  std::array<ChartPoint, 8> points{};
+//
+// Templated on the array size N, not hardcoded to 8: this is shared by
+// render_indoor.cpp's temperature history (8 slots) and
+// render_market.cpp's intraday chart (app_core::kIntradaySampleCount slots)
+// - one implementation for both, with N deduced from whichever `samples`
+// array the caller actually passes.
+template <std::size_t N>
+constexpr std::array<ChartPoint, N> normalize_chart_samples_n(
+    const std::array<int, N>& samples, const Rect bounds, std::size_t count) {
+  std::array<ChartPoint, N> points{};
   if (count < 2) return points;
   if (count > samples.size()) count = samples.size();
   int minimum = samples[0];
@@ -1039,9 +1046,11 @@ constexpr std::array<ChartPoint, 8> normalize_chart_samples_n(
   return points;
 }
 
-constexpr std::array<ChartPoint, 8> normalize_chart_samples(
-    const std::array<int, 8>& samples, const Rect bounds) {
-  std::array<ChartPoint, 8> points{};
+// Templated for the same reason as normalize_chart_samples_n above.
+template <std::size_t N>
+constexpr std::array<ChartPoint, N> normalize_chart_samples(
+    const std::array<int, N>& samples, const Rect bounds) {
+  std::array<ChartPoint, N> points{};
   int minimum = samples[0];
   int maximum = samples[0];
   for (const int sample : samples) {
@@ -1277,10 +1286,21 @@ struct MarketRange {
   int high = 0;
   int low = 0;
 };
+// `count` is app_core::MarketData::intraday_sample_count, not the array's
+// own fixed size: early in a session there may be fewer real samples than
+// that, and the unused trailing slots default-construct to 0, which would
+// otherwise corrupt `low` on any real market (every genuine index value is
+// far from zero). Only one caller (render_shared.cpp's
+// render_market_sidebar), so this takes app_core::kIntradaySampleCount
+// directly rather than being templated the way the chart normalizers above
+// are - there is no second array size in play here to share the code with.
 constexpr MarketRange market_intraday_range(
-    const std::array<int, 8>& samples) {
+    const std::array<int, app_core::kIntradaySampleCount>& samples,
+    std::size_t count) {
+  if (count == 0) count = 1;
+  if (count > samples.size()) count = samples.size();
   MarketRange range{samples[0], samples[0]};
-  for (std::size_t i = 1; i < samples.size(); ++i) {
+  for (std::size_t i = 1; i < count; ++i) {
     if (samples[i] > range.high) range.high = samples[i];
     if (samples[i] < range.low) range.low = samples[i];
   }

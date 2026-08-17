@@ -765,6 +765,15 @@ int query_int(const char* query, const char* key, int fallback) {
 // the setup-page password rides in other routes' query strings the same
 // way - only the parsed values below are logged.
 //
+// `vol` here and the settings page's Volume preset (ui::VolumePreset,
+// applied through this exact same audio::audio_set_volume() call) both
+// just set audio.cpp's one `g_volume_percent` - there is no priority
+// between them, whichever call lands last simply wins, for the rest of
+// this boot. The difference that matters is persistence: this route never
+// writes NVS, so a debug session here cannot outlive a reboot, while the
+// settings preset always does. That is deliberate - a `?vol=` experiment
+// is meant to be disposable, not a second place the "real" volume lives.
+//
 // Starts the tone on its own task (audio_play_tone_async()) and returns
 // immediately - reporting that playback *started*, not that it finished.
 // This server is single-task: a handler blocked for the tone's duration

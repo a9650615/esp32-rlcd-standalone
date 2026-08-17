@@ -32,9 +32,10 @@ HOST_TEST(settings_cursor_wraps_so_every_item_stays_reachable) {
 HOST_TEST(settings_items_are_ordered_by_how_often_they_are_actually_used) {
   ui::SettingsMenu menu;
   const ui::SettingsItem expected_order[] = {
-      ui::SettingsItem::Language,   ui::SettingsItem::WifiSetup,
-      ui::SettingsItem::CheckUpdates, ui::SettingsItem::Runtime,
-      ui::SettingsItem::Battery,    ui::SettingsItem::Firmware,
+      ui::SettingsItem::Language,     ui::SettingsItem::Volume,
+      ui::SettingsItem::WifiSetup,    ui::SettingsItem::CheckUpdates,
+      ui::SettingsItem::Runtime,      ui::SettingsItem::Battery,
+      ui::SettingsItem::Firmware,
   };
   static_assert(sizeof(expected_order) / sizeof(expected_order[0]) ==
                     ui::SettingsMenu::count(),
@@ -83,6 +84,29 @@ HOST_TEST(settings_activation_only_acts_where_acting_makes_sense) {
   EXPECT_TRUE(menu.activate() == ui::SettingsAction::None);
   while (menu.focused() != ui::SettingsItem::Battery) menu.focus_next();
   EXPECT_TRUE(menu.activate() == ui::SettingsAction::None);
+
+  while (menu.focused() != ui::SettingsItem::Volume) menu.focus_next();
+  ui::set_volume_preset(ui::VolumePreset::Medium);
+  EXPECT_TRUE(menu.activate() == ui::SettingsAction::VolumeChanged);
+  EXPECT_TRUE(ui::volume_preset() == ui::VolumePreset::High);
+  // Cycles through all four and wraps, same as Language above - there is
+  // no way to go back with one button, so every level must stay reachable.
+  EXPECT_TRUE(menu.activate() == ui::SettingsAction::VolumeChanged);
+  EXPECT_TRUE(ui::volume_preset() == ui::VolumePreset::Off);
+}
+
+// 50 (Medium) is the one level anyone has actually listened to on real
+// hardware, so it is pinned here rather than left to whatever order the
+// enum happens to be declared in; the rest is an even, documented spread
+// around it, not a guess that happens to average out.
+HOST_TEST(volume_preset_percent_is_anchored_at_the_only_tested_level) {
+  EXPECT_EQ(ui::volume_preset_percent(ui::VolumePreset::Off), 0);
+  EXPECT_EQ(ui::volume_preset_percent(ui::VolumePreset::Low), 25);
+  EXPECT_EQ(ui::volume_preset_percent(ui::VolumePreset::Medium), 50);
+  EXPECT_EQ(ui::volume_preset_percent(ui::VolumePreset::High), 75);
+  // Below 80: a hardware sweep already found 80% "a bit loud" (see
+  // modules/audio/README.md), so nothing here should ever reach it.
+  EXPECT_TRUE(ui::volume_preset_percent(ui::VolumePreset::High) < 80);
 }
 
 HOST_TEST(every_interface_string_exists_in_both_languages) {
@@ -205,4 +229,43 @@ HOST_TEST(language_is_persisted_only_when_it_actually_changes) {
 
   ui::set_language_store_handler(nullptr);
   ui::set_language(ui::Language::English);
+}
+
+// Mirrors language_is_persisted_only_when_it_actually_changes above: this
+// component has no flash of its own to round-trip against (main/app_main.cpp
+// owns the actual NVS read/write, using this exact store-handler seam), so
+// what is host-testable - and what would actually break if the wiring
+// between the settings row and NVS were lost - is that the handler fires
+// exactly once per real change, carries the right value, and never fires
+// for a no-op cycle or an out-of-range write.
+HOST_TEST(volume_preset_is_persisted_only_when_it_actually_changes) {
+  static int writes = 0;
+  static ui::VolumePreset last = ui::VolumePreset::Medium;
+  writes = 0;
+  ui::set_volume_preset(ui::VolumePreset::Medium);
+  ui::set_volume_preset_store_handler(
+      [](ui::VolumePreset value) { ++writes; last = value; });
+
+  // Selecting the preset already in force must not spend a flash write.
+  ui::set_volume_preset(ui::VolumePreset::Medium);
+  EXPECT_EQ(writes, 0);
+
+  ui::set_volume_preset(ui::VolumePreset::Low);
+  EXPECT_EQ(writes, 1);
+  EXPECT_TRUE(last == ui::VolumePreset::Low);
+
+  ui::set_volume_preset(ui::VolumePreset::Off);
+  EXPECT_EQ(writes, 2);
+  EXPECT_TRUE(last == ui::VolumePreset::Off);
+
+  // Out of range is refused rather than stored - the enum indexes
+  // volume_preset_percent(), and a value with no case would fall through to
+  // its default rather than reading off the end of anything, but it must
+  // still never reach NVS as a value nothing wrote on purpose.
+  ui::set_volume_preset(ui::VolumePreset::Count);
+  EXPECT_EQ(writes, 2);
+  EXPECT_TRUE(ui::volume_preset() == ui::VolumePreset::Off);
+
+  ui::set_volume_preset_store_handler(nullptr);
+  ui::set_volume_preset(ui::VolumePreset::Medium);
 }

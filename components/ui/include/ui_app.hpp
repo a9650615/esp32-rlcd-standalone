@@ -46,6 +46,17 @@ void set_update_handler(void (*handler)(bool install));
 void set_update_status(const std::string& status,
                        bool install_available = false);
 
+// Runs on the LVGL thread, only when the Volume row is actually cycled -
+// never at boot, and never from ui::set_volume_preset() itself, on purpose:
+// this is the audible, interactive half of a volume change (pushing the
+// new level to modules/audio and playing a short confirmation tone), kept
+// separate from set_volume_preset()'s silent, persistence-only store
+// handler so that restoring a saved preset at startup can never itself
+// trigger a startup beep. The handler reads the new value back from
+// ui::volume_preset() itself rather than taking it as a parameter - by the
+// time this runs the menu has already committed to it.
+void set_volume_changed_handler(void (*handler)());
+
 // Address-sensitive owner retained by the caller for the host's entire LVGL
 // lifetime. LVGL stores a pointer to this exact instance in the host delete
 // callback; initialize/reset it in place and never copy or move it.
@@ -197,8 +208,13 @@ lv_obj_t* navigation_overlay(UiContext& context, Rect bounds);
 // request_dither_card() is callable from any FreeRTOS task (wifi_provision's
 // GET /dither-card handler calls it) - same mutex-guarded handoff to the
 // LVGL thread's own timer that set_update_status() above uses, so no lv_*
-// call ever happens off the LVGL thread. build_dither_card_screen() builds
-// the actual lv_obj_t screen and is only ever called from that timer, once;
+// call ever happens off the LVGL thread. Sticky once requested: the card
+// then owns the display until POST /restart, the same way OTA/Setup/
+// Settings own it for their own reasons - ui_app.cpp's timer_callback
+// reasserts it every tick rather than loading it once, which is what
+// makes that guarantee hold; see that comment for why the first, load-
+// once version of this did not. build_dither_card_screen() builds the
+// actual lv_obj_t screen and is only ever called from that timer, once;
 // declared here only so ui_app.cpp (which owns the trigger and the
 // one-time build-and-cache) can call into render_dither_card.cpp.
 void request_dither_card();

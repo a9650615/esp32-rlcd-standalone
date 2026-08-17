@@ -46,4 +46,45 @@ inline bool dither_bayer4x4_dark(int x, int y, int level) {
   return kBayer4x4[y & 3][x & 3] < level;
 }
 
+// Smallest dimension (width or height) a patch can have and still read as
+// a distinct grey rather than a dark dot. Measured by eye on the physical
+// panel on 2026-08-17, using /dither-card's size ramp (64/48/32/24/16/12 px
+// squares, all at the same 50% level, per its own comment in
+// render_dither_card.cpp): 16 px was the smallest that still read cleanly;
+// 12 px did not. Not derived from any formula about dot pitch or viewing
+// distance - re-measuring this means re-running that card and looking at
+// the real panel, not reasoning about the number from here.
+//
+// One number, not a per-size or per-density correction: a report during
+// this same session that smaller squares looked darker than larger ones at
+// the same 50% turned out to be a photograph's moire/exposure artefact,
+// not something visible looking directly at the panel - there is no
+// evidence for a size-dependent tone difference, so none is encoded here.
+inline constexpr int kMinDitherDimensionPx = 16;
+
+// Flat luminance threshold - the fallback for a patch smaller than
+// kMinDitherDimensionPx on either dimension, where the ordered-dither
+// pattern stops reading as a distinct grey (see that constant). Same 0-16
+// level scale as dither_bayer4x4_dark; the whole patch renders as one flat
+// value rather than attempting the pattern at a size it no longer works
+// at.
+constexpr bool plain_threshold_dark(int level) { return level >= 8; }
+
+// The one function an actual caller (a future dithered asset - nothing
+// today calls this) should use: dither_bayer4x4_dark's pattern for a patch
+// at least kMinDitherDimensionPx on both dimensions, plain_threshold_dark's
+// flat fallback otherwise. /dither-card's own size ramp deliberately does
+// not go through this - it calls dither_bayer4x4_dark directly at every
+// size, unfiltered, because it is the instrument for re-measuring
+// kMinDitherDimensionPx itself, and filtering its own output through the
+// constant it exists to calibrate would make a future re-measurement
+// circular.
+inline bool dither_pixel_dark(int x, int y, int width, int height,
+                              int level) {
+  if (width < kMinDitherDimensionPx || height < kMinDitherDimensionPx) {
+    return plain_threshold_dark(level);
+  }
+  return dither_bayer4x4_dark(x, y, level);
+}
+
 }  // namespace ui

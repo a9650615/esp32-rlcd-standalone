@@ -69,10 +69,15 @@ bool g_pending_update_available = false;
 #ifndef NDEBUG
 // Same mutex-guarded handoff as g_pending_update_status_dirty above, for
 // GET /dither-card (wifi_provision/portal.cpp) requesting the debug test
-// card. g_dither_card_screen is LVGL-thread-only (built once, on the first
-// request, and reused after) - never touched under g_publish_mutex, unlike
-// the flag itself.
+// card - a one-shot signal, cleared the tick it is observed.
 bool g_dither_card_requested = false;
+// LVGL-thread-only, unlike the flag above: never touched under
+// g_publish_mutex. Sticky once true - there is no route back to the
+// carousel short of POST /restart, on purpose (see timer_callback's own
+// comment on why this is reasserted every tick rather than loaded once).
+// g_dither_card_screen is built once, on the first request, and reused
+// after.
+bool g_dither_card_active = false;
 lv_obj_t* g_dither_card_screen = nullptr;
 #endif
 
@@ -82,6 +87,11 @@ void (*g_setup_gesture_handler)() = nullptr;
 // row simply reports nothing rather than blocking the render loop on a network
 // call.
 void (*g_update_handler)(bool install) = nullptr;
+// Null until main registers it (see set_volume_changed_handler's own
+// comment for why this is separate from the preset's store handler), in
+// which case cycling the Volume row simply reports nothing rather than
+// crashing on a null call.
+void (*g_volume_changed_handler)() = nullptr;
 
 // The subset of AppSnapshot that non-UI FreeRTOS tasks (wifi_provision, the
 // battery monitor, and now the indoor/weather/market/net_time providers)
@@ -92,6 +102,10 @@ struct PublishedFields {
   app_core::OtaData ota;
   app_core::SetupData setup;
   app_core::BatteryData battery;
+  // Its own field, not part of BatteryData above, for the same reason
+  // AppSnapshot::battery_runtime is its own field rather than
+  // BatteryData::runtime - see that comment in app_snapshot.hpp.
+  app_core::RuntimeEstimate battery_runtime;
   app_core::IndoorData indoor;
   app_core::WeatherData weather;
   app_core::WeatherData new_york_weather;
@@ -110,6 +124,7 @@ bool consume_published(PublishedFields& out) {
     out.ota = g_published_snapshot.ota;
     out.setup = g_published_snapshot.setup;
     out.battery = g_published_snapshot.battery;
+    out.battery_runtime = g_published_snapshot.battery_runtime;
     out.indoor = g_published_snapshot.indoor;
     out.weather = g_published_snapshot.weather;
     out.new_york_weather = g_published_snapshot.new_york_weather;
@@ -310,12 +325,6 @@ void timer_callback(lv_timer_t* timer) {
 
   if (!runtime->initialized) return;
 
-#ifndef NDEBUG
-  // Drained below, alongside the settings-status flag this mirrors; acted
-  // on after the mutex is released, since building the screen makes lv_*
-  // calls of its own.
-  bool show_dither_card = false;
-#endif
 
   // Set when the settings page needs redrawing - the cursor moved, a value
   // changed, or it was just opened.
@@ -334,7 +343,9 @@ void timer_callback(lv_timer_t* timer) {
     }
 #ifndef NDEBUG
     if (g_dither_card_requested) {
-      show_dither_card = true;
+      // Sticky, not one-shot: see the block below for why this is asserted
+      // every tick rather than loaded once and left alone.
+      g_dither_card_active = true;
       g_dither_card_requested = false;
     }
 #endif
@@ -342,12 +353,26 @@ void timer_callback(lv_timer_t* timer) {
   }
 
 #ifndef NDEBUG
-  // Built once and cached; a second request just reloads the same screen.
-  // Entirely separate from the carousel/tray/Setup/OTA machinery below -
-  // it loads its own standalone lv_scr rather than touching runtime->context
-  // or runtime->context.host, so nothing here can disturb whatever the
-  // carousel is (still, invisibly) doing to its own host object underneath.
-  if (show_dither_card) {
+  // Owns the display until POST /restart, the same way OTA/Setup/Settings
+  // own it below for their own reasons - a test card that loses a race
+  // with the carousel is not usable for the thing it exists for.
+  //
+  // Built once and cached; every tick after that just reloads the same
+  // screen, which is the fix, not a redundant safety net: a first version
+  // of this feature loaded the screen exactly once, on the assumption that
+  // only the display's active screen ever reaches the panel (true of
+  // LVGL's own invalidation/redraw path - checked directly against
+  // lv_obj_area_is_visible() in LVGL's own source, which skips any object
+  // whose screen is neither the active one nor the previous one) - and a
+  // real board still showed the carousel again minutes later regardless.
+  // Rather than keep chasing which specific call reactivates it, this
+  // makes the outcome unconditional instead: whatever ran between two
+  // ticks, this tick puts the card back in front within one ~100 ms
+  // period. lv_screen_load() is a single pointer comparison and an early
+  // return when the screen it is given is already active, so reasserting
+  // it here every tick costs nothing on all the ticks it was not actually
+  // needed.
+  if (g_dither_card_active) {
     if (g_dither_card_screen == nullptr) {
       g_dither_card_screen = build_dither_card_screen();
     }
@@ -356,6 +381,7 @@ void timer_callback(lv_timer_t* timer) {
     } else {
       ESP_LOGE(kTag, "dither card: screen build failed");
     }
+    return;
   }
 #endif
 
@@ -381,6 +407,7 @@ void timer_callback(lv_timer_t* timer) {
     runtime->snapshot.ota = published.ota;
     runtime->snapshot.setup = published.setup;
     runtime->snapshot.battery = published.battery;
+    runtime->snapshot.battery_runtime = published.battery_runtime;
     // indoor/weather/market/clock have no per-field widget registered the
     // way the tray clock/network/battery labels are (see UiContext) - a
     // structural change like NO DATA <-> real figures or a chart appearing
@@ -577,7 +604,9 @@ void timer_callback(lv_timer_t* timer) {
     page_rebuilt = true;
   }
 
-  if (settings_action == SettingsAction::StartUpdateCheck) {
+  if (settings_action == SettingsAction::VolumeChanged) {
+    if (g_volume_changed_handler != nullptr) g_volume_changed_handler();
+  } else if (settings_action == SettingsAction::StartUpdateCheck) {
     runtime->context.settings_status = text(Text::SettingsChecking);
     if (g_update_handler != nullptr) g_update_handler(false);
   } else if (settings_action == SettingsAction::StartUpdateInstall) {
@@ -711,6 +740,10 @@ void set_setup_gesture_handler(void (*handler)()) {
 
 void set_update_handler(void (*handler)(bool install)) {
   g_update_handler = handler;
+}
+
+void set_volume_changed_handler(void (*handler)()) {
+  g_volume_changed_handler = handler;
 }
 
 void set_update_status(const std::string& status, bool install_available) {

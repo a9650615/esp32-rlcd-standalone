@@ -26,11 +26,19 @@ void dotted_grid(lv_obj_t* parent, const Rect chart) {
   }
 }
 
-void polyline(lv_obj_t* parent, const std::array<ChartPoint, 8>& source,
-              const Rect chart) {
-  auto* points = new (std::nothrow) lv_point_precise_t[source.size()];
+// `count` - not source.size() - is how many of `source` are real: since
+// app_snapshot.hpp's MarketData::intraday_sample_count can be smaller than
+// the array's own app_core::kIntradaySampleCount (early in a session,
+// before enough real bars exist to fill it), normalize_chart_samples_n
+// leaves every slot past `count` zero-valued rather than a lie about
+// where those points belong - drawing all of source unconditionally would
+// draw a line down to (and back from) the coordinate origin.
+void polyline(lv_obj_t* parent,
+              const std::array<ChartPoint, app_core::kIntradaySampleCount>& source,
+              std::size_t count, const Rect chart) {
+  auto* points = new (std::nothrow) lv_point_precise_t[count];
   if (points == nullptr) return;
-  for (std::size_t index = 0; index < source.size(); ++index) {
+  for (std::size_t index = 0; index < count; ++index) {
     points[index] = {source[index].x - chart.x, source[index].y - chart.y};
   }
   lv_obj_t* line = lv_line_create(parent);
@@ -44,7 +52,7 @@ void polyline(lv_obj_t* parent, const std::array<ChartPoint, 8>& source,
   lv_obj_set_style_line_color(line, lv_color_black(), 0);
   lv_obj_set_style_line_width(line, kDataLineWidth, 0);
   lv_obj_set_style_line_rounded(line, false, 0);
-  lv_line_set_points(line, points, source.size());
+  lv_line_set_points(line, points, count);
   lv_obj_add_event_cb(line, release_chart_points, LV_EVENT_DELETE, points);
 }
 
@@ -124,9 +132,34 @@ void render_market(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
                      kSeparatorWidth});
 
     if (market.has_intraday) {
+      // The grid and the 開盤/盤中/收盤 labels below stay at the chart's
+      // full width regardless - they are the session's time axis, not a
+      // claim about how much of it the samples cover. Only the polyline
+      // itself is narrowed:
+      //
+      // - Width, by market.session_elapsed_fraction: a session still in
+      //   progress only ever has samples up through "now", and stretching
+      //   those across the full axis would claim a finished trading day
+      //   that has not happened yet (see app_snapshot.hpp's own comment on
+      //   that field). A completed session, and the TWSE fallback, never
+      //   see anything but the field's 1.0 default - full width, exactly
+      //   as before.
+      // - Point count, via normalize_chart_samples_n's own `count`
+      //   parameter and market.intraday_sample_count: early in a session
+      //   there may be fewer real bars than the array's target resolution
+      //   (app_core::kIntradaySampleCount), and the unused trailing slots
+      //   must not be read as real, zero-valued data.
+      const float fraction =
+          std::clamp(market.session_elapsed_fraction, 0.0f, 1.0f);
+      const Rect data_extent{
+          chart.x, chart.y,
+          std::max(1, static_cast<int>(chart.width * fraction)),
+          chart.height};
       dotted_grid(parent, chart);
-      polyline(parent, normalize_chart_samples(market.intraday_samples, chart),
-               chart);
+      polyline(parent,
+              normalize_chart_samples_n(market.intraday_samples, data_extent,
+                                        market.intraday_sample_count),
+              market.intraday_sample_count, data_extent);
       label(parent, text(Text::ChartOpen),
             {chart.x, chart.bottom() + 1, chart.width / 3, axis_height},
             small_font());

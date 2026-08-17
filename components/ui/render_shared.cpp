@@ -332,30 +332,46 @@ void render_market_sidebar(lv_obj_t* parent,
   // Home is where a mixed summary belongs.
   //
   // What is left is what the main area has not already said: the secondary
-  // index, and the day's range when the provider gave an intraday series. Two
-  // facts, so two cells - a third would have to be invented.
+  // index, and the day's range when the provider gave an intraday series.
+  // Both are optional now, not just the range - Taiwan's Yahoo primary
+  // (market.cpp's refresh_taiwan()) answers one symbol per request and
+  // supplies no secondary index at all, unlike the TWSE fallback (TAIEX +
+  // TW50 from one response) or the US source (two requests, two indices).
+  // An empty secondary_label means "this source did not give us one", not
+  // "the value is genuinely zero" - showing it anyway would be a fabricated
+  // "0 / +0.00%" tile on a market that is actually open and moving.
+  const bool has_secondary = market.valid && !market.secondary_label.empty();
   const bool has_range = market.valid && market.has_intraday;
-  const int count = has_range ? 2 : 1;
+  const int count = (has_secondary ? 1 : 0) + (has_range ? 1 : 0);
+  if (count == 0) return;
 
-  char index_value[24];
-  char index_detail[24];
-  std::snprintf(index_value, sizeof(index_value), "%d", market.secondary_value);
-  std::snprintf(index_detail, sizeof(index_detail), "%+.2f%%",
-                market.secondary_change_percent);
-  tile(parent, market.secondary_label.c_str(), index_value, index_detail,
-       stacked_tile_cell(bounds, 0, count), false, false, market.valid);
+  int slot = 0;
+  if (has_secondary) {
+    char index_value[24];
+    char index_detail[24];
+    std::snprintf(index_value, sizeof(index_value), "%d",
+                  market.secondary_value);
+    std::snprintf(index_detail, sizeof(index_detail), "%+.2f%%",
+                  market.secondary_change_percent);
+    tile(parent, market.secondary_label.c_str(), index_value, index_detail,
+         stacked_tile_cell(bounds, slot, count), false, false, market.valid);
+    ++slot;
+  }
 
   if (has_range) {
-    const MarketRange range = market_intraday_range(market.intraday_samples);
+    const MarketRange range = market_intraday_range(
+        market.intraday_samples, market.intraday_sample_count);
     char range_value[24];
     char range_detail[24];
     std::snprintf(range_value, sizeof(range_value), "%d", range.high);
     std::snprintf(range_detail, sizeof(range_detail), "%d", range.low);
-    const Rect cell = stacked_tile_cell(bounds, 1, count);
+    const Rect cell = stacked_tile_cell(bounds, slot, count);
     tile(parent, text(Text::TileRange), range_value, range_detail, cell, false,
          false, true);
-    divider(parent, {bounds.x, cell.y - kStackedTileGap / 2, bounds.width,
-                     kSeparatorWidth});
+    if (has_secondary) {
+      divider(parent, {bounds.x, cell.y - kStackedTileGap / 2, bounds.width,
+                       kSeparatorWidth});
+    }
   }
 }
 

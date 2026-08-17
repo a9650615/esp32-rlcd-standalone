@@ -84,3 +84,43 @@ HOST_TEST(battery_overvoltage_does_not_fire_on_a_genuinely_full_cell_or_real_har
   EXPECT_TRUE(!app_core::battery_overvoltage_warning(4071));
   EXPECT_TRUE(!app_core::battery_overvoltage_danger(4071));
 }
+
+// Locks down the ownership split app_snapshot.hpp documents on
+// AppSnapshot::battery_runtime: wifi_provision's set_battery() (every ~30 s,
+// a different task than the ~5 min history/runtime estimator) does exactly
+// this - `snapshot_.battery = battery;` - with a freshly sampled, always
+// default-constructed-runtime BatteryData. Before battery_runtime moved out
+// to its own AppSnapshot field, that whole-struct assignment silently wiped
+// whatever set_runtime_estimate() had just published, roughly nine sample
+// periods out of every ten (the settings page then read "Collecting"
+// almost permanently instead of the real projection). This is the
+// regression test for the fix, not for wifi_provision.cpp directly - that
+// file is not part of the host build - but the hazard was always in
+// whether these two fields share a struct, which is exactly what this
+// checks.
+HOST_TEST(publishing_a_battery_reading_does_not_erase_a_runtime_estimate) {
+  app_core::AppSnapshot snapshot;
+  snapshot.battery_runtime.trend = app_core::PowerTrend::Discharging;
+  snapshot.battery_runtime.known = true;
+  snapshot.battery_runtime.minutes_remaining = 483;
+  snapshot.battery_runtime.percent_per_hour = -0.48f;
+  snapshot.battery_runtime.samples_used = 129;
+
+  // Exactly what the battery sampler does every ~30 s: build a fresh
+  // BatteryData from this reading alone and assign it wholesale.
+  app_core::BatteryData fresh_reading;
+  fresh_reading.valid = true;
+  fresh_reading.millivolts = 3820;
+  fresh_reading.percent = 91;
+  snapshot.battery = fresh_reading;
+
+  EXPECT_TRUE(snapshot.battery.valid);
+  EXPECT_EQ(static_cast<int>(snapshot.battery.percent), 91);
+  // The estimate must have survived - there is no longer a shared struct
+  // for the battery assignment above to have reached into.
+  EXPECT_TRUE(snapshot.battery_runtime.trend ==
+              app_core::PowerTrend::Discharging);
+  EXPECT_TRUE(snapshot.battery_runtime.known);
+  EXPECT_EQ(static_cast<int>(snapshot.battery_runtime.minutes_remaining), 483);
+  EXPECT_EQ(static_cast<int>(snapshot.battery_runtime.samples_used), 129);
+}

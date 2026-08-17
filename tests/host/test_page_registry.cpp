@@ -155,12 +155,17 @@ HOST_TEST(mock_fixture_contains_required_deterministic_content) {
             (std::array<double, 8>{24.2, 24.3, 24.5, 24.6,
                                    24.7, 24.8, 24.8, 24.8}));
 
+  // The array itself is app_core::kIntradaySampleCount wide; the mock
+  // builder (app_snapshot.cpp) only ever sets these first 8 (has_intraday
+  // stays false for this fixture, so nothing reads the rest) - the
+  // trailing entries default-construct to 0, same as the real field.
   EXPECT_EQ(snapshot.taiwan_market.intraday_samples,
-            (std::array<int, 8>{24'060, 24'110, 24'095, 24'180,
-                                24'240, 24'220, 24'300, 24'334}));
+            (std::array<int, app_core::kIntradaySampleCount>{
+                24'060, 24'110, 24'095, 24'180, 24'240, 24'220, 24'300,
+                24'334}));
   EXPECT_EQ(snapshot.us_market.intraday_samples,
-            (std::array<int, 8>{5'410, 5'425, 5'420, 5'438,
-                                5'430, 5'440, 5'426, 5'432}));
+            (std::array<int, app_core::kIntradaySampleCount>{
+                5'410, 5'425, 5'420, 5'438, 5'430, 5'440, 5'426, 5'432}));
 }
 
 HOST_TEST(pcf85063_decode_rejects_invalid_bcd_and_ranges) {

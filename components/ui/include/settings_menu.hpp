@@ -20,6 +20,12 @@ enum class SettingsItem : uint8_t {
   // the very row that changed it. First: the most-used, most-obviously-live
   // row in the menu.
   Language,
+  // Cycles through VolumePreset the same way Language cycles - immediate
+  // effect, audible on the row that just changed it. Right next to Language
+  // for the same reason: both are actionable and both apply themselves on
+  // the spot, unlike WifiSetup/CheckUpdates below, which start something
+  // that takes longer than one row press to finish.
+  Volume,
   WifiSetup,
   CheckUpdates,
   // Projected time left, from the persisted discharge history rather than
@@ -61,6 +67,7 @@ enum class InputContext : uint8_t {
 enum class SettingsAction : uint8_t {
   None,
   LanguageChanged,
+  VolumeChanged,
   StartUpdateCheck,
   // Install what the last check found. Same downloader, same ota::Session,
   // same progress and rollback path as a push from a machine on the network -
@@ -69,6 +76,70 @@ enum class SettingsAction : uint8_t {
   EnterWifiSetup,
   Exit,
 };
+
+// Discrete, on-device presets for the volume of *locally generated* sound
+// only - alarms and notification tones played through modules/audio. Before
+// this existed the only control was `POST /beep?vol=` on a debug-only
+// route, which does not exist in a release build; this is the normal,
+// on-device replacement.
+//
+// This must apply ONLY to modules/audio's own tone playback and NEVER to
+// AirPlay/streamed playback, when that exists. In AirPlay the source device
+// owns the volume - it is sent over RTSP from the phone - and multiplying
+// that by a second, local scale here would mean turning the volume up on
+// the phone stops fully taking effect: a genuinely maddening bug to live
+// with, not a corner case. When streaming is wired up, its own playback
+// path must call the codec at the source's requested level directly and
+// must not read VolumePreset, volume_preset(), or route through
+// set_volume_preset_store_handler/the settings row at all. Nothing in this
+// type assumes otherwise, and nothing about adding AirPlay later should
+// touch it.
+enum class VolumePreset : uint8_t { Off, Low, Medium, High, Count };
+
+// 0-100 codec percentage for each preset. Medium is 50 on purpose: it is
+// the only level anyone has actually listened to on real hardware (see
+// modules/audio/audio.cpp's kOutputVolumePercent, which shares this exact
+// number), so it is kept as a known-good anchor rather than the midpoint of
+// a guessed scale. Low/High are an even +/-25 spread around it, not
+// independently validated. High stops at 75, not 100: a hardware sweep
+// already found 80% "a bit loud" (see modules/audio/README.md's "The
+// volume default"), so this stays clear of that.
+constexpr int volume_preset_percent(VolumePreset preset) {
+  switch (preset) {
+    case VolumePreset::Off:
+      return 0;
+    case VolumePreset::Low:
+      return 25;
+    case VolumePreset::Medium:
+      return 50;
+    case VolumePreset::High:
+      return 75;
+    case VolumePreset::Count:
+      break;
+  }
+  return 50;
+}
+
+VolumePreset volume_preset();
+
+// Only notifies the store handler below on an actual change, same as
+// set_language - cycling back to the preset already in force writes
+// nothing. Does not touch hardware or play anything by itself; see
+// set_volume_changed_handler in ui_app.hpp for where the audible,
+// interactive side of a settings-row change actually happens (registered
+// and invoked from there, not from here, specifically so the boot-time
+// restore below - which also calls this - never plays a startup beep).
+void set_volume_preset(VolumePreset value);
+
+// Registers where a change is written so it survives a reboot - same
+// pattern as set_language_store_handler, for the same reason: this
+// translation unit is compiled by the host tests, which have no flash.
+void set_volume_preset_store_handler(void (*handler)(VolumePreset value));
+
+// The row's value-column text, in the active language - "Off"/"Low"/
+// "Medium"/"High", unlike language_name() these do translate with the rest
+// of the UI, since they are not naming themselves the way a language does.
+const char* volume_preset_name(VolumePreset value);
 
 class SettingsMenu {
  public:

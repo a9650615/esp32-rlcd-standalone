@@ -380,18 +380,33 @@ once, including which get dropped when the tray is too narrow for all of
 them (`tests/host/test_tray_layout.cpp`) - and prove the registry's own
 contract: fixed capacity enforced, registration past it refused, an invalid
 handle's `set_tray_indicator_active()` a documented no-op (loud, now, not
-silent). Confirmed on hardware, from the log evidence above: registration
-reaches the registry, and (once the fix above ships) the registry is polled
-every tick regardless of what else changed. **Still unconfirmed**: that
-toggling a slot's `active` flag actually flips real LVGL canvas opacity on
-the real display driver, that the `ui_tray` log line actually appears
-alongside the new sending-side log on the next hardware run exactly as
-expected, and that the 16x12px procedural bitmap `audio.cpp` builds in
-`build_icon_bitmap()` renders as a recognizable "speaker" shape rather than
-a garbled or blank rectangle - the I1-format canvas byte layout was derived
-by reading LVGL source, not by looking at a rendered pixel. All three remain
-screenshot-only claims; the two-request sequence above (with `vol=0` when
-the board must stay silent) is what settles them.
+silent).
+
+**Confirmed on hardware**, after the polling-gate fix above shipped: a
+silent (`vol=0`) 8 s tone showed the speaker icon present in a `/shot`
+during playback and gone afterwards, the network/battery icons did not
+move, and both sides of the diagnostic log lined up (`tray indicator:
+requesting slot 0 active=true` on the sending side, `tray indicator slot 0
+-> active` from `ui_tray` 145 ms later). That settles every claim the
+paragraph above used to list as screenshot-only: the registry is polled
+every tick, the LVGL canvas opacity toggle reaches the real display driver,
+and the 16x12px procedural bitmap `build_icon_bitmap()` builds renders as
+the intended shape rather than a garbled or blank rectangle.
+
+One thing that bitmap's own size is now also evidence for: `/dither-card`'s
+size ramp (see `components/ui/render_dither_card.cpp` and
+`components/ui/include/dither.hpp`'s `kMinDitherDimensionPx`) found 16 px
+on the shorter dimension to be the smallest that still reads as a distinct
+grey on this panel, with 12 px reading as a dark dot instead. This icon's
+shorter dimension is exactly 12 px (16 wide, 12 tall) - below that
+threshold. That is not a defect to fix: `build_icon_bitmap()` never
+attempts grey at all, every pixel is fully black or fully white
+(`set_icon_pixel()`/`kBayer4x4` do not appear anywhere in this file), which
+is exactly the case `kMinDitherDimensionPx` says a shape this small should
+be. If this icon (or any tray indicator this small) is ever redrawn using
+`ui::dither_pixel_dark()` to render something with actual grey in it, that
+function already falls back to a plain threshold below 16 px on its own -
+nothing here needs to change for that to be correct.
 
 ## Core touch points
 

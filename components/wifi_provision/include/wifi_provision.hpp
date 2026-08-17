@@ -31,8 +31,12 @@ void set_battery(const app_core::BatteryData& battery);
 // AppSnapshot owner/publisher rather than letting each provider task manage
 // its own copy.
 void set_indoor(const app_core::IndoorData& indoor);
-// Merged into the battery field rather than published as its own, because it
-// is a statement about the battery and every consumer already reads that.
+// Merges into AppSnapshot::battery_runtime, deliberately its own top-level
+// field rather than a member of BatteryData above: this runs on a
+// different task, on a different (~5 min) cadence, than set_battery()'s
+// ~30 s samples, and a shared struct let one task's whole-struct assignment
+// silently erase the other's field - see battery_runtime's own comment in
+// app_snapshot.hpp for the failure that came from getting this wrong once.
 void set_runtime_estimate(const app_core::RuntimeEstimate& estimate);
 void set_weather(const app_core::WeatherData& weather);
 void set_taiwan_market(const app_core::MarketData& market);

@@ -2,7 +2,7 @@
 """Fails the build when the interface uses a character the font subset lacks.
 
 The Chinese glyph set is derived from components/ui/ui_strings.cpp by
-scripts/build-cjk-font.sh, which means adding a string and forgetting to
+scripts/build-fonts.sh, which means adding a string and forgetting to
 regenerate leaves those characters with no glyph. LVGL draws a missing glyph as
 an empty box, silently - the build succeeds, the flash succeeds, and the panel
 shows tofu. That happened once already, for 32 characters.
@@ -36,7 +36,7 @@ def main() -> int:
     ui_dir = project / "components/ui"
     fonts = sorted((project / "components/ui/fonts").glob("rlcd_cjk_*.c"))
     if not fonts:
-        print("error: no generated CJK fonts; run ./scripts/build-cjk-font.sh",
+        print("error: no generated CJK fonts; run ./scripts/build-fonts.sh",
               file=sys.stderr)
         return 1
 
@@ -49,7 +49,7 @@ def main() -> int:
             print(f"error: {font.name} is missing {len(missing)} glyph(s) the "
                   f"interface uses: {''.join(missing)}", file=sys.stderr)
     if failed:
-        print("\nRun ./scripts/build-cjk-font.sh and commit components/ui/fonts/.",
+        print("\nRun ./scripts/build-fonts.sh and commit components/ui/fonts/.",
               file=sys.stderr)
         return 1
 

@@ -145,3 +145,38 @@ HOST_TEST(dither_bayer4x4_tiles_seamlessly) {
     }
   }
 }
+
+// kMinDitherDimensionPx (16) is measured, not derived - see dither.hpp's own
+// comment - but its consequence for dither_pixel_dark() is a plain
+// boundary this can still lock down: at or above 16 on both dimensions,
+// the real pattern; below 16 on either one, the flat fallback.
+HOST_TEST(dither_pixel_dark_uses_the_real_pattern_at_the_measured_minimum) {
+  EXPECT_EQ(ui::kMinDitherDimensionPx, 16);
+  for (int y = 0; y < 4; ++y) {
+    for (int x = 0; x < 4; ++x) {
+      EXPECT_EQ(ui::dither_pixel_dark(x, y, 16, 16, 8),
+                ui::dither_bayer4x4_dark(x, y, 8));
+    }
+  }
+}
+
+// Below the minimum on either dimension - even if the other one is large -
+// every pixel falls back to the same flat plain_threshold_dark() value,
+// not the position-dependent pattern.
+HOST_TEST(dither_pixel_dark_falls_back_below_the_minimum_on_either_dimension) {
+  for (int y = 0; y < 4; ++y) {
+    for (int x = 0; x < 4; ++x) {
+      EXPECT_EQ(ui::dither_pixel_dark(x, y, 15, 64, 8),
+                ui::plain_threshold_dark(8));
+      EXPECT_EQ(ui::dither_pixel_dark(x, y, 64, 12, 8),
+                ui::plain_threshold_dark(8));
+    }
+  }
+}
+
+HOST_TEST(plain_threshold_dark_splits_exactly_at_the_midpoint) {
+  EXPECT_TRUE(!ui::plain_threshold_dark(0));
+  EXPECT_TRUE(!ui::plain_threshold_dark(7));
+  EXPECT_TRUE(ui::plain_threshold_dark(8));
+  EXPECT_TRUE(ui::plain_threshold_dark(16));
+}

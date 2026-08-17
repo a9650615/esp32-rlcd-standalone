@@ -17,7 +17,10 @@ constexpr int kHttpTimeoutMs = 8000;
 // allocation is a defect even with plenty of PSRAM to spare. TWSE's
 // MI_INDEX lists every index it publishes (~30-40 rows) in one response -
 // 46 KB was observed live against the real endpoint while building this.
-// Yahoo's 1-day/15-minute chart response for one symbol was ~7 KB live.
+// Yahoo's 1-day/5-minute chart response for one symbol was ~7 KB live at
+// 15-minute bars and stays well inside this cap at 5-minute ones too - a
+// day's worth of extra timestamp/close entries is a few KB, not an order
+// of magnitude.
 // Both caps below are generous multiples of that, not "as much as fits": a
 // response that blows the cap is simply truncated, and a truncated body
 // fails to parse (see market_parse.cpp) rather than being accepted
@@ -27,6 +30,8 @@ constexpr int kYahooBufferBytes = 32 * 1024;
 
 app_core::MarketData g_taiwan;  // valid == false until the first success.
 app_core::MarketData g_us;
+// See taiwan_using_primary_source() below.
+bool g_taiwan_using_primary = false;
 
 // GETs `url`, heap-allocating up to `max_bytes` for the body (never on the
 // caller's stack - MI_INDEX alone is tens of KB). Every esp_err_t and the
@@ -86,30 +91,58 @@ bool http_get(const char* url, int max_bytes, std::string& out_body) {
 }  // namespace
 
 bool refresh_taiwan() {
-  std::string body;
-  if (!http_get("https://openapi.twse.com.tw/v1/exchangeReport/MI_INDEX",
-                 kTaiwanBufferBytes, body)) {
-    g_taiwan = app_core::MarketData{};
-    return false;
+  std::string primary_body;
+  IndexQuote primary;
+  bool primary_ok = false;
+  if (http_get(
+          "https://query1.finance.yahoo.com/v8/finance/chart/%5ETWII"
+          "?interval=5m&range=1d",
+          kYahooBufferBytes, primary_body)) {
+    primary_ok =
+        parse_yahoo_quote(primary_body.data(), primary_body.size(), "TAIEX",
+                          primary);
+    if (!primary_ok) {
+      ESP_LOGW(kTag,
+               "Yahoo TWII chart body did not parse (%zu bytes); falling "
+               "back to TWSE",
+               primary_body.size());
+    }
+  } else {
+    ESP_LOGW(kTag, "Yahoo TWII fetch failed; falling back to TWSE");
   }
 
-  app_core::MarketData parsed;
-  if (!parse_taiwan_index(body.data(), body.size(), parsed)) {
-    ESP_LOGW(kTag, "TWSE MI_INDEX body did not parse (%zu bytes)",
-             body.size());
-    g_taiwan = app_core::MarketData{};
-    return false;
+  app_core::MarketData fallback;
+  bool fallback_ok = false;
+  if (!primary_ok) {
+    // Only reached once the primary has already failed - fetching both
+    // every cycle would double the request rate for a value normally
+    // discarded (see market.hpp's own comment on refresh_taiwan()).
+    std::string fallback_body;
+    if (http_get("https://openapi.twse.com.tw/v1/exchangeReport/MI_INDEX",
+                 kTaiwanBufferBytes, fallback_body)) {
+      fallback_ok = parse_taiwan_index(fallback_body.data(),
+                                       fallback_body.size(), fallback);
+      if (!fallback_ok) {
+        ESP_LOGW(kTag, "TWSE MI_INDEX body did not parse (%zu bytes)",
+                 fallback_body.size());
+      }
+    }
   }
 
-  g_taiwan = parsed;
-  return true;
+  const TaiwanFetchOutcome outcome =
+      select_taiwan_source(primary_ok, primary, fallback_ok, fallback);
+  g_taiwan = outcome.data;
+  g_taiwan_using_primary = outcome.used_primary;
+  return outcome.ok;
 }
+
+bool taiwan_using_primary_source() { return g_taiwan_using_primary; }
 
 bool refresh_us() {
   std::string sp500_body;
   if (!http_get(
           "https://query1.finance.yahoo.com/v8/finance/chart/%5EGSPC"
-          "?interval=15m&range=1d",
+          "?interval=5m&range=1d",
           kYahooBufferBytes, sp500_body)) {
     g_us = app_core::MarketData{};
     return false;
@@ -126,7 +159,7 @@ bool refresh_us() {
   std::string nasdaq_body;
   if (!http_get(
           "https://query1.finance.yahoo.com/v8/finance/chart/%5EIXIC"
-          "?interval=15m&range=1d",
+          "?interval=5m&range=1d",
           kYahooBufferBytes, nasdaq_body)) {
     g_us = app_core::MarketData{};
     return false;
@@ -156,6 +189,11 @@ bool refresh_us() {
   parsed.secondary_value = secondary.value;
   parsed.secondary_change_percent = secondary.change_percent;
   parsed.intraday_samples = primary.samples;
+  parsed.intraday_sample_count = primary.sample_count;
+  // Same reasoning as the as_of date above: both quotes are the same
+  // session, so the primary's own value is the reported fact, not a
+  // reconciliation.
+  parsed.session_elapsed_fraction = primary.session_elapsed_fraction;
   parsed.valid = true;
 
   g_us = parsed;

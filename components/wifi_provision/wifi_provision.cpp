@@ -286,9 +286,11 @@ void set_indoor(const app_core::IndoorData& indoor) {
 
 void set_runtime_estimate(const app_core::RuntimeEstimate& estimate) {
   lock();
-  // Only the estimate, never the reading: the battery sampler owns millivolts
-  // and percent, and this runs on a different task at a different cadence.
-  snapshot_.battery.runtime = estimate;
+  // Its own AppSnapshot field, not part of BatteryData - see that field's
+  // own comment in app_snapshot.hpp for why: this runs on a different task,
+  // at a different cadence, than set_battery() below, and the two must not
+  // share a struct either one of them assigns to wholesale.
+  snapshot_.battery_runtime = estimate;
   ui::publish_snapshot(snapshot_);
   unlock();
 }
