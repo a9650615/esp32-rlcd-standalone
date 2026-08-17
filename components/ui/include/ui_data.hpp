@@ -277,8 +277,20 @@ struct SettingsLayout {
   Rect status;
 };
 
-inline constexpr int kSettingsRowHeight =
-    safe_text_box_height(24, kSetupMediumFontLineHeight);
+// Was safe_text_box_height(24, kSetupMediumFontLineHeight) - sized against
+// the 22px medium-font line height, but every row here (and the status line
+// below, which reuses this same constant) renders at font_small()
+// (render_settings.cpp), whose line height is kSetupSmallFontLineHeight
+// (16). The 24px that produced was 6px more than the font actually drawn
+// needed - not a deliberate comfort margin, just the wrong constant - and
+// that slack, times 7 rows plus one gap, is exactly what let the status
+// line overflow content_bounds by 6px with nothing catching it (see
+// settings_layout_fits below: complete, but never wired into a
+// static_assert until now). Corrected to the font that is actually drawn,
+// which is kSetupLineHeight exactly - Setup's own font_small() rows (the
+// SSID and portal URL lines, read carefully on this same panel) - so this
+// reuses a value already proven legible here rather than inventing one.
+inline constexpr int kSettingsRowHeight = kSetupLineHeight;
 inline constexpr int kSettingsRowGap = 4;
 inline constexpr int kSettingsTitleGap = 8;
 // The right-hand column carries each row's current value - the version string,
@@ -787,6 +799,19 @@ static_assert(
         content_bounds(safe_canvas(), app_core::PageId::Setup)),
     "setup QR keeps its quiet-zone margin from the content edges and the "
     "text column");
+
+// settings_layout_fits existed for a while covering every rect this layout
+// produces, title through the status line - but nothing ever asserted it,
+// so it caught nothing. The status line overflowing content_bounds by 6px
+// (see kSettingsRowHeight's own comment) sat there unasserted rather than
+// unfixable: this is the wiring that was missing, not a new check. Adding
+// an eighth SettingsItem now fails the build here instead of quietly
+// pushing the status line further off the panel.
+static_assert(
+    settings_layout_fits(
+        content_bounds(safe_canvas(), app_core::PageId::Settings)),
+    "every settings rect, including the status line, fits entirely inside "
+    "the tray-reduced content bounds");
 static_assert(
     setup_layout(content_bounds(safe_canvas(), app_core::PageId::Setup))
             .qr.width == kSetupQrSize &&

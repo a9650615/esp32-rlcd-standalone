@@ -334,6 +334,38 @@ HOST_TEST(home_tile_cells_split_the_column_without_overlapping) {
   EXPECT_TRUE(top.bottom() < bottom.y);              // gap between them
   EXPECT_TRUE(bottom.bottom() <= column.bottom());   // stays in the column
   EXPECT_EQ(top.height, bottom.height);              // evenly split
-  // Each half still has room for the tile's 64px of stacked rows.
-  EXPECT_TRUE(top.height >= 64);
+  // Each half still has room for tile_text_layout's actual stacked content
+  // (title+value+detail = kTileContentHeight, ui_theme.hpp) - not a
+  // separately-guessed number. A hardcoded "big enough" figure here would
+  // prove nothing about the content this cell is actually for, which is
+  // exactly the gap that let the settings page's status line overflow
+  // unnoticed (see ui_data.hpp's settings_layout_fits / kSettingsRowHeight).
+  EXPECT_TRUE(top.height >= ui::kTileContentHeight);
+}
+
+// settings_layout_fits existed for a while covering every rect the layout
+// produces - it just was never wired into anything, compile-time or
+// runtime, so the status line overflowing content_bounds by 6px sat there
+// unasserted rather than unfixable. This is the runtime half of the fix
+// (ui_data.hpp's static_assert is the compile-time half) - both check the
+// exact same invariant on purpose, the same belt-and-suspenders pattern
+// ota_layout_fits already uses (see test_ota.cpp).
+HOST_TEST(settings_layout_fits_and_rows_do_not_overlap) {
+  const ui::Rect content =
+      ui::content_bounds(ui::safe_canvas(), app_core::PageId::Settings);
+  EXPECT_TRUE(ui::settings_layout_fits(content));
+
+  const ui::SettingsLayout layout = ui::settings_layout(content);
+  EXPECT_TRUE(!ui::rects_intersect(layout.title, layout.rows[0]));
+  for (int i = 0; i + 1 < ui::kSettingsRowCount; ++i) {
+    EXPECT_TRUE(!ui::rects_intersect(layout.rows[i], layout.rows[i + 1]));
+  }
+  EXPECT_TRUE(!ui::rects_intersect(layout.rows[ui::kSettingsRowCount - 1],
+                                   layout.status));
+
+  // The regression this whole fix exists to catch, spelled out rather than
+  // left implicit in settings_layout_fits: the status line - the element
+  // that actually overflowed - must end at or before the tray-reduced
+  // content bounds, not just somewhere inside the wider safe canvas.
+  EXPECT_TRUE(layout.status.bottom() <= content.bottom());
 }
