@@ -349,14 +349,12 @@ HOST_TEST(release_notes_with_any_non_ascii_byte_are_withheld_entirely) {
   // A real CJK character: this project's CJK font is a fixed, curated
   // 121-glyph subset lifted from its own UI strings (check-cjk-font.py), not
   // a general-purpose font, so a release-body character has no guaranteed
-  // glyph even when it happens to be Chinese.
+  // glyph even when it happens to be Chinese - and it is not in the
+  // typography table, so nothing normalises it away.
   EXPECT_TRUE(ota::sanitize_release_notes("Fixed \xe4\xbf\xae\xe5\xbe\xa9.", 80)
                   .empty());
-  // Typographic punctuation Montserrat's own metrics were never checked
-  // against - an em dash (U+2014, UTF-8 E2 80 94) - must void the excerpt
-  // the same way, not render as a box mid-sentence.
-  EXPECT_TRUE(ota::sanitize_release_notes("Faster startup \xe2\x80\x94 a lot.",
-                                          80)
+  // An emoji is exactly as unmapped, and exactly as untrustworthy.
+  EXPECT_TRUE(ota::sanitize_release_notes("Shipped it \xf0\x9f\x9a\x80", 80)
                   .empty());
   // A body that is entirely non-ASCII must not fall back to whatever Latin
   // punctuation happened to survive - it must produce nothing, same as the
@@ -364,6 +362,61 @@ HOST_TEST(release_notes_with_any_non_ascii_byte_are_withheld_entirely) {
   EXPECT_TRUE(ota::sanitize_release_notes("\xe4\xbf\xae\xe5\xbe\xa9\xe5\xa5\xbd",
                                           80)
                   .empty());
+}
+
+HOST_TEST(release_notes_diagnostic_reports_the_byte_and_offset_when_withheld) {
+  const ota::ReleaseNotesResult result =
+      ota::sanitize_release_notes_diagnostic(
+          "Fixed \xe4\xbf\xae\xe5\xbe\xa9.", 80);
+  EXPECT_TRUE(result.text.empty());
+  EXPECT_TRUE(result.withheld_non_ascii);
+  // "Fixed " is 6 ASCII bytes; the first byte of the CJK character sits at
+  // offset 6 in the normalised text (unchanged here, since none of it
+  // matches the typography table).
+  EXPECT_EQ(static_cast<int>(result.offending_offset), 6);
+  EXPECT_EQ(static_cast<int>(result.offending_byte), 0xe4);
+
+  // Genuinely empty input is not a mistake to report - the distinction this
+  // struct exists for.
+  const ota::ReleaseNotesResult empty_result =
+      ota::sanitize_release_notes_diagnostic("", 80);
+  EXPECT_TRUE(empty_result.text.empty());
+  EXPECT_TRUE(!empty_result.withheld_non_ascii);
+}
+
+HOST_TEST(release_notes_normalise_typographic_punctuation_before_the_gate) {
+  // The exact case that motivated this: GitHub's editor turns a plain
+  // apostrophe into a curly one on its own, and withholding the whole body
+  // over a keystroke the author never chose to make would be a worse
+  // failure than the one the gate exists to prevent.
+  EXPECT_TRUE(ota::sanitize_release_notes("Fixed a bug that doesn\xe2\x80\x99t "
+                                          "matter.",
+                                          80) ==
+              "Fixed a bug that doesn't matter.");
+  // Curly double quotes.
+  EXPECT_TRUE(ota::sanitize_release_notes(
+                  "Renamed \xe2\x80\x9csettings\xe2\x80\x9d.", 80) ==
+              "Renamed \"settings\".");
+  // En dash and em dash both become a plain hyphen.
+  EXPECT_TRUE(ota::sanitize_release_notes("Pages 1\xe2\x80\x93" "2.", 80) ==
+              "Pages 1-2.");
+  EXPECT_TRUE(ota::sanitize_release_notes("Faster \xe2\x80\x94 a lot.", 80) ==
+              "Faster - a lot.");
+  // Horizontal ellipsis becomes three literal dots, matching this project's
+  // own truncation output rather than clashing with it.
+  EXPECT_TRUE(ota::sanitize_release_notes("Still working on it\xe2\x80\xa6",
+                                          80) == "Still working on it...");
+  // Bullet becomes a hyphen - this project's own list-marker convention
+  // (see the whitespace-collapse test above, which already writes "- ").
+  EXPECT_TRUE(ota::sanitize_release_notes("\xe2\x80\xa2 Fixed a crash.", 80) ==
+              "- Fixed a crash.");
+  // Non-breaking space becomes a plain space, then collapses like any other.
+  EXPECT_TRUE(ota::sanitize_release_notes("No\xc2\xa0" "crash.", 80) ==
+              "No crash.");
+  // Rightwards arrow becomes "->", the same substitution this project's own
+  // UI code makes for the identical font reason (render_ota.cpp).
+  EXPECT_TRUE(ota::sanitize_release_notes("0.1.2 \xe2\x86\x92 0.1.4.", 80) ==
+              "0.1.2 -> 0.1.4.");
 }
 
 HOST_TEST(release_notes_longer_than_the_budget_ellipsise_on_a_word_boundary) {

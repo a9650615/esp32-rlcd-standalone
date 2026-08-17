@@ -149,7 +149,22 @@ ReleaseInfo check_latest_release() {
   // survive the trip to the panel.
   const cJSON* body_field = cJSON_GetObjectItemCaseSensitive(root, "body");
   if (cJSON_IsString(body_field)) {
-    info.notes = sanitize_release_notes(body_field->valuestring, kMaxNotesChars);
+    const ReleaseNotesResult sanitized =
+        sanitize_release_notes_diagnostic(body_field->valuestring, kMaxNotesChars);
+    info.notes = sanitized.text;
+    if (sanitized.withheld_non_ascii) {
+      // Diagnoses the character, not the body: a codepoint and an offset,
+      // never the release text itself - that would defeat the point of a
+      // component that never mirrors free text into the log ring wholesale.
+      // Without this, a withheld body looks identical to no body at all,
+      // which turns a one-keystroke authoring mistake into a mystery no
+      // amount of staring at the settings row would explain.
+      ESP_LOGI(kTag,
+               "release notes withheld: byte 0x%02x at offset %u is not "
+               "ASCII (after typography normalisation) - see ota_notes.hpp",
+               sanitized.offending_byte,
+               static_cast<unsigned>(sanitized.offending_offset));
+    }
   }
 
   info.firmware_url = find_asset_url(root);
