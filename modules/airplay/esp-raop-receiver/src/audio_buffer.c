@@ -29,7 +29,12 @@ static struct {
     uint32_t read_idx;
     uint32_t write_idx;
     SemaphoreHandle_t mutex;
+    // The output task and its idle handshake outlive any single session -
+    // see the comment on audio_output_task()'s loop for why. Both are
+    // preserved by hand across the memset() in audio_buffer_init() that
+    // resets everything else for a fresh session.
     TaskHandle_t task;
+    SemaphoreHandle_t idle_sem;
     bool running;
     uint32_t start_time;
     audio_output_callback_t output_cb;
@@ -57,6 +62,25 @@ static uint32_t gettime_ms(void) {
     return (uint32_t)(esp_timer_get_time() / 1000ULL);
 }
 
+// Runs for the lifetime of the process, not for one RAOP session. It used to
+// be created fresh in audio_buffer_start() and vTaskDelete()'d from outside
+// in audio_buffer_stop() every single session - cheap-looking, but measured
+// wrong: on ESP-IDF's SMP FreeRTOS, deleting a task pinned to the other core
+// defers reclaiming its 8 KB stack to that core's idle task, which does not
+// necessarily run before the very next session tries to allocate an
+// identically-sized stack for the replacement task. That race is what
+// produced this bug - confirmed by instrumenting the create call: the
+// *first* session after a boot succeeded every time
+// (xTaskCreatePinnedToCore returned pdPASS, ~31 KB free internal RAM, an
+// ~8.5 KB block available), and the *second*, moments later, reliably
+// returned pdFAIL/-1 with internal RAM barely reduced from the first
+// session's post-teardown level and the largest free block stuck at 7680
+// bytes - just under the 8192 the new stack needed. The return value was
+// never checked, so audio_buf.task silently stayed NULL, nothing ever read
+// from the ring buffer again, and every frame after that timed out and got
+// discarded in rtp.c. Keeping one task alive for good removes the repeated
+// alloc/free cycle that raced the idle task, rather than trying to win the
+// race with a bigger stack or a retry loop.
 static void audio_output_task(void *arg) {
     ESP_LOGD(TAG, "Audio output task started");
 
@@ -65,7 +89,18 @@ static void audio_output_task(void *arg) {
     // and one that is not says so before it overflows rather than after.
     UBaseType_t stack_min = (UBaseType_t) -1;
 
-    while (audio_buf.running) {
+    for (;;) {
+        if (!audio_buf.running) {
+            // Session torn down (or none started yet). Confirm idleness to
+            // whoever's waiting in audio_buffer_stop() and go back to sleep -
+            // this is the one safe point for audio_buffer_deinit() to free
+            // audio_buf.mutex/frames out from under this task, since nothing
+            // below this branch touches either.
+            if (audio_buf.idle_sem) xSemaphoreGive(audio_buf.idle_sem);
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
+
         UBaseType_t stack_now = uxTaskGetStackHighWaterMark(NULL);
         if (stack_now < stack_min) {
             stack_min = stack_now;
@@ -224,10 +259,9 @@ static void audio_output_task(void *arg) {
             xSemaphoreGive(audio_buf.mutex);
             vTaskDelay(pdMS_TO_TICKS(10));
         }
+        // Loop forever - see the function comment. audio_buf.running toggles
+        // this task between working and idling; it never exits.
     }
-
-    ESP_LOGD(TAG, "Audio output task exiting");
-    vTaskSuspend(NULL);
 }
 
 void audio_buffer_init(audio_output_callback_t output_cb, void *user_ctx,
@@ -243,7 +277,14 @@ void audio_buffer_init(audio_output_callback_t output_cb, void *user_ctx,
     if (audio_buf.tap_scratch) free(audio_buf.tap_scratch);
     if (audio_buf.mutex) vSemaphoreDelete(audio_buf.mutex);
 
+    // audio_output_task() and its idle handshake persist across sessions
+    // (see the comment on that function) - preserve them through the reset
+    // below instead of losing the handle and orphaning a running task.
+    TaskHandle_t saved_task = audio_buf.task;
+    SemaphoreHandle_t saved_idle_sem = audio_buf.idle_sem;
     memset(&audio_buf, 0, sizeof(audio_buf));
+    audio_buf.task = saved_task;
+    audio_buf.idle_sem = saved_idle_sem;
 
     // Store callback
     audio_buf.output_cb = output_cb;
@@ -299,26 +340,69 @@ void audio_buffer_start(void) {
     audio_buf.write_idx = 0;
     audio_buf.start_time = 0;
 
-    // Upstream used 4096. That overflowed on the first real stream this
-    // receiver ever decoded, immediately after RECORD - the crash lands as
-    // soon as playback starts, which is when output_cb() first runs. The
-    // depth is in that callback, not in this file: it leads into this
-    // project's own ES8311/I2S sink (modules/audio). Two of the 2 KiB
-    // scratch buffers this function's task used to keep on the stack were
-    // moved to flash and PSRAM in the same change, so the extra 4 KiB here
-    // is paid for out of internal RAM that was just given back rather than
-    // taken from anywhere else. Sized provisionally: the task now reports
-    // its own high water mark, so the next reading replaces this guess with
-    // a measurement.
-    xTaskCreatePinnedToCore(
-        audio_output_task,
-        "audio_output",
-        8192,
-        NULL,
-        3,
-        &audio_buf.task,
-        1
-    );
+    // The output task is created once and reused for every later session -
+    // see the comment on audio_output_task(). Its idle handshake semaphore
+    // is created alongside it, on the same one-time path.
+    if (!audio_buf.task) {
+        audio_buf.idle_sem = xSemaphoreCreateBinary();
+        if (!audio_buf.idle_sem) {
+            ESP_LOGE(TAG, "Failed to create idle semaphore");
+            audio_buf.running = false;
+            return;
+        }
+
+        // Upstream used 4096. That overflowed on the first real stream this
+        // receiver ever decoded, immediately after RECORD - the crash lands
+        // as soon as playback starts, which is when output_cb() first runs.
+        // The depth is in that callback, not in this file: it leads into
+        // this project's own ES8311/I2S sink (modules/audio). Two of the
+        // 2 KiB scratch buffers this function's task used to keep on the
+        // stack were moved to flash and PSRAM in the same change, so the
+        // extra 4 KiB here is paid for out of internal RAM that was just
+        // given back rather than taken from anywhere else. Sized
+        // provisionally: the task now reports its own high water mark, so
+        // the next reading replaces this guess with a measurement.
+        //
+        // An 8 KB contiguous block of internal RAM is genuinely tight on
+        // this board even at boot - measured free-but-fragmented failures
+        // here with nothing else in this file running yet, caused by
+        // whatever else (wifi, TLS for the market/weather fetch, LVGL) is
+        // transiently holding internal RAM at that instant. Since this only
+        // ever needs to succeed once for the rest of the process's life
+        // (see audio_output_task()'s comment), a few retries across a short
+        // window costs nothing and rides out exactly that kind of transient
+        // contention rather than condemning every future session over one
+        // bad moment.
+        BaseType_t created = pdFAIL;
+        for (int attempt = 0; attempt < 5; attempt++) {
+            created = xTaskCreatePinnedToCore(
+                audio_output_task,
+                "audio_output",
+                8192,
+                NULL,
+                3,
+                &audio_buf.task,
+                1
+            );
+            if (created == pdPASS) break;
+            audio_buf.task = NULL;
+            vTaskDelay(pdMS_TO_TICKS(20));
+        }
+        // This return value used to go unchecked, which is how the bug this
+        // task fixes stayed invisible: creation failing left audio_buf.task
+        // NULL with nothing logged, so the buffer just filled up and every
+        // frame after it got discarded in rtp.c with no clue why. Now it is
+        // one task, created once, so a failure here is a real startup
+        // problem rather than something that can happen mid-stream.
+        if (created != pdPASS) {
+            ESP_LOGE(TAG, "Failed to create audio_output task after retries (result=%d)", (int) created);
+            audio_buf.task = NULL;
+            vSemaphoreDelete(audio_buf.idle_sem);
+            audio_buf.idle_sem = NULL;
+            audio_buf.running = false;
+            return;
+        }
+    }
 
     ESP_LOGI(TAG, "Audio playback started");
 }
@@ -350,10 +434,22 @@ void audio_buffer_stop(void) {
 
     audio_buf.running = false;
 
-    if (audio_buf.task) {
-        vTaskDelay(pdMS_TO_TICKS(100));
-        vTaskDelete(audio_buf.task);
-        audio_buf.task = NULL;
+    // The task is not deleted (see audio_output_task()'s comment) - just
+    // confirmed idle before the caller (audio_buffer_deinit(), right after
+    // this returns) frees audio_buf.mutex/frames out from under it. Bounded
+    // wait, not a blind sleep: the task signals as soon as it observes
+    // running==false, which in every measured case is within a couple of
+    // 10 ms polls. 200 ms is generous headroom over that, kept as a backstop
+    // rather than the norm - if it ever fires, something is genuinely stuck
+    // (e.g. output_cb() blocking with the mutex held, which the code does
+    // not do today) and teardown must not pretend everything is fine: log
+    // loudly rather than silently reusing state a still-running task might
+    // touch.
+    if (audio_buf.idle_sem) {
+        if (xSemaphoreTake(audio_buf.idle_sem, pdMS_TO_TICKS(200)) != pdTRUE) {
+            ESP_LOGE(TAG, "audio_output task did not confirm idle within 200ms - "
+                          "proceeding anyway, next session may be affected");
+        }
     }
 
     ESP_LOGI(TAG, "Audio playback stopped");
