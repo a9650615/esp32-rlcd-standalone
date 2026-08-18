@@ -398,7 +398,24 @@ char *kd_lookup(key_data_t *kd, char *key)
 bool kd_add(key_data_t *kd, char *key, char *data)
 {
 	int i = 0;
-	while (kd && kd[i].key) i++;
+
+	// Callers pass kd_lookup() results straight in, and kd_lookup() returns
+	// NULL for a header that is not there - so strdup(data) was strdup(NULL),
+	// which on newlib dereferences NULL inside strlen(). raop.c:423 does
+	// exactly this with kd_lookup(headers, "CSeq"), which means an RTSP
+	// request that simply omits CSeq crashed the whole board. That request is
+	// three lines long and needs no authentication, on a port this firmware
+	// listens on by design, so it was a remote reset for anyone on the
+	// network rather than only a bug a well-behaved sender would avoid.
+	//
+	// Guarded here rather than at the call site: the Apple-Response additions
+	// pass base64_encode() output, which is also NULL on failure, and every
+	// caller routes through this one function. Nothing is added when there is
+	// no value to add - an absent header stays absent in the response, which
+	// is more honest than echoing an empty one.
+	if (!kd || !key || !data) return false;
+
+	while (kd[i].key) i++;
 
 	kd[i].key = strdup(key);
 	kd[i].data = strdup(data);
