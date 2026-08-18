@@ -51,10 +51,24 @@ constexpr int kMaxSwatchSize = 64;
 // original one did. One static backing array per swatch, sized for the
 // largest size ramp entry and reused as-is (smaller swatches simply use
 // fewer of their own bytes).
-uint8_t g_density_bitmaps[kSwatchCount][i1_canvas_pixel_offset() +
-                                       kMaxSwatchSize * kMaxSwatchSize];
-uint8_t g_size_ramp_bitmaps[kSwatchCount][i1_canvas_pixel_offset() +
-                                         kMaxSwatchSize * kMaxSwatchSize];
+//
+// i1_canvas_storage_bound(), not `kMaxSwatchSize * kMaxSwatchSize`: that
+// spelling is width x height *bytes*, which is the size of an 8-bit-per-pixel
+// buffer. These are I1 - one bit per pixel - so it over-allocated by a factor
+// of eight, and at six swatches in two arrays that came to 43 KB of .bss.
+// This board has about 100 KB of internal DRAM to spend, so it was not merely
+// wasteful: it left too little for net_log to create its 4 KiB sender task,
+// and the log transport simply stopped coming up. A debug screen nobody had
+// opened cost the ability to read any log at all.
+uint8_t g_density_bitmaps[kSwatchCount]
+                         [i1_canvas_storage_bound(kMaxSwatchSize,
+                                                  kMaxSwatchSize)];
+uint8_t g_size_ramp_bitmaps[kSwatchCount]
+                           [i1_canvas_storage_bound(kMaxSwatchSize,
+                                                    kMaxSwatchSize)];
+static_assert(sizeof(g_density_bitmaps[0]) ==
+                  i1_canvas_storage_bound(kMaxSwatchSize, kMaxSwatchSize),
+              "swatch backing store must match the I1 bound it is sized by");
 
 void set_bit(uint8_t* buffer, int stride, int x, int y) {
   buffer[y * stride + x / 8] |= static_cast<uint8_t>(0x80 >> (x & 7));
@@ -90,8 +104,8 @@ lv_obj_t* swatch_canvas(lv_obj_t* parent, uint8_t* buffer, int size, Rect bounds
 // label centered under each. Returns the y just below the captions, so the
 // caller can stack the next row under it.
 int build_ramp_row(lv_obj_t* screen, const Rect& safe, int row_y,
-                   uint8_t (*bitmaps)[i1_canvas_pixel_offset() +
-                                      kMaxSwatchSize * kMaxSwatchSize],
+                   uint8_t (*bitmaps)[i1_canvas_storage_bound(kMaxSwatchSize,
+                                                              kMaxSwatchSize)],
                    const int* sizes, const int* levels, const char* const* labels,
                    int row_height) {
   const int cell_width = safe.width / kSwatchCount;

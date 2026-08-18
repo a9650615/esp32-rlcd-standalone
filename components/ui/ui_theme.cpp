@@ -386,28 +386,16 @@ lv_obj_t* bind_i1_canvas(lv_obj_t* parent, int x, int y, int width, int height,
 
 namespace {
 
-// Mirrors lv_draw_buf_width_to_stride()'s own formula for LV_COLOR_FORMAT_I1
-// (see width_to_stride() in LVGL's lv_draw_buf.c: round the 1-bit-per-pixel
-// byte width up to LV_DRAW_BUF_STRIDE_ALIGN) so the two fixed backing
-// stores below can be *proven* sufficient at compile time instead of only
-// ever being caught by their own runtime bounds checks - the same
-// static_assert convention every other hardcoded size in this codebase
+// i1_canvas_stride_bound()/i1_canvas_storage_bound() (ui_theme.hpp) are the
+// compile-time mirrors of i1_canvas_stride()/i1_canvas_storage_bytes() that
+// let the fixed backing stores below be *proven* sufficient at compile time
+// instead of only ever being caught by their own runtime bounds checks - the
+// same static_assert convention every other hardcoded size in this codebase
 // already follows (kChargingBoltRows above, ui_strings.cpp's kRows,
-// history.hpp's HistoryBlob). i1_canvas_stride() remains the one function
-// every real write actually calls; this is a compile-time mirror of the
-// same arithmetic, not a replacement for it, and LV_DRAW_BUF_STRIDE_ALIGN is
-// the one piece of that formula that could change under this project - it
-// is read by name here rather than assumed to stay 1.
-constexpr int i1_canvas_stride_bound(int width) {
-  const int width_bytes = (width + 7) / 8;  // 1 bit/pixel, rounded up
-  return ((width_bytes + LV_DRAW_BUF_STRIDE_ALIGN - 1) / LV_DRAW_BUF_STRIDE_ALIGN) *
-         LV_DRAW_BUF_STRIDE_ALIGN;
-}
-constexpr std::size_t i1_canvas_storage_bound(int width, int height) {
-  return static_cast<std::size_t>(i1_canvas_pixel_offset()) +
-        static_cast<std::size_t>(i1_canvas_stride_bound(width)) *
-            static_cast<std::size_t>(height);
-}
+// history.hpp's HistoryBlob). They started out private here; they are in the
+// header now because render_dither_card.cpp needed the same answer and,
+// lacking it, spelled the size `width * height` - the byte count for eight
+// bits per pixel, so eight times too large.
 
 // Generous fixed backing store for the charging overlay canvas - LVGL's
 // I1-format canvas buffer must outlive the canvas object, so it cannot be a
