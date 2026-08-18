@@ -38,6 +38,8 @@ static struct {
     audio_pcm_tap_cb_t tap_cb;
     void *tap_user_ctx;
     float *volume_ptr;
+    // Scratch for the PCM tap, in PSRAM - see its use in audio_output_task().
+    uint8_t *tap_scratch;
 } audio_buf = {0};
 
 static struct {
@@ -52,7 +54,19 @@ static uint32_t gettime_ms(void) {
 static void audio_output_task(void *arg) {
     ESP_LOGD(TAG, "Audio output task started");
 
+    // Same instrumentation raop.c's rtsp_thread() and rtp.c already carry:
+    // report only on a new minimum, so a task that is comfortable stays quiet
+    // and one that is not says so before it overflows rather than after.
+    UBaseType_t stack_min = (UBaseType_t) -1;
+
     while (audio_buf.running) {
+        UBaseType_t stack_now = uxTaskGetStackHighWaterMark(NULL);
+        if (stack_now < stack_min) {
+            stack_min = stack_now;
+            ESP_LOGI(TAG, "audio_output task stack high water mark %u bytes free (new minimum)",
+                     (unsigned) stack_min);
+        }
+
         // Wait until we have a start time
         if (audio_buf.start_time == 0) {
             vTaskDelay(pdMS_TO_TICKS(10));
@@ -76,9 +90,13 @@ static void audio_output_task(void *arg) {
 
         // Handle pause frames (insert silence)
         if (timing_correction.pause_frames > 0) {
-            uint8_t silence[MAX_FRAME_SIZE];
-            memset(silence, 0, 1408); // 352 samples * 4 bytes
-            audio_buf.output_cb(silence, 1408, audio_buf.user_ctx);
+            // const, so it lives in flash and costs no RAM of any kind.
+            // Upstream declared this 2048-byte array as automatic storage in
+            // a task with a 4096-byte stack; see UPSTREAM.md. The callback
+            // takes a const pointer and only reads, and the contents are
+            // zeroes that never change, so there is nothing to write here.
+            static const uint8_t silence[1408] = {0}; // 352 samples * 4 bytes
+            audio_buf.output_cb(silence, sizeof(silence), audio_buf.user_ctx);
             timing_correction.pause_frames--;
             continue;
         }
@@ -99,7 +117,13 @@ static void audio_output_task(void *arg) {
                     frame->playtime > 0 && now >= frame->playtime - TAP_LOOKAHEAD_MS) {
                     frame->tapped = true;
                     // Copy data before releasing mutex — tap must not block
-                    uint8_t tap_data[MAX_FRAME_SIZE];
+                    // PSRAM, allocated once in audio_buffer_init(), for the
+                    // same reason as `silence` above: 2 KiB of automatic
+                    // storage does not fit this task's 4 KiB stack alongside
+                    // the tap callback, and internal RAM is the scarcest
+                    // memory on this board - moving it to .bss would have
+                    // spent exactly the same bytes. See UPSTREAM.md.
+                    uint8_t *tap_data = audio_buf.tap_scratch;
                     memcpy(tap_data, frame->data, frame->len);
                     size_t tap_len = frame->len;
                     xSemaphoreGive(audio_buf.mutex);
@@ -176,6 +200,7 @@ void audio_buffer_init(audio_output_callback_t output_cb, void *user_ctx,
 
     // Clean up any partial state
     if (audio_buf.frames) free(audio_buf.frames);
+    if (audio_buf.tap_scratch) free(audio_buf.tap_scratch);
     if (audio_buf.mutex) vSemaphoreDelete(audio_buf.mutex);
 
     memset(&audio_buf, 0, sizeof(audio_buf));
@@ -196,11 +221,22 @@ void audio_buffer_init(audio_output_callback_t output_cb, void *user_ctx,
 
     memset(audio_buf.frames, 0, BUFFER_FRAMES * sizeof(audio_frame_t));
 
+    audio_buf.tap_scratch = heap_caps_malloc(MAX_FRAME_SIZE,
+                                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!audio_buf.tap_scratch) {
+        ESP_LOGE(TAG, "Failed to allocate tap scratch in PSRAM");
+        free(audio_buf.frames);
+        audio_buf.frames = NULL;
+        return;
+    }
+
     audio_buf.mutex = xSemaphoreCreateMutex();
     if (!audio_buf.mutex) {
         ESP_LOGE(TAG, "Failed to create mutex");
         free(audio_buf.frames);
         audio_buf.frames = NULL;
+        free(audio_buf.tap_scratch);
+        audio_buf.tap_scratch = NULL;
         return;
     }
 
@@ -223,10 +259,21 @@ void audio_buffer_start(void) {
     audio_buf.write_idx = 0;
     audio_buf.start_time = 0;
 
+    // Upstream used 4096. That overflowed on the first real stream this
+    // receiver ever decoded, immediately after RECORD - the crash lands as
+    // soon as playback starts, which is when output_cb() first runs. The
+    // depth is in that callback, not in this file: it leads into this
+    // project's own ES8311/I2S sink (modules/audio). Two of the 2 KiB
+    // scratch buffers this function's task used to keep on the stack were
+    // moved to flash and PSRAM in the same change, so the extra 4 KiB here
+    // is paid for out of internal RAM that was just given back rather than
+    // taken from anywhere else. Sized provisionally: the task now reports
+    // its own high water mark, so the next reading replaces this guess with
+    // a measurement.
     xTaskCreatePinnedToCore(
         audio_output_task,
         "audio_output",
-        4096,
+        8192,
         NULL,
         3,
         &audio_buf.task,

@@ -31,6 +31,38 @@ Two separate upstreams, vendored into two separate subdirectories.
   `modules/airplay/secrets/raop_private_key.pem` (`CMakeLists.txt`'s
   `target_add_binary_data(..., TEXT)` call, checked and fatal-erred on
   first, before that call runs, if the file is missing).
+- **`src/audio_buffer.c`: `audio_output_task()`'s stack raised to 8192, its
+  two `MAX_FRAME_SIZE` scratch buffers moved out of internal RAM, and the task
+  instrumented.** Upstream creates this task with a 4096-byte stack and keeps
+  two 2048-byte scratch arrays (`silence`, `tap_data`) in automatic storage
+  inside it. It overflowed on the first real stream this receiver ever
+  decoded - `***ERROR*** A stack overflow in task audio_output has been
+  detected`, reproducible on every attempt, at any stream length, landing
+  immediately after RECORD.
+
+  The depth is not in this file. It is in `output_cb()`, which leads into this
+  project's own ES8311/I2S sink (`modules/audio`), and it only runs once
+  playback starts - which is why the crash arrives with RECORD rather than
+  with SETUP. Measured after the fix, the task's high water mark settles at
+  3,764 bytes free of 8192, so it uses about 4,428: upstream's 4096 could
+  never have been enough, whatever the scratch buffers did.
+
+  The buffers were moved anyway, because they should not sit in internal RAM
+  at all. `silence` is now `static const` and lives in flash, costing no RAM
+  of any kind - the callbacks take a const pointer and the contents are
+  zeroes that never change. `tap_data` is now a PSRAM allocation made once in
+  `audio_buffer_init()` beside the frame ring, following this file's own
+  convention for large buffers. Making them `static` was tried first and
+  rejected on measurement: it moved 4 KiB from the stack to `.bss`, which is
+  the same internal RAM, and cost exactly as much (79,571 free after startup
+  before, 71,055 after). Between them, the two moves pay for the 4 KiB the
+  stack grew by.
+
+  `uxTaskGetStackHighWaterMark()` reporting was added at the same time,
+  matching what `raop.c` and `rtp.c` already do, so the next shortage in this
+  task is visible before it is fatal rather than after. It is what turned
+  8192 from a guess into a number with a measurement behind it.
+
 - **`src/audio_buffer.h` / `src/audio_buffer.c` / `src/raop_core.c`: buffer
   depth cut from 512 frames to 384.** Upstream sizes both its RTP jitter
   buffer (`raop_core.c`'s `RAOP_INT_SETUP` PSRAM allocation) and its decoded-
