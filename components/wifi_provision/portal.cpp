@@ -10,6 +10,8 @@
 #include <lwip/inet.h>
 #include <esp_heap_caps.h>
 #include <mbedtls/base64.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -45,6 +47,59 @@ constexpr size_t kMaxQuery = 32;
 constexpr uint32_t kOtaConfirmTimeoutMs = 5 * 60'000;
 
 httpd_handle_t server_ = nullptr;
+
+// PROVISIONAL pending hardware measurement (see the uxTaskGetStackHighWaterMark()
+// logging in ota_post_handler below) - same "measure, don't guess" reasoning as
+// modules/airplay/esp-raop-receiver/src/raop.c's own RTSP_STACK_SIZE comment,
+// which also started as an unmeasured guess and had to be corrected once real
+// numbers came in.
+//
+// HTTPD_DEFAULT_CONFIG's stack_size is 4096 and that overflowed: a crash log
+// showed the overflow inside esp_ota_end()'s esp_image_verify() path, called
+// directly from ota_post_handler below, once an image grew past what 4096 had
+// apparently been surviving on before. esp_image_verify() does no TLS and no
+// large stack buffers of its own (esp_image_metadata_t, the only sizeable
+// local, is a few hundred bytes) - it is a deep call chain
+// (esp_ota_end -> ota_verify_partition -> esp_image_verify -> image_load ->
+// process_segments -> process_segment -> process_segment_data -> the SHA-256
+// finish), and 4096 was not enough for that chain plus everything
+// esp_http_server itself already keeps on the same frame.
+//
+// This value must stay comfortably clear of what update_post_handler needs
+// too: it also runs on this same task, and unlike ota_url_post_handler (which
+// hands the download off to ota_pull.cpp's own 16 KiB task and never touches
+// this stack) update_post_handler calls ota::check_latest_release() directly,
+// which does a full TLS handshake against GitHub. This codebase's own
+// precedent for "TLS handshake + JSON parse" is 16384 bytes
+// (main/app_main.cpp's update_check_task, run_update_action()'s own comment) -
+// far more than this budget can afford in internal DRAM. This number has NOT
+// been sized for that path; it only covers the OTA-image-verify path that
+// actually crashed. If hardware data shows the release-check path is also
+// tight, the fix is likely to move it off this task (mirroring
+// update_check_task's own on-demand PSRAM task) rather than to grow this
+// further - see portal_start()'s own comment.
+//
+// 6144 B chosen (default 4096 + 2048): internal DRAM is scarce enough that
+// doubling to 8192 was rejected as extravagant here. Per the crash report,
+// largest_free_block measures 17,408 at the point AirPlay initialises, and
+// portal_start() (below) runs before that point in the boot sequence
+// (wifi_provision::start() happens before airplay_startup_task is created -
+// see main/app_main.cpp), so every byte added here is subtracted from that
+// same 17,408 before raop_create() gets to claim its 11,420. +2048 leaves
+// ~3,940 B of headroom after raop_create(); +4096 (doubling) would have left
+// only ~1,892 B, which felt too thin to spend on a guess.
+constexpr size_t kHttpdTaskStackBytes = 6144;
+
+// Logged only when a new minimum is seen - same shape as raop.c/rtp.c's own
+// stack instrumentation - because ota_post_handler runs once per upload
+// attempt, not in a tight loop, so every call is worth comparing rather than
+// worth suppressing.
+//
+// CONFIG_FREERTOS_CHECK_STACKOVERFLOW_CANARY (the mechanism that caught the
+// original overflow) only samples at a context switch, so a run that never
+// panics is still weaker evidence than this high-water mark: a canary that
+// happens not to be scheduled out mid-overrun would say nothing at all.
+UBaseType_t g_httpd_stack_min = static_cast<UBaseType_t>(-1);
 
 // NOTE: the upload handler blocks - for the confirmation window, then for the
 // transfer - and esp_http_server runs one task serially, so while it waits the
@@ -550,6 +605,18 @@ esp_err_t ota_post_handler(httpd_req_t* req) {
   }
 
   const esp_err_t finished = session.finish();
+  // Right after esp_ota_end()'s esp_image_verify() - the path that actually
+  // overflowed the old 4 KiB default - regardless of whether it passed, since
+  // a rejected image still ran the same verification code on this stack.
+  const UBaseType_t stack_now = uxTaskGetStackHighWaterMark(nullptr);
+  if (stack_now < g_httpd_stack_min) {
+    g_httpd_stack_min = stack_now;
+    ESP_LOGI(kTag,
+             "httpd task stack high water mark %u bytes free (new minimum, "
+             "of %u configured)",
+             static_cast<unsigned>(stack_now),
+             static_cast<unsigned>(kHttpdTaskStackBytes));
+  }
   if (finished != ESP_OK) {
     const char* reason = finished == ESP_ERR_INVALID_SIZE
                              ? "Upload ended before a complete header"
@@ -1016,6 +1083,17 @@ void portal_start() {
   // release check waits on GitHub's TLS handshake.
   config.recv_wait_timeout = 20;
   config.send_wait_timeout = 20;
+  // See kHttpdTaskStackBytes's own comment for the derivation and the
+  // caveats. Must stay internal DRAM - HTTPD_DEFAULT_CONFIG's task_caps
+  // (MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT, left untouched below) already
+  // guarantees that, and it must: ota_post_handler calls esp_ota_write(),
+  // which disables the flash cache while it runs, and a task whose stack
+  // lives in PSRAM faults the instant it is scheduled while that cache is
+  // down. Do not move this to PSRAM to buy more headroom - see
+  // freertos/Kconfig's FREERTOS_TASK_CREATE_ALLOW_EXT_MEM help text, and
+  // ota_pull.cpp's pull_task, which spells out the same rule for its own
+  // task.
+  config.stack_size = kHttpdTaskStackBytes;
   if (httpd_start(&server_, &config) != ESP_OK) {
     ESP_LOGE(kTag, "httpd_start failed; the setup portal will not answer");
     return;

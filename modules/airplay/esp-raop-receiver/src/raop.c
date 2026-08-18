@@ -402,13 +402,19 @@ static bool handle_rtsp(raop_ctx_t *ctx, int sock)
 	int len;
 	bool success = true;
 
-	LOG_DEBUG("[%p]: received %s", ctx, method);
-
 	if (!http_parse(sock, method, headers, &body, &len)) {
 		if (body) free(body);
 		kd_free(headers);
 		return false;
 	}
+
+	// Upstream logged this line *before* http_parse() filled `method`, so it
+	// printed the empty initialiser every time. That is worse than logging
+	// nothing: an empty method reads as "the request did not parse", which is
+	// exactly the wrong conclusion to hand someone debugging a session that
+	// went nowhere. Moved after the parse, the only point at which the value
+	// exists.
+	LOG_DEBUG("[%p]: received %s", ctx, method);
 
 	// Handle Apple-Challenge
 	apple_challenge(ctx, sock, headers, resp);

@@ -231,6 +231,26 @@ esp_err_t airplay_init() {
     return ESP_ERR_INVALID_STATE;
   }
 
+#ifndef NDEBUG
+  // The RTSP exchange is the only place a failed session says anything about
+  // itself, and upstream logs it at ESP_LOGD - which means at this project's
+  // default level it is not merely hidden but compiled out. Raising it for
+  // this one tag is the difference between "the sender connected and left"
+  // and knowing which method it got to.
+  //
+  // Only this tag: raising CONFIG_LOG_DEFAULT_LEVEL instead was tried, and
+  // spi_master's per-transaction debug lines alone starved the portal's
+  // socket until port 80 stopped answering - on a board whose firmware
+  // upload shares that port.
+  //
+  // No effect unless CONFIG_LOG_MAXIMUM_LEVEL is DEBUG or higher, because
+  // that is what decides whether ESP_LOGD exists in the binary at all.
+  // Deliberately not asserted here: the useful build is the verbose one, and
+  // a board that cannot say why a session failed is still better than one
+  // that refuses to boot over a logging preference.
+  esp_log_level_set("raop", ESP_LOG_DEBUG);
+#endif
+
   raop_config_t config = {};
   config.audio_output_cb = feed_audio;
   config.event_cb = handle_event;
