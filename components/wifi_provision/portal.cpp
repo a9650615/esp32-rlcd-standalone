@@ -12,6 +12,7 @@
 #include <mbedtls/base64.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
@@ -944,6 +945,53 @@ esp_err_t dither_card_get_handler(httpd_req_t* req) {
 
 const httpd_uri_t kDitherCardGet = {"/dither-card", HTTP_GET,
                                     dither_card_get_handler, nullptr};
+
+// The one thing three silent OTA pushes could not answer: whether the image
+// just offered actually landed, or the board quietly rolled back to what it
+// had. `/update` already carries this same version and hash, but it sits
+// behind the page password, so it cannot be the thing scripts/remote.sh
+// polls right after a push - a script that had to know the password would
+// just be moving the leak from the log (see the req->uri rule above) into
+// argv. esp_app_get_description() computes nothing new; this only prints
+// what every image already carries.
+//
+// Deliberately unauthenticated, and that deserves being argued rather than
+// assumed. It matches the precedent /shot and /dither-card already set:
+// debug builds only, GET, cannot corrupt or reconfigure anything, so no
+// button-press gate. What it exposes to anyone on the LAN is the running
+// firmware's version string and its ELF SHA-256 - genuinely new information,
+// not available from any other unauthenticated route. Weighed against that:
+// /shot already hands the same LAN audience a live render of the entire
+// panel, which for this device includes account-adjacent state the version
+// string does not (and /shot itself refuses to run while the setup page is
+// showing the portal password, which this route has no equivalent secret to
+// protect). A build hash also is not attacker-actionable the way, say, a
+// stack trace or memory address would be - it does not target a specific
+// firmware bug, it just names which firmware is running. On that basis this
+// route is no riskier than what is already shipped, but it is still a LAN
+// fingerprinting surface, and the honest caveat is that this codebase has
+// not needed one before now; if the network this board sits on is ever less
+// trusted than "my house," this is a route worth re-gating.
+esp_err_t build_get_handler(httpd_req_t* req) {
+  const esp_app_desc_t* desc = esp_app_get_description();
+  if (desc == nullptr) {
+    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                        "No application descriptor available");
+    return ESP_OK;
+  }
+  char sha_hex[sizeof(desc->app_elf_sha256) * 2 + 1];
+  for (size_t i = 0; i < sizeof(desc->app_elf_sha256); ++i) {
+    std::snprintf(sha_hex + i * 2, 3, "%02x", desc->app_elf_sha256[i]);
+  }
+  char body[128];
+  std::snprintf(body, sizeof(body), "version=%s\nsha256=%s\n", desc->version,
+               sha_hex);
+  httpd_resp_set_type(req, "text/plain");
+  httpd_resp_sendstr(req, body);
+  return ESP_OK;
+}
+
+const httpd_uri_t kBuildGet = {"/build", HTTP_GET, build_get_handler, nullptr};
 #endif
 
 const httpd_uri_t kRootGet = {"/", HTTP_GET, root_get_handler, nullptr};
@@ -963,7 +1011,7 @@ void portal_start() {
   // registration past the limit fails by returning an error rather than by
   // complaining, so a route added as the ninth would simply 404 with nothing
   // to explain why.
-  config.max_uri_handlers = 13;
+  config.max_uri_handlers = 14;
   // A firmware upload holds the socket for the length of the transfer, and a
   // release check waits on GitHub's TLS handshake.
   config.recv_wait_timeout = 20;
@@ -978,7 +1026,7 @@ void portal_start() {
 #ifndef NDEBUG
                                  &kShotGet,    &kRestartPost, &kBeepPost,
                                  &kBeepSweepPost, &kDitherCardGet,
-                                 &kForceChargingGet,
+                                 &kForceChargingGet, &kBuildGet,
 #endif
   };
   for (const httpd_uri_t* route : routes) {
