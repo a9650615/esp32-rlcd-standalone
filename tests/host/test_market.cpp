@@ -432,6 +432,77 @@ HOST_TEST(taiwan_refresh_interval_is_fast_only_during_hours_on_the_primary) {
             market::kRefreshIntervalSeconds);
 }
 
+// --- market_schedule.hpp: pure "when to refresh US" policy -----------------
+//
+// Real numbers from the response that motivated this: 2026-08-18's US
+// regular session, start 1787059800, end 1787083200 (epoch seconds, as the
+// source itself reported them - no timezone or DST anywhere in this test
+// for the same reason there is none in the code).
+
+HOST_TEST(us_refresh_lands_just_after_an_open_the_flat_interval_would_skip) {
+  constexpr long long kOpen = 1'787'059'800;
+
+  // Ten minutes before the open. The flat interval would next look 30
+  // minutes from now - 20 minutes into a session it would still be
+  // rendering as yesterday's. Sleep to the open plus the warm-up instead.
+  EXPECT_EQ(market::us_refresh_interval_seconds(kOpen - 600, kOpen),
+            600 + market::kUsOpenWarmupSeconds);
+
+  // One second before the open: same rule, not a special case.
+  EXPECT_EQ(market::us_refresh_interval_seconds(kOpen - 1, kOpen),
+            1 + market::kUsOpenWarmupSeconds);
+}
+
+HOST_TEST(us_refresh_inside_the_warmup_window_is_floored_not_a_hot_loop) {
+  constexpr long long kOpen = 1'787'059'800;
+  // At the open itself, the warm-up is the whole sleep.
+  EXPECT_EQ(market::us_refresh_interval_seconds(kOpen, kOpen),
+            market::kUsOpenWarmupSeconds);
+  // A second before the warm-up ends the remaining wait is 1 second. Two
+  // HTTPS round trips a second apart is a battery drain and a way to get
+  // rate-limited, so the floor takes over - the only place it can.
+  EXPECT_EQ(market::us_refresh_interval_seconds(
+                kOpen + market::kUsOpenWarmupSeconds - 1, kOpen),
+            60);
+}
+
+HOST_TEST(us_refresh_is_the_flat_interval_whenever_there_is_no_open_to_meet) {
+  constexpr long long kOpen = 1'787'059'800;
+  constexpr long long kClose = 1'787'083'200;
+
+  // Mid-session: this page is not polled faster during trading hours, only
+  // phased to start on time. The request budget is unchanged.
+  EXPECT_EQ(market::us_refresh_interval_seconds(kOpen + 3600, kOpen),
+            market::kRefreshIntervalSeconds);
+  // After the close, still reading the same session's start.
+  EXPECT_EQ(market::us_refresh_interval_seconds(kClose + 3600, kOpen),
+            market::kRefreshIntervalSeconds);
+  // Overnight, with the source already reporting tomorrow's open: too far
+  // out to align to in one sleep.
+  EXPECT_EQ(market::us_refresh_interval_seconds(kOpen - 12 * 3600, kOpen),
+            market::kRefreshIntervalSeconds);
+  // Exactly one interval out, the boundary itself: still the flat value,
+  // and the sleep after it is the one that lands short.
+  EXPECT_EQ(
+      market::us_refresh_interval_seconds(
+          kOpen + market::kUsOpenWarmupSeconds - market::kRefreshIntervalSeconds,
+          kOpen),
+      market::kRefreshIntervalSeconds);
+}
+
+HOST_TEST(us_refresh_falls_back_to_the_flat_interval_without_a_clock) {
+  constexpr long long kOpen = 1'787'059'800;
+  // No synced clock (the caller passes 0 rather than guessing an instant),
+  // and a response that carried no session bounds. Neither may shorten a
+  // sleep on arithmetic over a number that means nothing.
+  EXPECT_EQ(market::us_refresh_interval_seconds(0, kOpen),
+            market::kRefreshIntervalSeconds);
+  EXPECT_EQ(market::us_refresh_interval_seconds(kOpen - 600, 0),
+            market::kRefreshIntervalSeconds);
+  EXPECT_EQ(market::us_refresh_interval_seconds(0, 0),
+            market::kRefreshIntervalSeconds);
+}
+
 // --- reduce_to_extremes: the whole point of this item ----------------------
 
 HOST_TEST(reduce_to_extremes_preserves_a_single_sharp_spike) {
@@ -630,4 +701,20 @@ HOST_TEST(more_raw_points_than_the_target_reduce_to_exactly_the_target) {
   EXPECT_TRUE(quote.has_intraday);
   EXPECT_EQ(static_cast<int>(quote.sample_count),
             static_cast<int>(app_core::kIntradaySampleCount));
+}
+
+HOST_TEST(session_start_is_reported_even_before_the_first_bar_exists) {
+  // The scheduler needs the open from a response taken before the session
+  // has produced anything to chart - the case that decides when to look
+  // again.
+  constexpr long long kStart = 1'700'000'000;
+  const std::string body =
+      yahoo_response_with_session(kStart, kStart + 270 * 60, /*bar_count=*/0);
+
+  market::IndexQuote quote;
+  const bool ok =
+      market::parse_yahoo_quote(body.data(), body.size(), "TEST", quote);
+  EXPECT_TRUE(ok);
+  EXPECT_TRUE(!quote.has_intraday);
+  EXPECT_TRUE(quote.session_start == kStart);
 }

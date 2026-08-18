@@ -49,6 +49,23 @@ struct IndexQuote {
   // last timestamp. Default 1.0 (no shrink) whenever that metadata is
   // missing or the session is not actively in progress.
   float session_elapsed_fraction = 1.0f;
+  // meta.currentTradingPeriod.regular.start, verbatim: the epoch second
+  // this response's own exchange says its regular session begins. 0 when
+  // the response did not carry it.
+  //
+  // Epoch seconds are the whole point - the same absolute scale the device
+  // clock already runs on, so "has the US session begun" is a comparison
+  // of two integers with no timezone, no DST rules, and no exchange
+  // calendar anywhere in it (see market_schedule.hpp's
+  // us_refresh_interval_seconds()). The response also names the zone
+  // ("EDT") and its offset; both are deliberately ignored here for the
+  // same reason civil_from_unix() ignores them in market_parse.cpp -
+  // applying one to the other turns a reported fact into a computed guess.
+  //
+  // Not a MarketData field: nothing on screen shows it. It only decides
+  // when to fetch again, which is market.hpp's us_session_start()'s job to
+  // carry.
+  long long session_start = 0;
 };
 
 // Parses a TWSE /v1/exchangeReport/MI_INDEX response (a JSON array covering

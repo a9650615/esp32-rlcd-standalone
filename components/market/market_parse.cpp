@@ -277,6 +277,7 @@ bool parse_yahoo_quote(const char* json, std::size_t length,
     // IndexQuote default (1.0) if any of this is missing; never fails the
     // quote.
     float session_elapsed_fraction = 1.0f;
+    long long session_start = 0;
     const cJSON* trading_period =
         cJSON_GetObjectItemCaseSensitive(meta, "currentTradingPeriod");
     const cJSON* regular_period =
@@ -293,6 +294,11 @@ bool parse_yahoo_quote(const char* json, std::size_t length,
             : nullptr;
     if (cJSON_IsNumber(period_start) && cJSON_IsNumber(period_end) &&
         period_end->valuedouble > period_start->valuedouble) {
+      // Reported as-is, whether or not the elapsed-fraction arithmetic
+      // below finds a timestamp to work with: the next-refresh decision
+      // needs the session's start even from a response taken before the
+      // session has produced a single bar.
+      session_start = static_cast<long long>(period_start->valuedouble);
       const cJSON* timestamps =
           cJSON_GetObjectItemCaseSensitive(result0, "timestamp");
       double last_timestamp = -1.0;
@@ -329,6 +335,7 @@ bool parse_yahoo_quote(const char* json, std::size_t length,
     parsed.samples = samples;
     parsed.sample_count = sample_count;
     parsed.session_elapsed_fraction = session_elapsed_fraction;
+    parsed.session_start = session_start;
 
     out = parsed;
     ok = true;
