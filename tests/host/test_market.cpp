@@ -589,19 +589,19 @@ HOST_TEST(session_elapsed_fraction_defaults_to_one_without_trading_period) {
 
 HOST_TEST(fewer_raw_points_than_the_target_copies_through_without_padding) {
   constexpr long long kStart = 1'700'000'000;
-  // kMinIntradayPoints (8) exactly - the smallest count that still counts
-  // as real, well under kIntradaySampleCount (64), so no reduction should
-  // happen at all.
+  // kMinIntradayPoints (2) exactly - the smallest count that still counts
+  // as real, i.e. the first minutes of a live session, well under
+  // kIntradaySampleCount (64), so no reduction should happen at all.
   const std::string body =
-      yahoo_response_with_session(kStart, kStart + 270 * 60, /*bar_count=*/8);
+      yahoo_response_with_session(kStart, kStart + 270 * 60, /*bar_count=*/2);
 
   market::IndexQuote quote;
   const bool ok =
       market::parse_yahoo_quote(body.data(), body.size(), "TEST", quote);
   EXPECT_TRUE(ok);
   EXPECT_TRUE(quote.has_intraday);
-  EXPECT_EQ(static_cast<int>(quote.sample_count), 8);
-  for (int i = 0; i < 8; ++i) {
+  EXPECT_EQ(static_cast<int>(quote.sample_count), 2);
+  for (int i = 0; i < 2; ++i) {
     EXPECT_EQ(quote.samples[i], 100 + i);
   }
 }
@@ -609,7 +609,7 @@ HOST_TEST(fewer_raw_points_than_the_target_copies_through_without_padding) {
 HOST_TEST(one_fewer_raw_point_than_the_minimum_has_no_intraday_series) {
   constexpr long long kStart = 1'700'000'000;
   const std::string body =
-      yahoo_response_with_session(kStart, kStart + 270 * 60, /*bar_count=*/7);
+      yahoo_response_with_session(kStart, kStart + 270 * 60, /*bar_count=*/1);
 
   market::IndexQuote quote;
   const bool ok =

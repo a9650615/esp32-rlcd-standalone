@@ -72,14 +72,21 @@ struct IndexQuote {
 bool parse_taiwan_index(const char* json, std::size_t length,
                          app_core::MarketData& out);
 
-// Smallest number of real raw points that counts as an actual intraday
-// series rather than a couple of dots - independent of
-// app_core::kIntradaySampleCount, the chart's own *target* resolution: a
-// session with fewer real bars than the target still deserves a chart (see
-// parse_yahoo_quote's own comment on sample_count), it just is not
-// downsampled. This is the one number actually being decided here, kept
-// small and deliberately unrelated to how many pixels the chart has.
-inline constexpr std::size_t kMinIntradayPoints = 8;
+// Smallest number of real raw points that can be drawn as a series -
+// independent of app_core::kIntradaySampleCount, the chart's own *target*
+// resolution: a session with fewer real bars than the target still
+// deserves a chart (see parse_yahoo_quote's own comment on sample_count),
+// it just is not downsampled.
+//
+// Two, because two is what a line is made of. This was 8, on the reasoning
+// that fewer was "a couple of dots" rather than a series - but the US feed
+// is 5-minute bars, so 8 of them is the first 40 minutes of every trading
+// day, during which the page fell to the no-intraday branch and read
+// "CLOSE <today>" / "NO INTRADAY DATA": a live, open market rendered as a
+// closed one. A short line over the first few percent of the axis (the
+// width render_market.cpp already scales by session_elapsed_fraction) is
+// both true and legible; a threshold that blanks the chart is neither.
+inline constexpr std::size_t kMinIntradayPoints = 2;
 
 // Reduces `raw` (raw_count > out.size(), a precondition - the caller
 // already knows to call this only once there are more raw points than
@@ -119,7 +126,7 @@ void reduce_to_extremes(const double* raw, std::size_t raw_count,
 //
 // chart.result[0].indicators.quote[0].close is read best-effort for the
 // intraday series: fewer than kMinIntradayPoints usable points (missing,
-// malformed, or genuinely too early in the session) leaves has_intraday
+// malformed, or the very first bar of a session) leaves has_intraday
 // false and fills `samples` with kIntradaySampleCount copies of the
 // current price, same as before. Otherwise has_intraday is true and
 // sample_count is set to whichever is smaller - the raw point count itself
