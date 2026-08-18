@@ -21,6 +21,38 @@ charging-icon work left behind.
 - **Silent no-ops instead of build failures** — `static_assert`s added in
   `773ed2f`. See the caveat below; they are narrower than they look.
 
+## The display's SPI flush is failing continuously, and nobody noticed
+
+Unresolved, and the most serious thing on this list.
+
+    E lcd_panel.io.spi: panel_io_spi_tx_color(395): spi transmit (queue) color failed
+
+From about 6.2 s after boot, every ~256 ms, for as long as the board runs. It
+survives a reboot and it survives a firmware change, so it is not a wedge
+that develops over time.
+
+Two reasons it went unnoticed for so long:
+
+- `/shot` reads the framebuffer, not the panel. Every screenshot taken while
+  this was happening showed current, correct content - a live clock, an
+  advancing carousel - because LVGL was still rendering. Whether any of it
+  reached the glass is a question `/shot` structurally cannot answer.
+- At ~4 lines/second it floods net_log's 128 KiB ring. A capture taken during
+  it reported 2,944 lines dropped, and the ring no longer contained the
+  boundary where the errors began. Only the serial cable had that.
+
+Timing points at internal DRAM: 6.2 s is about when free internal RAM
+collapses to 14,443 with a 5,120-byte largest block (see the table below),
+and SPI master DMA buffers have to be internal. But that is correlation.
+`panel_io_spi_tx_color` failing to *queue* can mean a full transaction queue
+or a failed allocation, and the log line does not distinguish them - the
+condition at `esp_lcd_panel_io_spi.c:395` has to be read for the pinned
+ESP-IDF before anyone claims which.
+
+Deliberately not fixed alongside the DRAM work: today already produced two
+cases of a second change stacked on an unverified first one, and both cost
+more than they saved. Diagnose the return value, then decide.
+
 ## AirPlay will run out of internal DRAM before it runs out of crypto
 
 The previous version of this file predicted the first thing to break would
@@ -53,13 +85,54 @@ passes it into `rtp_init()` as an external pointer, so it is not part of
 `rtp_t`'s own footprint. `modules/airplay/README.md`'s "Buffer sizing"
 section covers that allocation and does not mention this one at all.
 
-Ordering, so a bring-up is not misread:
+### What the first bring-up actually found
+
+Two things, neither of them the RSA decrypt, and the second one only after
+the first was fixed.
+
+**It was never reached, because of a startup-order bug.** `raop_init()`
+resolves the station's own address and fails immediately if it is still
+0.0.0.0. It was called about 95 lines before `wifi_provision::start()`, so
+AirPlay could not have worked in any build that shipped. Fixed in `652eb91`
+by moving `raop_init()` into a task created after `wifi_provision::start()`
+and gated on `wait_for_station_ip()`. Tray registration stayed at the old
+call site, because the tray reserves a slot's cell width from `registered`
+at the first full page rebuild.
+
+That failure also logged under the wrong name: `ESP_ERR_RAOP_BASE` and
+`ESP_ERR_HTTP_BASE` are both `0x7000`, so `esp_err_to_name()` answered for
+`esp_http_client`. The log said `ESP_ERR_HTTP_WRITE_DATA` for something
+esp_http_client had no part in.
+
+**Then it hit the memory wall - but at a different point than predicted, and
+much harder.** The table above compared 27,804 against `largest_free_block`
+*after startup*. `raop_init()` now runs later than that, after the monitor
+tasks have taken their stacks:
+
+| point | free | largest_free_block |
+| --- | --- | --- |
+| at boot | 194,047 | 98,304 |
+| after display/LVGL/audio | 43,371 | 31,744 |
+| where `raop_init()` runs | 14,443 | **5,120** |
+
+So the shortfall is not the ~480 bytes the earlier analysis implied but
+about 23 KB, and AirPlay is not what consumed it: `weather_monitor` (16,384),
+`taiwan_market_monitor` (8,192) and `us_market_monitor` (8,192) take 32 KB of
+internal stacks between the second row and the third. `update_check_task`
+already takes its 16,384 from PSRAM via `xTaskCreateWithCaps`, so the
+precedent for moving them is in the same file.
+
+The lesson worth keeping: a contiguous-allocation budget is only meaningful
+paired with *when* the allocation happens. The original analysis was
+arithmetically fine against the wrong snapshot.
+
+Ordering for the rest of the bring-up:
 
 1. With the throwaway key, ANNOUNCE's RSA decrypt fails before SETUP is ever
    reached, so the 25,600-byte allocation is not exercised. What the
    throwaway key *does* reach is `airplay_init()`, which means it tests the
-   27,804-byte allocation for real.
-2. With a real key, RSA passes and SETUP is where this is expected to bite.
+   27,804-byte allocation for real - and that is where it currently stops.
+2. With a real key, RSA passes and SETUP is where the second 25,600 bites.
 
 If the first allocation fails, `raop_create()` returns `NULL` before
 `mdns_service_add()` ever runs, and `raop_core.c` collapses that into the

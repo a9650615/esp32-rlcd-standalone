@@ -111,11 +111,14 @@ number:
   `register_tray_indicator()`, so it costs a few hundred bytes of dead
   capacity and draws nothing.
 - **A second module's worth of the same registration glue, for AirPlay**
-  (`main/app_main.cpp` calling `airplay::airplay_init()` unconditionally,
-  plus the internal-RAM diagnostics and log-transport-ordering fixes that
-  went with it) - the same rule-4 boundary as the first bullet, just paid
-  twice now that there are two modules to register and log around
-  regardless of whether either is compiled in.
+  (`main/app_main.cpp` calling `airplay::airplay_register_tray()` inline and
+  `airplay::airplay_init()` from its own post-Wi-Fi task, both
+  unconditionally, plus the internal-RAM diagnostics that went with them) -
+  the same rule-4 boundary as the first bullet, just paid twice now that
+  there are two modules to register and log around regardless of whether
+  either is compiled in. Two call sites rather than one because
+  `raop_init()` needs a DHCP lease and tray registration must happen before
+  the first render; see `modules/airplay/README.md`.
 - **The `i1_canvas_*` helpers in `ui_theme.cpp`** (`bind_i1_canvas`,
   `i1_canvas_stride`, `i1_canvas_pixel_offset`) that the charging-icon work
   factored out so the tray indicator, the battery-charging composite, and
