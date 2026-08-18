@@ -126,13 +126,60 @@ The lesson worth keeping: a contiguous-allocation budget is only meaningful
 paired with *when* the allocation happens. The original analysis was
 arithmetically fine against the wrong snapshot.
 
+### Where an iPhone actually stops, measured
+
+The prediction here was that `RSA_MODE_KEY` - decrypting `rsaaeskey` at
+ANNOUNCE - would be the first RSA path to break, on the grounds that it had
+never executed. Both halves were wrong.
+
+An iPhone connecting produces this and nothing else:
+
+    got RTSP connection 45
+    received OPTIONS
+    received OPTIONS      (18 s later)
+    received OPTIONS
+    received OPTIONS
+    disconnected on the other end
+
+It never sends ANNOUNCE. The gate is `RSA_MODE_AUTH` - the `Apple-Challenge`
+signature in the OPTIONS response - which happens one method *earlier* than
+the prediction. ANNOUNCE is never reached, so `rsaaeskey` is still untested.
+
+The RSA path is also not untested any more, and it works: sending an OPTIONS
+with an `Apple-Challenge` header by hand returns a well-formed 256-byte
+`Apple-Response` signature. The code signs correctly. It signs with a key
+that is not Apple's, so the sender's verification against Apple's public key
+fails, and iOS retries three times and gives up. Nothing downstream is
+broken; nothing downstream has been reached.
+
+Sending the same OPTIONS *without* `Apple-Challenge` returns a clean 200 OK
+with no `Apple-Response`, which confirms at the protocol level what the
+source already implied: a sender that omits the challenge never touches the
+RSA path and can proceed to ANNOUNCE. `rsaaeskey` is conditional in the same
+way. So the unencrypted route is open to a non-Apple sender with no key at
+all - and it is the only way to exercise the parts of this module that have
+genuinely never run.
+
+### What has never run
+
+Worth stating plainly, because the discoverable-in-the-picker milestone
+flatters the real state: not one byte has passed through RTP receive, the
+ALAC decoder, or the codec sink. That whole chain - jitter buffer timing,
+sample rate, PSRAM buffer read/write, backpressure into
+`audio_stream_write()`, whether 384 frames is enough - is untested, and it is
+where this module's remaining risk is concentrated.
+
+Obtaining the RSA key does not shorten that work. It decides which senders
+can reach it, nothing more.
+
 Ordering for the rest of the bring-up:
 
-1. With the throwaway key, ANNOUNCE's RSA decrypt fails before SETUP is ever
-   reached, so the 25,600-byte allocation is not exercised. What the
-   throwaway key *does* reach is `airplay_init()`, which means it tests the
-   27,804-byte allocation for real - and that is where it currently stops.
-2. With a real key, RSA passes and SETUP is where the second 25,600 bites.
+1. With the throwaway key, an iOS sender stops at OPTIONS, above. The
+   throwaway key does reach `airplay_init()`, so it tested that allocation
+   for real, and mDNS, and the RTSP layer.
+2. With a real key, or with a sender that omits the challenge, ANNOUNCE and
+   SETUP become reachable and the second contiguous allocation - `rtp_t`,
+   10,840 bytes since `f928d00` - gets its first test.
 
 If the first allocation fails, `raop_create()` returns `NULL` before
 `mdns_service_add()` ever runs, and `raop_core.c` collapses that into the
