@@ -894,7 +894,21 @@ static void rtp_thread_func(void *arg) {
 				*/
 
 				ctx->timing.remote = remote;
-				ctx->timing.local = reference;
+				// `reference` is when we SENT the request; `remote` is the
+				// sender's clock when it ANSWERED, which happened roughly
+				// half a roundtrip later. Pairing the two as-is claims the
+				// remote timestamp belongs to an instant that had not
+				// arrived yet, so every playtime derived from this pair
+				// (synchro.time = timing.local + remote_gap) comes out half
+				// a roundtrip early - and buffer_push_packet() discards any
+				// frame whose playtime has already passed, with no
+				// tolerance at all on that side.
+				//
+				// Measured on this board: roundtrips of 21-50 ms, and frames
+				// discarded starting at "missed by 17 ms". That is the same
+				// number. The standard NTP correction - assume the request
+				// and the reply each took half the roundtrip - removes it.
+				ctx->timing.local = reference + roundtrip / 2;
 
 				// now we are synced on NTP (mutex not needed)
 				ctx->synchro.status |= NTP_SYNC;

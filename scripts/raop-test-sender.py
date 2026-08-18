@@ -752,6 +752,12 @@ def run(args):
         t1.start()
         threads.append(t1)
 
+        # Encode before the clock starts. start_ms anchors every sync packet's
+        # rtp_now, so any work done after this line is time the receiver is told
+        # the stream advanced through when it did not.
+        packets = encode_packets(samples, start_seq, start_rtptime)
+        print(f"pre-encoded {len(packets)} ALAC frames")
+
         start_ms = now_ms()
 
         def sync_state():
@@ -780,7 +786,7 @@ def run(args):
         print(f"streaming {args.duration:.2f}s tone at {args.freq}Hz, amplitude {args.amplitude} "
               f"({20*math.log10(args.amplitude/32767):.1f} dBFS)")
         data_dest = (args.host, recv_server_port)
-        stream_audio(data_sock, data_dest, samples, start_seq, start_rtptime)
+        stream_audio(data_sock, data_dest, packets)
         print("stream complete")
 
         # 6. TEARDOWN.
@@ -795,26 +801,59 @@ def run(args):
         session.close()
 
 
-def stream_audio(sock, dest, samples, seqno, rtptime):
-    frame_period = FRAME_SIZE / SAMPLE_RATE
-    total = len(samples)
+def encode_packets(samples, seqno, rtptime):
+    """Build every RTP data packet up front. See stream_audio() for why."""
+    packets = []
     idx = 0
     first = True
-    next_deadline = time.monotonic()
-    while idx < total:
-        chunk = min(FRAME_SIZE, total - idx)
+    while idx < len(samples):
+        chunk = min(FRAME_SIZE, len(samples) - idx)
         chan = samples[idx:idx + chunk]
-        payload = encode_cpe_frame(chan, chan)
-        packet = build_rtp_data_header(seqno, rtptime, first) + payload
-        sock.sendto(packet, dest)
+        packets.append(build_rtp_data_header(seqno, rtptime, first)
+                       + encode_cpe_frame(chan, chan))
         first = False
         seqno = (seqno + 1) & 0xffff
         rtptime = (rtptime + chunk) & 0xffffffff
         idx += chunk
+    return packets
+
+
+def stream_audio(sock, dest, packets):
+    # Every packet is built BEFORE the first one is sent, on purpose.
+    #
+    # encode_cpe_frame() is a pure-Python ALAC encoder and it does not run in
+    # real time: one 352-sample frame has a 7.98 ms budget and encoding costs
+    # more than that. Encoding inside the send loop therefore made the data
+    # stream fall behind wall-clock, while the sync thread kept deriving its
+    # rtp_now from wall-clock (see the state_fn near "elapsed_ms" below). The
+    # two clocks drifted apart, and the receiver - correctly - saw frames whose
+    # playtime had already passed and discarded them. Measured on the board:
+    # "missed by" started at 31 ms and grew to 157 ms across one 4 s clip, with
+    # the ring empty (W == R) the whole time, which is the signature of a
+    # sender that cannot keep up rather than a receiver that is late.
+    #
+    # A real sender does not have this problem: its rtptime and its sync
+    # packets both come from one audio clock. Pre-encoding is how this tool
+    # gets the same property. It is not a way of making the test easier - the
+    # pacing below is unchanged and still real-time.
+    frame_period = FRAME_SIZE / SAMPLE_RATE
+    started = time.monotonic()
+    next_deadline = started
+    worst_lag = 0.0
+    for packet in packets:
+        sock.sendto(packet, dest)
         next_deadline += frame_period
-        sleep_for = next_deadline - time.monotonic()
+        lag = time.monotonic() - next_deadline
+        if lag > worst_lag:
+            worst_lag = lag
+        sleep_for = -lag
         if sleep_for > 0:
             time.sleep(sleep_for)
+    actual = time.monotonic() - started
+    expected = len(packets) * frame_period
+    print(f"[pace]    sent {len(packets)} frames in {actual*1000:.0f} ms "
+          f"(expected {expected*1000:.0f} ms, drift {(actual-expected)*1000:+.0f} ms, "
+          f"worst single-frame lag {worst_lag*1000:.1f} ms)")
 
 
 def _extract_port(transport_header, key):
