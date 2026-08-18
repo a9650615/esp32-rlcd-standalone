@@ -774,11 +774,28 @@ constexpr uint32_t kIndoorHistoryIntervalMs = 30 * 60'000;
 // the provider then sleeps its full refresh interval - which is how a boot race
 // turned into half an hour of NO DATA on a network that was already up. Wait
 // for the address rather than guessing a startup delay.
-void wait_for_station_ip() {
+// stagger_ms holds a caller off for a while *after* the address arrives.
+// The three HTTPS providers used to be released by this function at the same
+// instant, so their TLS handshakes overlapped. mbedTLS takes handshake buffers
+// from internal RAM, which is also the only memory the display's SPI DMA can
+// use, and for about 1.3 s at boot the panel lost that race - five dropped
+// frames, logged as panel_io_spi_tx_color(395) queue failures from 6.6 s to
+// 7.9 s and never again afterwards. Spacing the first fetch costs nothing a
+// person can perceive; nobody notices weather arriving eight seconds later.
+// Callers that must not be delayed - net_log, which has to be able to explain
+// what starts after it, and the AirPlay bring-up - pass nothing and are
+// unaffected.
+void wait_for_station_ip(uint32_t stagger_ms = 0) {
   while (!wifi_provision::station_has_ip()) {
     vTaskDelay(pdMS_TO_TICKS(500));
   }
+  if (stagger_ms != 0) vTaskDelay(pdMS_TO_TICKS(stagger_ms));
 }
+
+// Spacing between the first fetch of each HTTPS provider. Roughly twice the
+// ~2 s a handshake took when they were measured overlapping, so one finishes
+// and frees its buffers before the next begins.
+constexpr uint32_t kProviderStaggerMs = 4000;
 
 // A failed fetch retries sooner than the normal interval so a transient outage
 // does not cost a full cycle, but not so often that a rate-limited or broken
@@ -786,7 +803,7 @@ void wait_for_station_ip() {
 constexpr uint32_t kProviderRetryPeriodMs = 5 * 60'000;
 
 [[noreturn]] void weather_monitor_task(void*) {
-  wait_for_station_ip();
+  wait_for_station_ip(2 * kProviderStaggerMs);
   for (;;) {
     const bool ok = weather::refresh();
     const app_core::WeatherData current = weather::current();
@@ -874,7 +891,7 @@ constexpr uint32_t kProviderRetryPeriodMs = 5 * 60'000;
 // check simple enough to do without one), and there has been no reported
 // staleness complaint about this page the way there was for Taiwan.
 [[noreturn]] void us_market_monitor_task(void*) {
-  wait_for_station_ip();
+  wait_for_station_ip(kProviderStaggerMs);
   for (;;) {
     const bool ok = market::refresh_us();
     const app_core::MarketData us = market::us();

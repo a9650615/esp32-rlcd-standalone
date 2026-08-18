@@ -21,37 +21,56 @@ charging-icon work left behind.
 - **Silent no-ops instead of build failures** — `static_assert`s added in
   `773ed2f`. See the caveat below; they are narrower than they look.
 
-## The display's SPI flush is failing continuously, and nobody noticed
+## The display's SPI flush failed in a burst at startup — fixed
 
-Unresolved, and the most serious thing on this list.
+Closed. It was real, but not what this file said it was, and the difference
+mattered more than the bug.
 
-    E lcd_panel.io.spi: panel_io_spi_tx_color(395): spi transmit (queue) color failed
+Recorded here as continuous: "from about 6.2 s after boot, every ~256 ms, for
+as long as the board runs." Measured over net_log on 0.1.2, it was five
+failures between 6,648 ms and 7,930 ms and then nothing — silent for the
+remaining 60 s of that capture, and silent across a separate 40 s capture of a
+board that had been up two and a half hours. The claim that it never stopped
+was never true, or stopped being true before anyone re-measured.
 
-From about 6.2 s after boot, every ~256 ms, for as long as the board runs. It
-survives a reboot and it survives a firmware change, so it is not a wedge
-that develops over time.
+The cause was contention, not exhaustion. The errors interleave exactly with
+TLS work:
 
-Two reasons it went unnoticed for so long:
+    E 6648  panel_io_spi_tx_color(395): spi transmit (queue) color failed
+    I 6657  taiwan refresh ok=1 ...
+    E 6997  panel_io_spi_tx_color(395) ...
+    I 7000  esp-x509-crt-bundle: Certificate validated
+    I 7079  esp-x509-crt-bundle: Certificate validated
+    E 7306  E 7614  E 7930
+    I 8672  us refresh ok=1 ...
 
-- `/shot` reads the framebuffer, not the panel. Every screenshot taken while
-  this was happening showed current, correct content - a live clock, an
-  advancing carousel - because LVGL was still rendering. Whether any of it
-  reached the glass is a question `/shot` structurally cannot answer.
-- At ~4 lines/second it floods net_log's 128 KiB ring. A capture taken during
-  it reported 2,944 lines dropped, and the ring no longer contained the
-  boundary where the errors began. Only the serial cable had that.
+All three HTTPS providers were released by `wait_for_station_ip()` at the same
+instant, so their handshakes overlapped. mbedTLS takes handshake buffers from
+internal RAM, and `esp_lcd_panel_io_spi.c:394` passes `portMAX_DELAY` to
+`spi_device_queue_trans()` — which rules out a full queue, because with that
+timeout a full queue blocks rather than returning. The remaining error paths
+are all configuration errors that would fail identically from the first frame;
+only `setup_priv_desc()`'s `heap_caps_aligned_alloc(..., MALLOC_CAP_DMA)` can
+fail as a function of time. Internal RAM measured 75,187 free with a 31,744
+largest block after startup, so the pressure was a transient dip during the
+handshakes, not a standing shortage.
 
-Timing points at internal DRAM: 6.2 s is about when free internal RAM
-collapses to 14,443 with a 5,120-byte largest block (see the table below),
-and SPI master DMA buffers have to be internal. But that is correlation.
-`panel_io_spi_tx_color` failing to *queue* can mean a full transaction queue
-or a failed allocation, and the log line does not distinguish them - the
-condition at `esp_lcd_panel_io_spi.c:395` has to be read for the pinned
-ESP-IDF before anyone claims which.
+Fixed by spacing the first fetch of each provider (`kProviderStaggerMs`,
+main/app_main.cpp) rather than by finding memory. Nobody perceives weather
+arriving eight seconds later. Verified by pushing 0.1.3 over the network:
+fetches now land at 5,284 / 10,463 / 17,372 ms and the error count is zero.
 
-Deliberately not fixed alongside the DRAM work: today already produced two
-cases of a second change stacked on an unverified first one, and both cost
-more than they saved. Diagnose the return value, then decide.
+Two corrections worth keeping, because both were process failures rather than
+technical ones:
+
+- The severity was inherited, not measured. This file called it "the most
+  serious thing on this list" and a later reader repeated that without
+  checking. The actual impact is about five dropped frames during startup.
+- `/shot` was blamed for hiding it. That was right about the mechanism —
+  reading the framebuffer cannot tell you what reached the glass — but the
+  conclusion drawn from it, that the display might not be updating at all, was
+  wrong and was contradicted by simply looking at the board.
+
 
 ## AirPlay will run out of internal DRAM before it runs out of crypto
 
