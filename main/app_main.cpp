@@ -1239,8 +1239,17 @@ extern "C" void app_main() {
   // (kForecastBufferBytes) on the calling task's stack, on top of which
   // esp_http_client's TLS handshake (mbedTLS) and cJSON parsing add their
   // own several-KiB of depth. Doubling the raw buffer size is the margin.
-  if (xTaskCreate(&weather_monitor_task, "weather_monitor", 16384, nullptr,
-                  tskIDLE_PRIORITY + 1, nullptr) != pdPASS) {
+  //
+  // In PSRAM (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT), same as update_check_task
+  // above (see its own comment) and for the same reason: HTTPS plus a JSON
+  // parse never touches flash or NVS, so nothing here ever runs with the
+  // cache disabled. Unlike update_check_task this loops forever and is never
+  // deleted, so vTaskDeleteWithCaps does not enter into it - that call only
+  // matters for freeing a WithCaps task's statically-allocated TCB/stack on
+  // deletion, and a task that is never deleted never needs it.
+  if (xTaskCreateWithCaps(&weather_monitor_task, "weather_monitor", 16384,
+                          nullptr, tskIDLE_PRIORITY + 1, nullptr,
+                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
     ESP_LOGE(kTag, "weather monitor task creation failed");
   }
 
@@ -1250,12 +1259,20 @@ extern "C" void app_main() {
   // large local buffer. Two tasks, not one, now that Taiwan and US refresh
   // on genuinely different cadences - see taiwan_market_monitor_task's own
   // comment for why a shared task could not do that.
-  if (xTaskCreate(&taiwan_market_monitor_task, "taiwan_market_monitor", 8192,
-                  nullptr, tskIDLE_PRIORITY + 1, nullptr) != pdPASS) {
+  //
+  // In PSRAM for the same reason as weather_monitor_task just above: both
+  // are HTTPS+JSON fetchers that never touch flash/NVS (market::refresh_*
+  // only calls market::http_get() and the pure-parsing market_parse.cpp/
+  // market_schedule.cpp), and both loop forever so vTaskDeleteWithCaps is
+  // moot for them too.
+  if (xTaskCreateWithCaps(&taiwan_market_monitor_task, "taiwan_market_monitor",
+                          8192, nullptr, tskIDLE_PRIORITY + 1, nullptr,
+                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
     ESP_LOGE(kTag, "taiwan market monitor task creation failed");
   }
-  if (xTaskCreate(&us_market_monitor_task, "us_market_monitor", 8192, nullptr,
-                  tskIDLE_PRIORITY + 1, nullptr) != pdPASS) {
+  if (xTaskCreateWithCaps(&us_market_monitor_task, "us_market_monitor", 8192,
+                          nullptr, tskIDLE_PRIORITY + 1, nullptr,
+                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
     ESP_LOGE(kTag, "us market monitor task creation failed");
   }
 
@@ -1282,11 +1299,14 @@ extern "C" void app_main() {
   }
 
   // The other half of the pair at the top of this function: every
-  // permanent stack this board holds at boot - audio's I2S/DMA buffers,
-  // the codec device, and every monitor task above - now exists. Note what
-  // this number does NOT include: update_check_task's and the audio
-  // tone/sweep tasks' stacks, which are on demand and in PSRAM (see their
-  // own comments) precisely so they never show up in this budget at all.
+  // permanent internal-RAM stack this board holds at boot - audio's I2S/DMA
+  // buffers, the codec device, and every monitor task above that still
+  // costs internal RAM - now exists. Note what this number does NOT
+  // include: update_check_task's and the audio tone/sweep tasks' stacks
+  // (on demand, in PSRAM, see their own comments), and weather_monitor_task/
+  // taiwan_market_monitor_task/us_market_monitor_task's stacks (permanent,
+  // but also in PSRAM - see their own comments above) - none of these ever
+  // show up in this budget at all.
   ESP_LOGI(kTag,
            "startup diagnostics internal RAM free=%u largest_free_block=%u "
            "(after startup)",
