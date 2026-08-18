@@ -23,7 +23,20 @@
 #include "dmap_parser.h"
 #include "log_util.h"
 
-#define RTSP_STACK_SIZE 	(24*1024)
+// PROVISIONAL pending hardware measurement - see UPSTREAM.md and the
+// uxTaskGetStackHighWaterMark() logging in rtsp_thread()/search_remote()
+// below. Upstream's 24KB was never measured against actual usage; it alone
+// pushed raop_ctx_s (this stack embedded as a struct member, see below) past
+// every contiguous internal-DRAM block available at raop_create() time on
+// this board. 8KB is a cut deep enough to fit, generous enough for what this
+// task actually does (HTTP header/DMAP parsing, one mbedtls RSA-2048
+// sign/decrypt per session - no deep recursion) not to be an obviously
+// reckless guess. Final value comes from the high-water-mark measurement,
+// not from this comment.
+#define RTSP_STACK_SIZE 	(8*1024)
+// Not reduced: already small, and RTSP_STACK_SIZE alone is what forced
+// raop_ctx_s over the ceiling (see UPSTREAM.md for the arithmetic) - cutting
+// this too would add overflow risk for negligible size benefit.
 #define SEARCH_STACK_SIZE	(3*1024)
 
 typedef struct raop_ctx_s {
@@ -283,12 +296,23 @@ bool raop_cmd(struct raop_ctx_s *ctx, raop_internal_event_t event, void *param) 
 static void rtsp_thread(void *arg) {
 	raop_ctx_t *ctx = (raop_ctx_t*) arg;
 	int  sock = -1;
+	// Provisional RTSP_STACK_SIZE instrumentation pending hardware
+	// measurement - see UPSTREAM.md. Logged only on a new minimum: this loop
+	// wakes on every ~100ms select() timeout even when idle, so logging every
+	// iteration would spam the log without adding information.
+	UBaseType_t stack_min = (UBaseType_t) -1;
 
 	while (ctx->running) {
 		fd_set rfds;
 		struct timeval timeout = {0, 100*1000};
 		int n;
 		bool res = false;
+
+		UBaseType_t stack_now = uxTaskGetStackHighWaterMark(NULL);
+		if (stack_now < stack_min) {
+			stack_min = stack_now;
+			LOG_INFO("[%p]: RTSP task stack high water mark %u bytes free (new minimum)", ctx, (unsigned) stack_min);
+		}
 
 		if (sock == -1) {
 			struct sockaddr_in peer;
@@ -618,6 +642,10 @@ void cleanup_rtsp(raop_ctx_t *ctx, bool abort) {
 static void search_remote(void *args) {
 	raop_ctx_t *ctx = (raop_ctx_t*) args;
 	bool found = false;
+	// Not resized (see SEARCH_STACK_SIZE comment above) but instrumented
+	// anyway per the same provisional-pending-measurement plan - see
+	// UPSTREAM.md. Logged only on a new minimum.
+	UBaseType_t stack_min = (UBaseType_t) -1;
 
 	LOG_INFO("starting remote search");
 
@@ -625,6 +653,12 @@ static void search_remote(void *args) {
 		mdns_result_t *results = NULL;
 		mdns_result_t *r;
 		mdns_ip_addr_t *a;
+
+		UBaseType_t stack_now = uxTaskGetStackHighWaterMark(NULL);
+		if (stack_now < stack_min) {
+			stack_min = stack_now;
+			LOG_INFO("[%p]: search-remote task stack high water mark %u bytes free (new minimum)", ctx, (unsigned) stack_min);
+		}
 
 		if (mdns_query_ptr("_dacp", "_tcp", 3000, 32,  &results)) {
 			LOG_ERROR("mDNS active remote query Failed");

@@ -41,9 +41,63 @@ Two separate upstreams, vendored into two separate subdirectories.
   constant, `RAOP_BUFFER_FRAMES` in `audio_buffer.h`, set to 384 (~3.05 s) -
   see the comment on that constant for the exact reasoning and the ~1.3 MB
   combined result. `rtp.c`'s own `BUFFER_FRAMES_MAX`/`BUFFER_FRAMES_MIN` were
-  left unchanged: those size a small internal-RAM bookkeeping array (`abuf_t`
-  pointers/counters inside `rtp_t`, itself `MALLOC_CAP_INTERNAL`), not a
-  PSRAM buffer, so they are not what "23 seconds of PSRAM" is about.
+  left unchanged *at the time this entry was first written*: those size a
+  small internal-RAM bookkeeping array (`abuf_t` pointers/counters inside
+  `rtp_t`, itself `MALLOC_CAP_INTERNAL`), not a PSRAM buffer, so they were not
+  what "23 seconds of PSRAM" was about. `BUFFER_FRAMES_MAX` was later tied to
+  `RAOP_BUFFER_FRAMES` directly - see the entry below for why.
+- **`src/rtp.c`: `BUFFER_FRAMES_MAX` now derives from `RAOP_BUFFER_FRAMES`
+  instead of a separate `(RAOP_SAMPLE_RATE * 10) / 352` (10 s) constant.**
+  Measured on hardware: `raop_create()` needs one contiguous 27,804-byte
+  internal-DRAM block (`raop_ctx_s`, see the two entries below) when only
+  17,408 is available at that point, and RTSP `SETUP` then needs a second
+  contiguous 25,600-byte block (`rtp_t`, dominated by this array) while the
+  first is still held - the largest contiguous internal-DRAM block measured
+  right after boot is 31,744 and does not grow by freeing more memory, so
+  both allocations could never coexist regardless of what else was trimmed
+  elsewhere. `rtp_t`'s `audio_buffer[BUFFER_FRAMES_MAX]` (an array of
+  `abuf_t`, 17 bytes each, packed) was upstream's `1252`-frame 10 s ceiling,
+  but `buffer_alloc()` in the same file only ever fills entries for as long
+  as the PSRAM frame-data buffer backing them (`raop_core.c`'s
+  `RAOP_INT_SETUP` allocation, `RAOP_BUFFER_FRAMES` frames) has bytes left -
+  so 1252-384 = 868 of those entries (17 bytes each, packed - ~14.4 KiB)
+  could never be reached; pure waste sitting in the one struct that most
+  needed to shrink. Rather than
+  hardcode a second, smaller frame count that could silently drift from
+  `RAOP_BUFFER_FRAMES` again in the future, `rtp.c` now `#include`s
+  `audio_buffer.h` (same directory, same component) and sets
+  `BUFFER_FRAMES_MAX` to `RAOP_BUFFER_FRAMES` directly, so the bookkeeping
+  array and the PSRAM buffer it indexes into can never disagree on frame
+  count again. Measured result: `sizeof(rtp_t)` 25,600 -> 10,840 bytes.
+- **`src/raop.c`: `RTSP_STACK_SIZE` cut from 24 KiB to 8 KiB, PROVISIONAL.**
+  This `StackType_t` array is embedded as a member of `raop_ctx_s` (not a
+  separate allocation), so it was the single largest contributor to that
+  struct's 27,804-byte size and the main reason `raop_create()` could not
+  find a large enough contiguous internal-DRAM block. Upstream's 24 KiB was
+  never measured against what `rtsp_thread()` actually uses (HTTP
+  header/DMAP parsing, one `mbedtls` RSA-2048 sign or decrypt per session, no
+  deep recursion); 8 KiB is a deliberate guess sized to fit under the
+  measured 17,408-byte ceiling with room to spare while still being generous
+  for that workload, **not a final value** - `rtsp_thread()` now logs its
+  `uxTaskGetStackHighWaterMark()` every time a new minimum is observed, and
+  the final size will come from real iPhone-connected hardware runs, not
+  from this comment. `SEARCH_STACK_SIZE` (3 KiB, the `active_remote` mDNS
+  search task's stack, same embedding problem but a much smaller
+  contributor) was left unchanged - already small enough that cutting it
+  further wasn't needed to clear the ceiling, and it gets the same
+  high-water-mark logging in `search_remote()` regardless, in case
+  measurement says otherwise. Measured result: `sizeof(raop_ctx_s)` 27,804 ->
+  11,420 bytes.
+- **`src/raop.c` / `src/rtp.c`: added `uxTaskGetStackHighWaterMark()` logging
+  to `rtsp_thread()`, `search_remote()`, and `rtp_thread_func()`.** Each
+  tracks the smallest high-water-mark it has seen and logs (`LOG_INFO`) only
+  when a new minimum is observed, rather than on every loop iteration (all
+  three loops wake on ~100 ms-3 s timeouts even when idle) or only once at
+  task exit (none of these tasks exit while a session is active, so an
+  exit-time log would never fire). This is the measurement the two stack-size
+  entries above are provisional pending - it is not itself a permanent
+  feature and can be removed once the sizes above are set from real
+  hardware numbers.
 - **No source changes beyond the two items above.** Everything else -
   RTSP/RTP/DMAP parsing, timing/resend logic, the `esp_raop_receiver.h`
   public API shape - is upstream's as pinned.

@@ -44,6 +44,7 @@
 #include "rtp.h"
 #include "log_util.h"
 #include "util.h"
+#include "audio_buffer.h"
 
 #ifdef WIN32
 #include <openssl/aes.h>
@@ -67,8 +68,18 @@ extern log_level 	raop_loglevel;
 
 //#define __RTP_STORE
 
-// default buffer size
-#define BUFFER_FRAMES_MAX 	((RAOP_SAMPLE_RATE * 10) / 352 )
+// BUFFER_FRAMES_MAX sizes audio_buffer[] below, the abuf_t bookkeeping array
+// embedded in rtp_t (MALLOC_CAP_INTERNAL). Upstream sized it for a 10s
+// ceiling ((RAOP_SAMPLE_RATE*10)/352 = 1252 frames), but buffer_alloc() below
+// only ever fills entries for as long as the PSRAM frame-data buffer passed
+// into it (raop_core.c's RAOP_INT_SETUP allocation, RAOP_BUFFER_FRAMES frames
+// - see audio_buffer.h) has bytes left, so anything beyond RAOP_BUFFER_FRAMES
+// was dead descriptors: 1252-384 = 868 abuf_t entries (17 bytes each,
+// packed - ~14.4KB) that could never be reached. Deriving this from
+// RAOP_BUFFER_FRAMES instead of a second
+// hardcoded number means the two can't drift apart - whichever way
+// RAOP_BUFFER_FRAMES is retuned, this array is sized to match exactly.
+#define BUFFER_FRAMES_MAX 	RAOP_BUFFER_FRAMES
 #define BUFFER_FRAMES_MIN 	( (150 * RAOP_SAMPLE_RATE * 2) / (352 * 100) )
 #define MAX_PACKET       1408
 #define MIN_LATENCY		11025
@@ -628,6 +639,13 @@ static void rtp_thread_func(void *arg) {
 	bool ntp_sent;
 	char *packet = malloc(MAX_PACKET);
 	rtp_t *ctx = (rtp_t*) arg;
+#ifndef WIN32
+	// Provisional RTP_STACK_SIZE (4*1024) instrumentation pending hardware
+	// measurement - see UPSTREAM.md. Logged only on a new minimum (this loop
+	// wakes on every ~100ms select() timeout even when idle, so logging every
+	// iteration would spam the log without adding information).
+	UBaseType_t stack_min = (UBaseType_t) -1;
+#endif
 
 	for (i = 0; i < 3; i++) {
 		if (ctx->rtp_sockets[i].sock > sock) sock = ctx->rtp_sockets[i].sock;
@@ -642,6 +660,14 @@ static void rtp_thread_func(void *arg) {
 		int idx = 0;
 		char *pktp = packet;
 		struct timeval timeout = {0, 100*1000};
+
+#ifndef WIN32
+		UBaseType_t stack_now = uxTaskGetStackHighWaterMark(NULL);
+		if (stack_now < stack_min) {
+			stack_min = stack_now;
+			LOG_INFO("[%p]: RTP task stack high water mark %u bytes free (new minimum)", ctx, (unsigned) stack_min);
+		}
+#endif
 
 		FD_ZERO(&fds);
 		for (i = 0; i < 3; i++)	{ FD_SET(ctx->rtp_sockets[i].sock, &fds); }
