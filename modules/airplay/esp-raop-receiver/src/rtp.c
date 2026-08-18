@@ -817,7 +817,17 @@ static void rtp_thread_func(void *arg) {
 				u64_t remote = (((u64_t) ntohl(*(u32_t*)(pktp+8))) << 32) + ntohl(*(u32_t*)(pktp+12));
 				u32_t rtp_now = ntohl(*(u32_t*)(pktp+16));
 				u16_t flags = ntohs(*(u16_t*)(pktp+2));
-				u32_t remote_gap = NTP2MS(remote - ctx->timing.remote);
+				// remote (this sync packet's NTP) and ctx->timing.remote (the
+				// last 0x53 timing exchange's NTP) arrive on two different UDP
+				// sockets with no ordering guarantee. When this sync packet is
+				// a few ms OLDER than the stored timing reference - ordinary
+				// reordering, not corruption - the unsigned subtraction used
+				// to underflow to ~4.29e9 ms and trip the sanity check below,
+				// discarding the entire sync round (measured: 4294967295,
+				// once per lost round, ~800 ms of backlog each time). Do the
+				// subtraction as signed 64-bit NTP so a small negative gap
+				// stays small and negative instead of wrapping.
+				s64_t remote_gap = NTP2MS((s64_t) remote - (s64_t) ctx->timing.remote);
 
 				// try to get NTP every 3 sec or every time if we are not synced
 				if (!count-- || !(ctx->synchro.status & NTP_SYNC)) {
@@ -825,10 +835,13 @@ static void rtp_thread_func(void *arg) {
 					count = 3;
 				}
 
-				// something is wrong, we should not have such gap
-				if (remote_gap > 10000) {
-					LOG_WARN("discarding remote timing information %u", remote_gap);
+				// genuinely corrupt timing data - reject it. A small negative
+				// gap is ordinary reordering and is absorbed below instead.
+				if (remote_gap > 10000 || remote_gap < -10000) {
+					LOG_WARN("[%p]: rejecting remote timing information %lld ms (out of range)", ctx, (long long) remote_gap);
 					break;
+				} else if (remote_gap < 0) {
+					LOG_DEBUG("[%p]: sync packet %lld ms behind stored timing reference - reordered, absorbed", ctx, (long long) remote_gap);
 				}
 
 				pthread_mutex_lock(&ctx->ab_mutex);
