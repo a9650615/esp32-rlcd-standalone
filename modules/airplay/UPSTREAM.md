@@ -139,6 +139,74 @@ Two separate upstreams, vendored into two separate subdirectories.
   members, so this adds 2 KiB of internal RAM to `rtp_t` and 2 KiB to
   `raop_ctx_s`; `rtp_init()` now reports the free and largest-block figures
   explicitly if its allocation ever cannot be met.
+- **`src/rtp.c`: `rtp_t`'s RTP task stack (`xStack`) split out of the struct
+  into its own `heap_caps_malloc()`.** The `RTP_STACK_SIZE` raise above (4 ->
+  6 KiB) pushed `sizeof(rtp_t)` back up to 12,888 bytes, and because the
+  stack was still an embedded `StackType_t[]` member, `rtp_init()`'s single
+  `heap_caps_calloc(sizeof(rtp_t), ...)` needed all 12,888 as one contiguous
+  block again. A second AirPlay SETUP after one completed session found
+  51,263 bytes free but the largest block only 12,288 - 600 bytes short,
+  reproducing the exact allocation failure the two entries above already
+  fixed once, from the other direction. Same total RAM, two allocations
+  (`xStack` and the rest of `rtp_t`) instead of one, freed together in
+  `rtp_end()` regardless of which allocation failed. Kept
+  `MALLOC_CAP_INTERNAL` - a static FreeRTOS task stack must live in internal
+  RAM, never PSRAM. `raop_ctx_s` was checked for the same problem and left
+  alone: it allocates once per receiver at boot (`raop_create()`), not once
+  per session, so it does not accumulate the fragmentation repeated
+  SETUP/TEARDOWN cycles cause. Measured at that allocation: 13,468 bytes
+  needed, 22,528 largest block, 41,275 free - comfortable margin, no split
+  needed there.
+- **`src/rtp.c`: `buffer_put_packet()`'s first-frame `playtime` no longer
+  trusts `ctx->synchro.{time,rtp}` before a sync packet has set them.** DATA
+  and CONTROL/TIMING arrive on separate UDP sockets with no ordering
+  guarantee, so the first DATA packet can legitimately reach
+  `buffer_put_packet()` before any 0x54 sync packet has been successfully
+  processed (measured: the one sync packet that arrived first was itself
+  discarded by the existing `remote_gap > 10000` sanity check, so
+  `RTP_SYNC` was still unset). `playtime = ctx->synchro.time +
+  ((rtptime - ctx->synchro.rtp) * 10) / (RAOP_SAMPLE_RATE / 100)` against
+  zero-valued `synchro` fields produced `rtptime * 10 / 441` - measured
+  6,364,753 ms, 106 minutes in the future - which `audio_buffer_set_start_
+  time()` (this project's `audio_buffer.c`, downstream of `RAOP_INT_PLAY`)
+  took at face value: the consumer task waited for a playtime that would
+  never arrive, the ring filled, and every frame was dropped for the rest of
+  the session - audio never reached the speaker despite the RTSP/RTP session
+  otherwise completing normally. Now falls back to `gettime_ms()` (play
+  immediately) when `RTP_SYNC` is not yet set, at both call sites in this
+  function; a real sync packet arriving moments later corrects
+  `ctx->synchro` for every subsequent frame exactly as before. Found and
+  fixed while verifying the two-SETUP-in-a-row fix above actually produces
+  audible output, not just a successful `SETUP` - "no 503" and "the
+  amplifier turns on" turned out to be two different, independently
+  reachable failure points in this pipeline.
+- **`src/audio_buffer.c`: `audio_buffer_set_start_time()`'s confirmation log
+  raised from `ESP_LOGD` to `ESP_LOGI`, and a rate-limited (first 5 only)
+  warning added to `audio_output_task()`'s `start_time == 0` wait.** Both are
+  what made the bug above provable rather than merely suspected: the
+  "buffer full, dropping frame" spam it produces looks identical whether
+  `audio_buffer_set_start_time()` was never called, called with a stale/zero
+  value, or called correctly but with a value that will never satisfy
+  `now >= frame->playtime`. One line per session each, not per frame - kept
+  rather than reverted.
+
+### AirPlay 1's own minimum-latency case still drops every frame
+
+**Not fixed - out of scope for this session, recorded so the next person
+does not have to rediscover it.** `scripts/raop-test-sender.py` deliberately
+sets its sync packets' `rtp_now_latency` so the receiver's computed
+`ctx->latency` lands exactly on `MIN_LATENCY` (11,025 samples / 250 ms - see
+that script's own comment, "a no-op" against the clamp). With the two fixes
+above landed and a real sync established quickly, `buffer_push_packet()`
+still discards essentially every frame as arriving after its own `playtime`
+(`now > playtime`), by a gap that grows over the session (a few tens of ms
+observed, not shrinking) rather than settling - so `feed_audio()` /
+`audio_stream_write()` is never reached and the amplifier (GPIO46) never
+raises, even though the RTSP/RTP session completes cleanly with no errors.
+Not chased further here: it needs real measurement of where the 250 ms
+budget is actually spent (this receiver's own processing, the ALAC decode,
+`data_cb`'s path down into `modules/audio`, or something else), which is a
+different, larger job than the two allocation-contiguity bugs above.
 
 ### The sink watchdog was shorter than the protocol's own startup latency
 

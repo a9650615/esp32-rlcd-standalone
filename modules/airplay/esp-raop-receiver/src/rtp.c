@@ -91,9 +91,10 @@ extern log_level 	raop_loglevel;
 // way down into the audio sink, so its depth follows the sink, not this
 // file - a change three modules away can eat that margin without anything
 // here changing. 6 KB leaves the measured peak at under half. Costs 2 KB of
-// internal RAM inside rtp_t (the stack is a struct member, see xStack
-// below), so it also raises what rtp_init() must find as one contiguous
-// block; rtp_init() reports the shortfall explicitly if it ever cannot.
+// internal RAM, but as its own heap_caps_malloc() (see xStack below), not as
+// part of the rtp_t struct - so it does not raise what rtp_init()'s ctx
+// allocation must find as one contiguous block. rtp_init() reports either
+// allocation's shortfall explicitly if it ever cannot.
 #define RTP_STACK_SIZE	(6*1024)
 
 #define RTP_SYNC	(0x01)
@@ -156,7 +157,16 @@ typedef struct rtp_s {
 #else
 	TaskHandle_t thread, joiner;
 	StaticTask_t *xTaskBuffer;
-    StackType_t xStack[RTP_STACK_SIZE] __attribute__ ((aligned (4)));
+	// Split out of the struct: this used to be a StackType_t[RTP_STACK_SIZE]
+	// member, which forced rtp_init()'s single heap_caps_calloc(sizeof(rtp_t))
+	// to find RTP_STACK_SIZE-plus-everything-else as one contiguous block. A
+	// second AirPlay SETUP after one completed session found internal RAM
+	// 51,263 bytes free but the largest block only 12,288 - 600 bytes short
+	// of the 12,888-byte struct - even though total free RAM was ample. Two
+	// separate allocations use the same total RAM without that contiguity
+	// cliff. Must stay MALLOC_CAP_INTERNAL: a static FreeRTOS task stack has
+	// to live in internal RAM, never PSRAM.
+    StackType_t *xStack;
 #endif
 
 	struct alac_codec_s *alac_codec;
@@ -241,9 +251,11 @@ rtp_resp_t rtp_init(struct in_addr host, int latency, char *aeskey, char *aesiv,
 		// symptom reachable from outside was raop.c's "cannot start session,
 		// missing ports" - which names a consequence and not a cause, and made
 		// an intermittent allocation failure look like a protocol problem.
-		// rtp_t is roughly 11 KiB of MALLOC_CAP_INTERNAL, which is the
-		// scarcest memory on this board, so print what was actually available
-		// when the request failed: free size alone does not explain a refusal
+		// rtp_t no longer embeds the RTP task's stack (see xStack), so this
+		// allocation is smaller and its own contiguity requirement is looser
+		// than before - but it is still MALLOC_CAP_INTERNAL, the scarcest
+		// memory on this board, so print what was actually available when
+		// the request failed: free size alone does not explain a refusal
 		// that a fragmented heap causes.
 		LOG_ERROR("rtp_init: could not allocate %u bytes of internal RAM "
 				  "(free %u, largest block %u)",
@@ -313,11 +325,22 @@ rtp_resp_t rtp_init(struct in_addr host, int latency, char *aeskey, char *aesiv,
 #ifdef WIN32
 	pthread_create(&ctx->thread, NULL, rtp_thread_func, (void *) ctx);
 #else
+	ctx->xStack = (StackType_t*) heap_caps_malloc(RTP_STACK_SIZE * sizeof(StackType_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 	ctx->xTaskBuffer = (StaticTask_t*) heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-	BaseType_t core_id = (CONFIG_PTHREAD_TASK_CORE_DEFAULT == -1) ? tskNO_AFFINITY : CONFIG_PTHREAD_TASK_CORE_DEFAULT;
-	ctx->thread = xTaskCreateStaticPinnedToCore( (TaskFunction_t) rtp_thread_func, "RTP_thread", RTP_STACK_SIZE, ctx,
-																							CONFIG_ESP32_PTHREAD_TASK_PRIO_DEFAULT + 1, ctx->xStack, ctx->xTaskBuffer,
-																							core_id);
+	if (ctx->xStack && ctx->xTaskBuffer) {
+		BaseType_t core_id = (CONFIG_PTHREAD_TASK_CORE_DEFAULT == -1) ? tskNO_AFFINITY : CONFIG_PTHREAD_TASK_CORE_DEFAULT;
+		ctx->thread = xTaskCreateStaticPinnedToCore( (TaskFunction_t) rtp_thread_func, "RTP_thread", RTP_STACK_SIZE, ctx,
+																								CONFIG_ESP32_PTHREAD_TASK_PRIO_DEFAULT + 1, ctx->xStack, ctx->xTaskBuffer,
+																								core_id);
+	} else {
+		// Now two allocations instead of one, so this can fail on its own -
+		// log it the same way the ctx allocation above does, and unwind
+		// through the same rtp_end() cleanup path (running=false skips the
+		// task-notify wait since no task was ever created).
+		LOG_ERROR("[%p]: cannot allocate RTP task stack/TCB (stack=%p tcb=%p)", ctx, ctx->xStack, ctx->xTaskBuffer);
+		ctx->running = false;
+		rc = false;
+	}
 #endif
 
 	// cleanup everything if we failed
@@ -348,9 +371,18 @@ void rtp_end(rtp_t *ctx)
 #else
 		ulTaskNotifyTake(pdFALSE, portMAX_DELAY);
 		vTaskDelete(ctx->thread);
-		SAFE_PTR_FREE(ctx->xTaskBuffer);
 #endif
 	}
+
+#if !defined WIN32
+	// Unconditional (not just on the ctx->running path above): xStack/
+	// xTaskBuffer can be allocated - or partially allocated - even when the
+	// task itself never got created, e.g. rtp_init()'s allocation failure
+	// path. SAFE_PTR_FREE(NULL) is a harmless no-op, so this covers every
+	// exit path without a separate NULL check.
+	SAFE_PTR_FREE(ctx->xTaskBuffer);
+	SAFE_PTR_FREE(ctx->xStack);
+#endif
 
 	for (i = 0; i < 3; i++) closesocket(ctx->rtp_sockets[i].sock);
 
@@ -496,7 +528,25 @@ static void buffer_put_packet(rtp_t *ctx, seq_t seqno, unsigned rtptime, bool fi
         	LOG_INFO("[%p]: 1st accepted packet:%d, now playing", ctx, seqno);
 			ctx->state = RTP_PLAY;
 			ctx->first_seqno = -1;
-            u32_t playtime = ctx->synchro.time + ((rtptime - ctx->synchro.rtp) * 10) / (RAOP_SAMPLE_RATE / 100);
+            // ctx->synchro.{time,rtp} are only meaningful once a sync (0x54)
+            // packet has actually been processed (sets RTP_SYNC below) - and
+            // DATA and CONTROL arrive on separate UDP sockets with no
+            // ordering guarantee between them, so the first DATA packet can
+            // legitimately land here before that has happened (measured: a
+            // sync packet that arrived first was discarded by the
+            // remote_gap > 10000 sanity check below, so RTP_SYNC was still
+            // unset when this ran). Computing playtime from zero-valued
+            // synchro fields then produced rtptime*10/441 - here,
+            // 6,364,753 ms, 106 minutes in the future - which the audio
+            // buffer's consumer duly waited for forever, well past the
+            // point where the ring filled and every frame started being
+            // dropped. Fall back to "now" (play immediately) instead of a
+            // garbage far-future timestamp; a real sync packet arriving
+            // moments later corrects ctx->synchro for every subsequent
+            // frame's playtime as it already did before this fix.
+            u32_t playtime = (ctx->synchro.status & RTP_SYNC)
+                ? ctx->synchro.time + ((rtptime - ctx->synchro.rtp) * 10) / (RAOP_SAMPLE_RATE / 100)
+                : gettime_ms();
             ctx->cmd_cb(RAOP_INT_PLAY, playtime);
 		} else {
             ctx->state = RTP_STREAM;
@@ -512,7 +562,12 @@ static void buffer_put_packet(rtp_t *ctx, seq_t seqno, unsigned rtptime, bool fi
         LOG_INFO("[%p]: done waiting for FLUSH with packet:%d, now playing starting:%hu", ctx, seqno, ctx->ab_read);
 		ctx->state = RTP_PLAY;
 		ctx->first_seqno = -1;
-        u32_t playtime = ctx->synchro.time + ((rtptime - ctx->synchro.rtp) * 10) / (RAOP_SAMPLE_RATE / 100);
+        // Same guard as the RTP_WAIT branch above, and the same reason: this
+        // transition is driven by a DATA packet's seqno, not by whether a
+        // sync packet has landed yet.
+        u32_t playtime = (ctx->synchro.status & RTP_SYNC)
+            ? ctx->synchro.time + ((rtptime - ctx->synchro.rtp) * 10) / (RAOP_SAMPLE_RATE / 100)
+            : gettime_ms();
 		ctx->cmd_cb(RAOP_INT_PLAY, playtime);
 	}
 

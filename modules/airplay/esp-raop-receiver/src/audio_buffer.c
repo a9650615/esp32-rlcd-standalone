@@ -75,6 +75,18 @@ static void audio_output_task(void *arg) {
 
         // Wait until we have a start time
         if (audio_buf.start_time == 0) {
+            // Rate-limited (same shape as the stack high-water-mark logs
+            // above): this task polls every 10ms, so logging every miss
+            // would spam. If this fires more than a handful of times
+            // during a session that clearly reached RAOP_INT_PLAY (see
+            // audio_buffer_set_start_time()'s own log), this task is not
+            // seeing that write - the two logs together are what tells
+            // "never written" apart from "written but not observed here".
+            static int stuck_logged = 0;
+            if (stuck_logged < 5) {
+                stuck_logged++;
+                ESP_LOGW(TAG, "waiting for start_time (still 0, audio_buf=%p)", (void*) &audio_buf);
+            }
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
@@ -318,7 +330,16 @@ void audio_buffer_set_start_time(uint32_t playtime) {
     }
 
     audio_buf.start_time = playtime;
-    ESP_LOGD(TAG, "Start time set to %u ms", playtime);
+    // Raised from D to I: this write is the only thing that gets
+    // audio_output_task() past its start_time==0 gate, and the "buffer
+    // full, dropping frame" spam it produces when consumers never wake up
+    // looks identical whether this write never happened, happened with a
+    // stale/zero value, or happened but the reader task - pinned to a
+    // different core (xTaskCreatePinnedToCore(...,1) in
+    // audio_buffer_start()) - never observed it. Temporary-diagnostic in
+    // spirit but left at I rather than reverted: it is one line per
+    // session, not per frame, so it costs nothing to keep.
+    ESP_LOGI(TAG, "start_time set to %u ms (audio_buf=%p)", playtime, (void*) &audio_buf);
 }
 
 void audio_buffer_stop(void) {

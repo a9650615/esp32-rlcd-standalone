@@ -100,6 +100,28 @@ struct raop_ctx_s *raop_create(uint32_t host, char *name,
 	struct sockaddr_in addr;
 	char id[64];
 
+	// raop_ctx_t also embeds two static task stacks (RTSP_STACK_SIZE +
+	// SEARCH_STACK_SIZE, same shape as rtp_t's xStack before it was split
+	// out - see rtp.c). Left as one allocation here on purpose: unlike
+	// rtp_init(), which runs on every AirPlay SETUP and inherits whatever
+	// fragmentation earlier sessions left behind, raop_create() runs exactly
+	// once per boot, before any session has run, so it is not subject to the
+	// same fragmentation-driven contiguity failure. It previously had no
+	// failure log at all (silent NULL return) - add one so this claim stays
+	// checkable if it ever stops holding.
+	LOG_INFO("raop_create: allocating %u bytes of internal RAM (free %u, largest block %u)",
+			  (unsigned) sizeof(struct raop_ctx_s),
+			  (unsigned) heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+			  (unsigned) heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+	if (!ctx) {
+		LOG_ERROR("raop_create: could not allocate %u bytes of internal RAM "
+				  "(free %u, largest block %u)",
+				  (unsigned) sizeof(struct raop_ctx_s),
+				  (unsigned) heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+				  (unsigned) heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+		return NULL;
+	}
+
 	const mdns_txt_item_t txt[] = {
 		{"am", "airesp32"},
 		{"tp", "UDP"},
@@ -115,8 +137,6 @@ struct raop_ctx_s *raop_create(uint32_t host, char *name,
 		{"vn","3"},
 		{"txtvers","1"},
 	};
-
-	if (!ctx) return NULL;
 
 	// make sure we have a clean context
 	memset(ctx, 0, sizeof(raop_ctx_t));
