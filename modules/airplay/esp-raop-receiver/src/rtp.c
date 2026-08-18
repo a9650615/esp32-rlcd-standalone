@@ -41,6 +41,7 @@
 #include <assert.h>
 
 #include "platform.h"
+#include "esp_heap_caps.h"
 #include "rtp.h"
 #include "log_util.h"
 #include "util.h"
@@ -227,7 +228,22 @@ rtp_resp_t rtp_init(struct in_addr host, int latency, char *aeskey, char *aesiv,
 	rtp_t *ctx = heap_caps_calloc(1, sizeof(rtp_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 	rtp_resp_t resp = { 0, 0, 0, NULL };
 
-	if (!ctx) return resp;
+	if (!ctx) {
+		// Upstream returned an all-zero resp here with no message, so the only
+		// symptom reachable from outside was raop.c's "cannot start session,
+		// missing ports" - which names a consequence and not a cause, and made
+		// an intermittent allocation failure look like a protocol problem.
+		// rtp_t is roughly 11 KiB of MALLOC_CAP_INTERNAL, which is the
+		// scarcest memory on this board, so print what was actually available
+		// when the request failed: free size alone does not explain a refusal
+		// that a fragmented heap causes.
+		LOG_ERROR("rtp_init: could not allocate %u bytes of internal RAM "
+				  "(free %u, largest block %u)",
+				  (unsigned) sizeof(rtp_t),
+				  (unsigned) heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+				  (unsigned) heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+		return resp;
+	}
 
 	ctx->host = host;
 	ctx->decrypt = false;
@@ -807,7 +823,14 @@ static void rtp_thread_func(void *arg) {
 				// now we are synced on NTP (mutex not needed)
 				ctx->synchro.status |= NTP_SYNC;
 
-				LOG_DEBUG("[%p]: Timing references local:%llu, remote:%llx (delta:%lld, sum:%lld, adjust:%lld, gaps:%d)",
+				// Upstream's format string named delta/sum/adjust/gaps but passed
+				// no arguments for them, so those four printed whatever happened
+				// to be in the varargs registers - values like
+				// delta:4756359895849107456 that read as a broken clock and are
+				// not clock data at all. Reading absent varargs is undefined
+				// behaviour, not merely misleading output. Format now matches
+				// what is actually passed.
+				LOG_DEBUG("[%p]: Timing references local:%llu, remote:%llx",
 						  ctx, ctx->timing.local, ctx->timing.remote);
 
 				break;

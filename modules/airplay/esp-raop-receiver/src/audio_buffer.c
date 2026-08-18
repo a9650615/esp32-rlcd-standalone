@@ -140,12 +140,34 @@ static void audio_output_task(void *arg) {
 
                 // Check if it's time to play this frame
                 if (now < frame->playtime) {
-                    // Too early, wait
+                    // Diagnostic, first few only: a stream that produces no
+                    // writes at all within the sink's 2 s watchdog window
+                    // looks identical from outside to one that is decoding
+                    // nothing, and this gate is the difference. Logged with
+                    // both sides of the comparison because "waiting" is only
+                    // meaningful next to how long the wait would be.
+                    static int waits_logged = 0;
+                    if (waits_logged < 5) {
+                        waits_logged++;
+                        ESP_LOGW(TAG, "playback gate: now=%u playtime=%u (waiting %d ms) start_time=%u",
+                                 (unsigned) now, (unsigned) frame->playtime,
+                                 (int) (frame->playtime - now),
+                                 (unsigned) audio_buf.start_time);
+                    }
                     xSemaphoreGive(audio_buf.mutex);
                     vTaskDelay(pdMS_TO_TICKS(5));
                     continue;
                 }
 
+                static bool first_write_logged = false;
+                if (!first_write_logged) {
+                    first_write_logged = true;
+                    ESP_LOGI(TAG, "playback gate: first frame released at now=%u playtime=%u",
+                             (unsigned) now, (unsigned) frame->playtime);
+                }
+
+                // Third MAX_FRAME_SIZE automatic buffer in this task, and the
+                // one on the hot path - see UPSTREAM.md on the stack.
                 uint8_t data[MAX_FRAME_SIZE];
                 memcpy(data, frame->data, frame->len);
                 size_t len = frame->len;
