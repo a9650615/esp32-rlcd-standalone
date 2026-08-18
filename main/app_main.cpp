@@ -1049,31 +1049,6 @@ extern "C" void app_main() {
   // fitted" without a cable or a multimeter.
   if (board::board_i2c_init() == ESP_OK) board::board_i2c_scan();
 
-  // Before the optional modules below, not after the monitor tasks further
-  // down, because those modules are exactly the ones whose failures need
-  // reading. net_log::begin() above has been retaining the log since early
-  // boot, but the ring is only readable once this listener exists, and this
-  // task is the smallest allocation of the lot - so when internal DRAM runs
-  // short it is the one that fails, and it takes the explanation of every
-  // other failure with it.
-  //
-  // Ordering alone was not what took the listener down the one time this
-  // was actually observed - the port stayed shut with the modules disabled
-  // too, so that had a separate cause. Moving it is still right: a log
-  // transport that starts after the subsystems it exists to explain can
-  // only ever report their failures by surviving them.
-  //
-  // Safe to move ahead of lwIP being up: the task's own first act is to
-  // wait for it (see net_log_startup_task), which is why it is a task and
-  // not a call.
-  //
-  // 4096 B: waits, then makes a handful of esp_netif/socket/task-creation
-  // calls and deletes itself - no TLS, no JSON, no large buffers.
-  if (xTaskCreate(&net_log_startup_task, "net_log_startup", 4096, nullptr,
-                  tskIDLE_PRIORITY + 1, nullptr) != pdPASS) {
-    ESP_LOGE(kTag, "net_log startup task creation failed");
-  }
-
   // Never fatal: this board's primary job is the display, and a codec that
   // is absent or unresponsive should mean no sound, not no boot. Nothing
   // plays here - audio_init() only readies the I2S/codec path, and leaves
@@ -1249,6 +1224,13 @@ extern "C" void app_main() {
   if (xTaskCreate(&us_market_monitor_task, "us_market_monitor", 8192, nullptr,
                   tskIDLE_PRIORITY + 1, nullptr) != pdPASS) {
     ESP_LOGE(kTag, "us market monitor task creation failed");
+  }
+
+  // 4096 B: waits, then makes a handful of esp_netif/socket/task-creation
+  // calls and deletes itself - no TLS, no JSON, no large buffers.
+  if (xTaskCreate(&net_log_startup_task, "net_log_startup", 4096, nullptr,
+                  tskIDLE_PRIORITY + 1, nullptr) != pdPASS) {
+    ESP_LOGE(kTag, "net_log startup task creation failed");
   }
 
   // 4096 B: averages a handful of integers and hands a 3.5 KiB static buffer
