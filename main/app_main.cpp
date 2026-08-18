@@ -955,6 +955,46 @@ void format_clock(const app_core::RtcDateTime& clock, app_core::ClockData& out) 
   }
 }
 
+// One-shot, same shape as net_log_startup_task below: airplay_init() either
+// starts the RAOP receiver for the rest of this boot or fails once - there
+// is nothing here to retry in a loop.
+//
+// Created after wifi_provision::start(), same as net_log_startup_task and
+// the weather/taiwan-market/us-market monitor tasks above, and for the
+// exact same reason: wait_for_station_ip() polls a mutex wifi_provision::
+// start() creates, so a task calling it must not exist before that call
+// returns. (A previous attempt got this backwards for net_log_startup_task
+// - see commit 4b330e1, reverted in c81d932 - and put the board into a boot
+// loop; do not move this task earlier than here without rereading that
+// history.)
+//
+// This is also why airplay_init() itself moved out of the fixed
+// display/audio/airplay diagnostics block earlier in app_main(): raop_init()
+// (esp-raop-receiver/src/raop_core.c) resolves the station's own IP via
+// esp_netif_get_ip_info() on WIFI_STA_DEF and fails immediately - no wait,
+// no retry - if that address is still 0.0.0.0, which it always is at the
+// point the old call site ran, long before wifi_provision::start() even
+// creates the station interface.
+//
+// 4096 B: raop_init() heap-allocates its own state and the RTSP/"search
+// remote" task stacks it embeds (esp_raop_receiver.h's own comment) rather
+// than putting them on this caller's stack, so this task's own frame stays
+// small - no TLS, no JSON, no large local buffers.
+void airplay_startup_task(void*) {
+  wait_for_station_ip();
+  const esp_err_t result = airplay::airplay_init();
+  if (result == ESP_OK) {
+    ESP_LOGI(kTag, "startup diagnostics airplay=ready");
+  } else if (result == ESP_ERR_NOT_SUPPORTED) {
+    ESP_LOGI(kTag,
+             "startup diagnostics airplay=disabled (CONFIG_AIRPLAY_ENABLE=n)");
+  } else {
+    ESP_LOGW(kTag, "startup diagnostics airplay=unavailable: %s",
+             airplay::airplay_err_to_name(result));
+  }
+  vTaskDelete(nullptr);
+}
+
 // One-shot, not [[noreturn]] like the monitor tasks above: net_log::start()
 // installs its own log sink and sender task internally, so once that call
 // returns this task's job is done and it deletes itself rather than
@@ -1073,27 +1113,20 @@ extern "C" void app_main() {
   ESP_LOGI(kTag, "startup diagnostics audio=disabled (CONFIG_AUDIO_ENABLE=n)");
 #endif
 
-  // Same non-fatal treatment as audio_init() just above, for the same
-  // reason: this board's primary job is the display, and a real AirPlay
-  // stack that fails to start must mean no AirPlay, not no boot. No #ifdef
-  // around the call itself - airplay.hpp's inline no-ops make it correct
-  // either way. Unlike audio just above, the disabled-vs-failed split here
-  // can lean on the return code instead of a second #ifdef:
-  // ESP_ERR_NOT_SUPPORTED is airplay_init()'s stub signature and only its
-  // stub signature - the real path's raop_init() returns ESP_OK or one of
-  // ESP_ERR_RAOP_* (0x7000+, esp_raop_receiver.h), never
-  // ESP_ERR_NOT_SUPPORTED, so this can't misclassify a genuine startup
-  // failure as "not compiled in".
-  const esp_err_t airplay_result = airplay::airplay_init();
-  if (airplay_result == ESP_OK) {
-    ESP_LOGI(kTag, "startup diagnostics airplay=ready");
-  } else if (airplay_result == ESP_ERR_NOT_SUPPORTED) {
-    ESP_LOGI(kTag,
-             "startup diagnostics airplay=disabled (CONFIG_AIRPLAY_ENABLE=n)");
-  } else {
-    ESP_LOGW(kTag, "startup diagnostics airplay=unavailable: %s",
-             esp_err_to_name(airplay_result));
-  }
+  // Tray registration only - no #ifdef around the call itself, airplay.hpp's
+  // inline no-op makes it correct either way. This has to happen here, before
+  // ui::start() a few lines down, and not alongside the rest of this module's
+  // startup: it has no network dependency, but airplay_init() (the RAOP
+  // receiver itself) does, and the tray's layout only re-reserves a slot's
+  // cell on a full page rebuild - see airplay_register_tray()'s own comment
+  // (airplay.hpp) for why registering it late could leave this module's
+  // tray cell zero-width indefinitely. airplay_init() itself - and the
+  // "airplay=ready/unavailable/disabled" diagnostic that used to be logged
+  // right here - moved to airplay_startup_task below, alongside
+  // wifi_provision::start(): raop_init() resolves the station's own IP and
+  // fails immediately if it is not yet assigned, so it cannot run this
+  // early. See that task's own comment.
+  airplay::airplay_register_tray();
 
   app_core::RtcDateTime clock = compile_clock();
   const bool rtc_ok = read_rtc(clock);
@@ -1224,6 +1257,14 @@ extern "C" void app_main() {
   if (xTaskCreate(&us_market_monitor_task, "us_market_monitor", 8192, nullptr,
                   tskIDLE_PRIORITY + 1, nullptr) != pdPASS) {
     ESP_LOGE(kTag, "us market monitor task creation failed");
+  }
+
+  // See airplay_startup_task's own comment for the stack size and why this
+  // has to be created here, after wifi_provision::start(), rather than
+  // alongside audio/airplay's other startup diagnostics earlier above.
+  if (xTaskCreate(&airplay_startup_task, "airplay_startup", 4096, nullptr,
+                  tskIDLE_PRIORITY + 1, nullptr) != pdPASS) {
+    ESP_LOGE(kTag, "airplay startup task creation failed");
   }
 
   // 4096 B: waits, then makes a handful of esp_netif/socket/task-creation

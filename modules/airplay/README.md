@@ -3,13 +3,16 @@
 A vendored AirPlay 1 (RAOP) receiver: `airplay_init()` starts a real
 RTSP/RTP/mDNS/ALAC receiver and feeds the decoded PCM into `modules/audio`'s
 streaming sink for the session's lifetime, using the RAOP receiver's own
-connected/disconnected events as the session boundary. It registers its own
-tray indicator (active only while a session is open) and disables Wi-Fi
-power save for the session's duration. See `modules/README.md` for the
-module contract this follows (`CONFIG_AIRPLAY_ENABLE`, default `n`, compiles
-to nothing when off, one-way dependency on core - here, `airplay -> audio`
-and `airplay -> app_core`, never the reverse). See `UPSTREAM.md` for exactly
-what was vendored, from where, and what was changed.
+connected/disconnected events as the session boundary. `airplay_register_tray()`
+registers its own tray indicator (active only while a session is open) -
+called separately from, and before, `airplay_init()`, because it has no
+network dependency and `airplay_init()` does (see "What this depends on"
+below). It disables Wi-Fi power save for the session's duration. See
+`modules/README.md` for the module contract this follows
+(`CONFIG_AIRPLAY_ENABLE`, default `n`, compiles to nothing when off, one-way
+dependency on core - here, `airplay -> audio` and `airplay -> app_core`,
+never the reverse). See `UPSTREAM.md` for exactly what was vendored, from
+where, and what was changed.
 
 ## What this is, precisely
 
@@ -25,11 +28,11 @@ Two vendored upstreams (`UPSTREAM.md` has the full provenance):
   `libalac.a` - an unauditable 169 KB opaque binary has no place in an
   open-source repository.
 
-`airplay_init()`/`airplay_deinit()` in `include/airplay.hpp` are the only
-public surface. Calling `airplay_init()` starts mDNS advertisement and the
-RAOP receiver for real - RTSP listener, RTP reception, ALAC decoding of
-actual streamed audio - and its `audio_output_cb` (`airplay.cpp`'s
-`feed_audio()`) writes every decoded chunk straight into
+`airplay_register_tray()`, `airplay_init()`, and `airplay_deinit()` in
+`include/airplay.hpp` are the only public surface. Calling `airplay_init()`
+starts mDNS advertisement and the RAOP receiver for real - RTSP listener, RTP
+reception, ALAC decoding of actual streamed audio - and its `audio_output_cb`
+(`airplay.cpp`'s `feed_audio()`) writes every decoded chunk straight into
 `audio::audio_stream_write()`. The session's open/close boundary comes from
 the RAOP receiver's own `event_cb` (`handle_event()`): `RAOP_EVENT_CONNECTED`
 calls `audio::audio_stream_open(44100)`, disables Wi-Fi power save, and
@@ -42,13 +45,24 @@ and is deliberately left unhandled - confirmed by reading `raop_core.c`'s
 that fire once each, at RTSP SETUP/TEARDOWN, rather than repeatedly within a
 session.
 
+`airplay_init()` must be called only once the Wi-Fi station has a real,
+DHCP-assigned IP address: `raop_init()` (`esp-raop-receiver/src/raop_core.c`)
+resolves that address itself via `esp_netif_get_ip_info()` on `WIFI_STA_DEF`
+and fails immediately, with no wait and no retry, if it is still 0.0.0.0.
+`airplay_register_tray()` has no such dependency and is called separately,
+earlier - see "What this depends on" just below.
+
 ## What this depends on, and what depends on it
 
-`main/app_main.cpp` calls `airplay::airplay_init()` once, alongside (and with
-the same non-fatal treatment as) `audio::audio_init()` - no `#ifdef` at that
-call site; `airplay.hpp`'s inline no-ops make the call correct whether or not
-`CONFIG_AIRPLAY_ENABLE` is on. That is this module's only core touch point;
-see "Core touch points" below.
+`main/app_main.cpp` calls `airplay::airplay_register_tray()` once, early,
+alongside `audio::audio_init()`'s own tray registration, before the network
+exists. `airplay::airplay_init()` itself is called later, from a task
+(`airplay_startup_task`) created after `wifi_provision::start()` that waits
+for the station to have an IP first - same non-fatal treatment either way:
+a failure is logged, never fatal. No `#ifdef` at either call site;
+`airplay.hpp`'s inline no-ops make both calls correct whether or not
+`CONFIG_AIRPLAY_ENABLE` is on. Those are this module's only core touch
+points; see "Core touch points" below.
 
 The dependency direction the module contract requires (rule 4: modules point
 at core, never the other way; and for this module specifically, `airplay ->
@@ -181,10 +195,13 @@ has ever reached the speaker - see "What is unverified" below.
 
 ## Core touch points
 
-One: `main/app_main.cpp` calls `airplay::airplay_init()` once, right after
-`audio::audio_init()`, logging readiness or unavailability but never
-treating failure as fatal. No other file in `components/` or `main/`
-references this module - the tray indicator and the audio sink are both
+Two, both in `main/app_main.cpp`: `airplay::airplay_register_tray()`, called
+right after `audio::audio_init()`, before Wi-Fi exists; and
+`airplay::airplay_init()`, called from `airplay_startup_task` after
+`wifi_provision::start()` once the station has an IP, logging readiness or
+unavailability but never treating failure as fatal. No other file in
+`components/` or `main/` references this module - the tray indicator and the
+audio sink are both
 reached through the same registries `modules/audio` already uses
 (`app_core::register_tray_indicator()`, `audio::audio_stream_open()`), not
 through any new core surface. That a second module's tray icon needed zero

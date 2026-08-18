@@ -179,18 +179,42 @@ void handle_event(raop_event_t event, void * /*event_data*/,
   }
 }
 
+// esp_raop_receiver.h anchors ESP_ERR_RAOP_BASE at 0x7000; esp_http_client.h
+// anchors ESP_ERR_HTTP_BASE at the same 0x7000 (confirmed by reading both
+// headers side by side - this is not a guess). esp_err_to_name() walks a
+// table of ranges registered by each component and returns the first name
+// that matches a given number, so ESP_ERR_RAOP_NETWORK_FAILED (0x7003) and
+// ESP_ERR_HTTP_WRITE_DATA (0x7000 + 3) are the same integer and
+// esp_err_to_name() reports whichever one it finds - which is why a
+// raop_init() failure has been logged as "ESP_ERR_HTTP_WRITE_DATA", a name
+// from a component this module never calls. This does not affect any
+// comparison against a specific named constant (== ESP_ERR_NOT_SUPPORTED
+// still means exactly what it says) - only the printable name is wrong.
+const char *raop_err_to_name(esp_err_t err) {
+  switch (err) {
+    case ESP_ERR_RAOP_NO_MEMORY: return "ESP_ERR_RAOP_NO_MEMORY";
+    case ESP_ERR_RAOP_INVALID_CONFIG: return "ESP_ERR_RAOP_INVALID_CONFIG";
+    case ESP_ERR_RAOP_NETWORK_FAILED: return "ESP_ERR_RAOP_NETWORK_FAILED";
+    case ESP_ERR_RAOP_CODEC_FAILED: return "ESP_ERR_RAOP_CODEC_FAILED";
+    case ESP_ERR_RAOP_MDNS_FAILED: return "ESP_ERR_RAOP_MDNS_FAILED";
+    case ESP_ERR_RAOP_ALREADY_INIT: return "ESP_ERR_RAOP_ALREADY_INIT";
+    case ESP_ERR_RAOP_NOT_INIT: return "ESP_ERR_RAOP_NOT_INIT";
+    default: return esp_err_to_name(err);  // none of raop_init()'s other
+                                            // possible codes collide
+  }
+}
+
 }  // namespace
 
-esp_err_t airplay_init() {
-  if (g_handle != nullptr) {
-    return ESP_ERR_INVALID_STATE;
-  }
+const char *airplay_err_to_name(esp_err_t err) { return raop_err_to_name(err); }
 
-  // Registered unconditionally, before anything below that could fail -
-  // same reasoning as modules/audio/audio.cpp's own tray registration: the
-  // tray reserves this module's slot regardless of whether raop_init()
-  // actually succeeds, so the tray's layout does not shift depending on
-  // it.
+void airplay_register_tray() {
+  // Registered unconditionally, before anything that could fail - same
+  // reasoning as modules/audio/audio.cpp's own tray registration: the tray
+  // reserves this module's slot the moment it is registered, not once
+  // raop_init() actually succeeds, so the tray's layout does not shift
+  // depending on it. See this function's declaration (airplay.hpp) for why
+  // it is called separately from, and before, airplay_init().
   if (!g_tray_indicator.valid()) {
     build_icon_bitmap();
     g_tray_indicator = app_core::register_tray_indicator(
@@ -199,6 +223,12 @@ esp_err_t airplay_init() {
     if (!g_tray_indicator.valid()) {
       ESP_LOGW(kTag, "tray indicator registration failed: registry full");
     }
+  }
+}
+
+esp_err_t airplay_init() {
+  if (g_handle != nullptr) {
+    return ESP_ERR_INVALID_STATE;
   }
 
   raop_config_t config = {};
@@ -224,7 +254,7 @@ esp_err_t airplay_init() {
     ESP_LOGE(kTag,
              "raop_init failed: %s (internal RAM free=%u "
              "largest_free_block=%u)",
-             esp_err_to_name(err),
+             raop_err_to_name(err),
              static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
              static_cast<unsigned>(
                  heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)));
