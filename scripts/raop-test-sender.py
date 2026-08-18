@@ -163,7 +163,9 @@ Usage
   python3 scripts/raop-test-sender.py --selftest
 """
 import argparse
+import base64
 import math
+import os
 import random
 import socket
 import struct
@@ -689,8 +691,32 @@ def run(args):
     stop_event = threading.Event()
     threads = []
     try:
-        # 1. OPTIONS - no Apple-Challenge header (see module docstring).
-        session.request("OPTIONS", "*", {})
+        # 1. OPTIONS. No Apple-Challenge by default (see module docstring);
+        # --challenge adds one because that is the single RTSP path a real
+        # sender takes that this tool otherwise never touches. It matters for
+        # more than coverage: apple_challenge() runs an mbedtls RSA-2048
+        # signature on the RTSP task's stack, so every stack measurement taken
+        # without it is an underestimate of what an iPhone session costs.
+        options_headers = {}
+        if args.challenge:
+            # 16 random bytes is what senders send; raop.c decodes it, appends
+            # the receiver's IP and MAC, pads to 32, and signs that. The value
+            # itself is never checked by anything, only its presence and
+            # length, so it does not need to come from a real device.
+            challenge = base64.b64encode(os.urandom(16)).decode().rstrip("=")
+            options_headers["Apple-Challenge"] = challenge
+        resp = session.request("OPTIONS", "*", options_headers)
+        if args.challenge:
+            # A missing or short response means the signing failed. Left as a
+            # hard failure: a receiver that answers OPTIONS but does not sign
+            # is exactly the receiver an iPhone pairs with and then refuses to
+            # play to, which is the failure this flag exists to catch.
+            apple_response = resp.get("apple-response", "")
+            decoded_len = len(base64.b64decode(apple_response + "=" * (-len(apple_response) % 4)))
+            assert decoded_len == 256, (
+                f"Apple-Response is {decoded_len} bytes, expected 256 "
+                f"(RSA-2048 signature) - the receiver did not sign the challenge")
+            print(f"[auth]    Apple-Challenge accepted, {decoded_len}-byte Apple-Response")
 
         # 2. ANNOUNCE - SDP with fmtp, no rsaaeskey/aesiv.
         sdp = build_sdp(session.our_ip, args.host)
@@ -1131,6 +1157,11 @@ def main():
                          "keeps well ahead of that with margin to spare)")
     ap.add_argument("--dry-run", action="store_true",
                     help="print the RTSP conversation and packet construction without touching the network")
+    ap.add_argument("--challenge", action="store_true",
+                    help="send an Apple-Challenge on OPTIONS and require a signed "
+                         "256-byte Apple-Response, the way a real sender does; "
+                         "exercises the RSA path (and its stack cost) that the "
+                         "default run skips entirely")
     ap.add_argument("--selftest", action="store_true", help="run internal self-tests and exit")
     ap.add_argument("--quiet", dest="verbose", action="store_false", default=True,
                     help="suppress the RTSP/timing/sync exchange log")

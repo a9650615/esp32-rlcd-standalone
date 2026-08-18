@@ -47,6 +47,12 @@ static struct {
     uint32_t pause_frames;
 } timing_correction = {0, 0};
 
+// Byte-for-byte the same clock as util.c's gettime_ms(), which is what
+// produces the playtime values compared against it below. Duplicated rather
+// than shared only because this file predates the include; do not "fix" it
+// by switching one side to gettimeofday() or to tick count. A frame's
+// playtime and this `now` must come from one time base, and a session spent
+// hunting a mismatch that was never there is the reason this note exists.
 static uint32_t gettime_ms(void) {
     return (uint32_t)(esp_timer_get_time() / 1000ULL);
 }

@@ -86,7 +86,15 @@ extern log_level 	raop_loglevel;
 #define MIN_LATENCY		11025
 #define MAX_LATENCY   	( (120 * RAOP_SAMPLE_RATE * 2) / 100 )
 
-#define RTP_STACK_SIZE	(4*1024)
+// MEASURED, was 4*1024. uxTaskGetStackHighWaterMark() reported 1,556 bytes
+// free at 4 KB. This task parses every RTP packet and calls data_cb all the
+// way down into the audio sink, so its depth follows the sink, not this
+// file - a change three modules away can eat that margin without anything
+// here changing. 6 KB leaves the measured peak at under half. Costs 2 KB of
+// internal RAM inside rtp_t (the stack is a struct member, see xStack
+// below), so it also raises what rtp_init() must find as one contiguous
+// block; rtp_init() reports the shortfall explicitly if it ever cannot.
+#define RTP_STACK_SIZE	(6*1024)
 
 #define RTP_SYNC	(0x01)
 #define NTP_SYNC	(0x02)

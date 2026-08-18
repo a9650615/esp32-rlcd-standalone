@@ -749,11 +749,18 @@ uint32_t g_stream_sample_rate = 0;
 
 // A stream is "abandoned" - the writer task died, or simply stopped
 // calling audio_stream_write() without ever calling audio_stream_close() -
-// rather than merely idle: real audio (AirPlay included) does not have
-// multi-second gaps between chunks in normal operation, so this is
-// generous against a genuine network hiccup while still bounding how long
-// the amplifier can be left on by something that is never coming back.
-constexpr uint32_t kStreamWatchdogTimeoutMs = 2000;
+// rather than merely idle.
+//
+// The longest legitimate gap is not between two chunks mid-stream, it is
+// between open() and the FIRST chunk. RAOP opens the sink as soon as the
+// sender says RECORD, then holds every frame until its scheduled playtime
+// arrives; that hold is the sender's declared latency, capped at
+// MAX_LATENCY = 120 * 44100 * 2 / 100 = 105,840 frames = 2.4 s (see
+// rtp.c). At 2000 ms this watchdog fired during that hold on every single
+// AirPlay session, closed the stream before one sample was written, and
+// made a working receiver look like a silent one. Anything below ~2.4 s is
+// not a tuning choice, it is a guaranteed failure.
+constexpr uint32_t kStreamWatchdogTimeoutMs = 5000;
 
 // Ends the session: trailing silence, the same drain wait
 // write_tone_step() uses (here at whatever rate the stream opened at, via

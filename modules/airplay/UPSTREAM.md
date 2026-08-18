@@ -120,6 +120,47 @@ Two separate upstreams, vendored into two separate subdirectories.
   high-water-mark logging in `search_remote()` regardless, in case
   measurement says otherwise. Measured result: `sizeof(raop_ctx_s)` 27,804 ->
   11,420 bytes.
+- **The measurement came back; two of the three sizes were wrong.** With the
+  logging above running on hardware through a real session, the free-stack
+  minima were: `rtsp_thread()` 7,668 bytes free of 8,192, `audio_output`
+  3,764 of 8,192, `rtp_thread_func()` **1,556 of 4,096**, `search_remote()`
+  **736 of 3,072**. `RTSP_STACK_SIZE` stays at 8 KiB - the 8 KiB guess above
+  turned out to be generous rather than reckless, and it is not cut further
+  because the one path that dominates its depth, the `mbedtls` RSA-2048
+  operation, does not run at all in a test-sender session, so 7,668 is an
+  upper bound on free space and not necessarily the one an iPhone produces.
+  The other two were raised: `RTP_STACK_SIZE` 4 -> 6 KiB and
+  `SEARCH_STACK_SIZE` 3 -> 5 KiB. Neither was failing, which is the point -
+  736 bytes of margin does not fail, it makes every later measurement on
+  this system ambiguous between "the fix did nothing" and "something else
+  overflowed". `rtp_thread_func()`'s depth in particular is not bounded by
+  anything in this module: it calls `data_cb` straight down into the audio
+  sink, so a change three modules away moves it. Both stacks are struct
+  members, so this adds 2 KiB of internal RAM to `rtp_t` and 2 KiB to
+  `raop_ctx_s`; `rtp_init()` now reports the free and largest-block figures
+  explicitly if its allocation ever cannot be met.
+
+### The sink watchdog was shorter than the protocol's own startup latency
+
+Not an upstream change - a bug in *our* `modules/audio` that made upstream
+look broken, recorded here because the next person to debug silent AirPlay
+will start in this directory.
+
+`audio_stream_open()` arms an abandoned-stream watchdog, originally 2,000 ms,
+on the reasoning that "real audio does not have multi-second gaps between
+chunks". That is true between two chunks mid-stream and false for the gap
+that actually matters: the one between `open()` and the **first** chunk.
+RAOP opens the sink as soon as the sender sends RECORD, then holds every
+frame until its scheduled `playtime` arrives. That hold is the sender's
+declared latency, clamped in `rtp.c` to `MAX_LATENCY` = 120 * 44100 * 2 / 100
+= 105,840 frames = **2.4 s**. The watchdog therefore expired, during normal
+operation, before one sample was ever written - it closed the stream, the
+ring filled, frames dropped, and a receiver that was working end to end
+presented as a receiver that produced silence. The symptom reported was
+"connects but will not play", which is exactly what this produces.
+
+Raised to 5,000 ms. Any value below ~2.4 s is not a tuning preference, it is
+a guaranteed failure on every session.
 - **`src/raop.c` / `src/rtp.c`: added `uxTaskGetStackHighWaterMark()` logging
   to `rtsp_thread()`, `search_remote()`, and `rtp_thread_func()`.** Each
   tracks the smallest high-water-mark it has seen and logs (`LOG_INFO`) only

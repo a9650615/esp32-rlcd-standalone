@@ -34,10 +34,14 @@
 // reckless guess. Final value comes from the high-water-mark measurement,
 // not from this comment.
 #define RTSP_STACK_SIZE 	(8*1024)
-// Not reduced: already small, and RTSP_STACK_SIZE alone is what forced
-// raop_ctx_s over the ceiling (see UPSTREAM.md for the arithmetic) - cutting
-// this too would add overflow risk for negligible size benefit.
-#define SEARCH_STACK_SIZE	(3*1024)
+// MEASURED, was 3*1024. uxTaskGetStackHighWaterMark() reported 736 bytes
+// free at 3 KB - it survived, but 736 bytes is not headroom, it is luck.
+// This task runs an mDNS query for the sender's DACP service, and mDNS
+// resolution depth varies with what else is on the network, so the peak
+// this board happened to see is not the peak it will ever see. 5 KB puts
+// the measured peak at roughly half the stack. Costs 2 KB of internal RAM
+// inside raop_ctx_s, which is allocated once per receiver, not per session.
+#define SEARCH_STACK_SIZE	(5*1024)
 
 typedef struct raop_ctx_s {
 	struct in_addr host;	// IP of bridge
