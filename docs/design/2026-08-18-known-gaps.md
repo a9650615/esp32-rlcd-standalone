@@ -77,26 +77,35 @@ DRAM elsewhere (already done once, moving the check and audio task stacks to
 PSRAM — how much is left is unknown), or accept that AirPlay does not fit
 alongside the current feature set and say so in the module's README.
 
-## The `modules/` acceptance test has drifted
+## The 72 KB core leak did not exist
 
-`modules/README.md` records 1,528,048 bytes (0x1750f0, dated 2026-08-17) as
-the modules-off baseline its byte-count acceptance test compares against.
-Measured at `ada6042`, modules off, that number is now **1,600,240** — the
-test cannot pass, so it currently proves nothing.
+An earlier version of this file recorded that `modules/README.md`'s
+byte-count acceptance test had drifted 72,192 bytes with no explanation, and
+guessed that `lv_canvas` had dragged LVGL's draw-buffer and layer machinery
+into core.
 
-The gap is +72,192 bytes, and it is not explained. It arrived with
-`e7f097a`/`ada6042`, whose stated subject is a charging icon and some canvas
-fixes; the bitmap itself is 28 bytes. The likely candidate is `lv_canvas`
-being linked in for the first time and dragging LVGL's draw-buffer and layer
-machinery with it, but that is a guess and has not been checked.
+Both halves were wrong, and the way they were wrong is the useful part. The
+acceptance test requires **every** module off; the measurement behind that
+figure was taken with `CONFIG_AUDIO_ENABLE=y`, so it counted the audio
+module's own ~59 KB as core. Measured correctly — audio and AirPlay both off
+— HEAD is 1,541,040 bytes, and the real growth over the recorded baseline is
+12,992 bytes, every byte of it attributable to named core changes. LVGL grew
+by 20 bytes, so the guess was disproven outright.
 
-The baseline was deliberately not updated to the new figure. Recording a
-number that nobody understands would convert a broken test into a
-misleading one. Establish where the 72 KB went first, then update it.
+Reading a leak into a number nobody had checked, and then writing it down as
+a finding, cost more than the measurement would have. The corrected baseline
+and a per-contributor breakdown are now in `modules/README.md`.
 
-AirPlay's own incremental cost is unchanged and still matches what its
-README records: +88,288 bytes (86.2 KiB) with `CONFIG_AIRPLAY_ENABLE=y`,
-plus 4,420 bytes of static DRAM.
+One real gap did come out of it: rebuilding the exact commit that recorded
+1,528,048 produces 1,531,104 instead. Toolchain, ESP-IDF and pinned
+dependency versions were all ruled out; the 3,056-byte difference is
+unexplained. It does not threaten a test meant to catch tens of KB, but it
+means the baseline is only reproducible to about 3 KB, which is now stated
+where the number lives.
+
+AirPlay's own incremental cost is unaffected by any of this and still
+matches what its README records: +88,288 bytes (86.2 KiB) with
+`CONFIG_AIRPLAY_ENABLE=y`, plus 4,420 bytes of static DRAM.
 
 ## The new static_asserts are narrower than they appear
 

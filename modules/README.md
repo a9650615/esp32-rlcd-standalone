@@ -85,12 +85,14 @@ still costs flash and RAM whether or not anyone turns it on.
 ## The acceptance test
 
 Building with every module's `_ENABLE` off must return the binary to the core
-baseline: **1,528,048 bytes** (`0x1750f0`), measured 2026-08-17.
+baseline: **1,541,040 bytes** (`0x1783b0`), measured 2026-08-18.
 
-That is not the original 1,525,840 bytes core measured at before any module
-existed - it is 2,208 bytes larger, and that growth is legitimate, not a
-leak, for two reasons that are both worth naming rather than folding
-silently into a bigger number:
+That is not the 1,525,840 bytes core measured before any module existed, nor
+the 1,528,048 bytes recorded on 2026-08-17 after the first module (audio) and
+the tray indicator registry landed - it is 12,992 bytes larger than that
+2026-08-17 figure, and that growth is legitimate, not a leak, for reasons
+that are both worth naming rather than folding silently into a bigger
+number:
 
 - **The debug-only `/beep`/`/beep-sweep` route glue in
   `components/wifi_provision/portal.cpp`** exists in every debug build
@@ -108,12 +110,50 @@ silently into a bigger number:
   `CONFIG_AUDIO_ENABLE=n` the registry still exists but nothing ever calls
   `register_tray_indicator()`, so it costs a few hundred bytes of dead
   capacity and draws nothing.
+- **A second module's worth of the same registration glue, for AirPlay**
+  (`main/app_main.cpp` calling `airplay::airplay_init()` unconditionally,
+  plus the internal-RAM diagnostics and log-transport-ordering fixes that
+  went with it) - the same rule-4 boundary as the first bullet, just paid
+  twice now that there are two modules to register and log around
+  regardless of whether either is compiled in.
+- **The `i1_canvas_*` helpers in `ui_theme.cpp`** (`bind_i1_canvas`,
+  `i1_canvas_stride`, `i1_canvas_pixel_offset`) that the charging-icon work
+  factored out so the tray indicator, the battery-charging composite, and
+  the `/dither-card` debug screen all size and address their 1bpp LVGL
+  canvases the same correct way instead of three copies of a
+  `(width + 7) / 8` formula that drifted from LVGL's own stride and palette
+  layout on real hardware. This is core UI infrastructure, not
+  module-specific.
+- **The "show what changed" release-notes feature** (`components/market`'s
+  `market.cpp`/`market_parse.cpp` and the new `market_schedule.cpp`,
+  `components/ota`'s `ota_release.cpp`/`ota_pull.cpp`, and the
+  `wifi_provision` routes and UI screens that surface it) - a real core
+  feature for fetching and displaying release notes from a trusted source,
+  plus the fix that kept its ASCII gate from rejecting valid punctuation.
+  None of it is reachable through, or gated by, either module's `_ENABLE`.
 
-A meaningful difference from 1,528,048 bytes beyond what a legitimate core
-change like the two above accounts for means something leaked into core - a
+A meaningful difference from 1,541,040 bytes beyond what a legitimate core
+change like the ones above accounts for means something leaked into core - a
 stray include, a symbol referenced outside the module's own files, a Kconfig
 default that doesn't actually gate what it claims to. That is a bug to find
 and fix, not a difference to explain away in a commit message.
+
+One caveat on how much precision to read into that, found while re-measuring
+this: rebuilding the exact commit that recorded 1,528,048 does not reproduce
+it. It builds to 1,531,104 - 3,056 bytes larger - with the same toolchain,
+the same ESP-IDF, and `idf_component.yml` pinning every dependency to an
+exact version, so registry drift, the app version string, and the compiler
+were all ruled out and the cause is still unknown. Two orders of magnitude
+below the growth this section is meant to catch, so it does not undermine
+the test, but it does mean a difference of a few thousand bytes is not by
+itself evidence of anything. Treat this figure as reproducible to about
+3 KB until someone finds the reason it is not exact.
+
+Note also which configuration produces it: **every** module off, which today
+means `CONFIG_AUDIO_ENABLE=n` as well as `CONFIG_AIRPLAY_ENABLE=n`. Measuring
+with audio left on overstates core by roughly 59 KB - the audio module's own
+footprint, counted as if it were core. That mistake has already been made
+once and it looked exactly like a 72 KB leak.
 
 To re-measure the baseline after core legitimately grows (a new core
 component, a bigger font, and so on): set every `<NAME>_ENABLE` off, run
