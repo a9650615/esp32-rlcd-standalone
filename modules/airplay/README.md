@@ -129,6 +129,42 @@ derivatives all carry a copy under this same name, `super_secret_key`) -
 finding one is not the point of this module's design; keeping this specific
 repository from being the thing that ships it is.
 
+## Testing without a real key or a phone
+
+An iPhone cannot test this receiver either: it always sends an
+Apple-Challenge on `OPTIONS`, which requires signing with the withheld key
+above, so a real AirPlay client fails at the very first request regardless
+of whether authentication is actually wired up correctly. `raop.c`'s two RSA
+paths are both conditional, not mandatory, though -
+`apple_challenge()` returns immediately when there is no Apple-Challenge
+header, and the `rsaaeskey`/AES-decrypt path in the `ANNOUNCE` handler only
+runs `if (strcasestr(body, "rsaaeskey"))` - so a sender that simply omits
+both can complete the handshake and stream real audio with no key at all.
+
+`scripts/raop-test-sender.py` is exactly that sender, built for this
+project's own use in exercising this receiver end to end. It is a real (if
+minimal) RTSP client and ALAC *encoder* - not just an RTP framer: rtp.c's
+`buffer_put_packet()` calls `alac_to_pcm()` unconditionally for every
+arriving packet, with no PCM path at all, so the tool always encodes a real,
+losslessly-compressed ALAC bitstream (derived by reading the vendored
+decoder backwards; there is no encoder anywhere in this repository or its
+vendored code, only Apple's decoder). It generates a known sine tone at a
+stated frequency/amplitude/duration so what comes out of the speaker can be
+judged by ear against what went in, at a conservative default amplitude
+(-20dBFS) since it drives a real speaker in someone's home. It implements
+enough of `rtp.c`'s NTP-timing and sync-packet exchange for the receiver to
+actually reach `RTP_PLAY` and start calling its audio data callback, not
+just accept the RTSP handshake.
+
+It cannot exercise the RSA/authentication paths themselves (deliberately -
+that's the whole point), AES-encrypted audio, resend recovery, or mDNS
+discovery - see the tool's own module docstring
+(`python3 scripts/raop-test-sender.py --help` or read the file directly) for
+the full list of what it does and does not prove, field-by-field citations
+into `raop.c`/`rtp.c` for every byte it sends, and `--dry-run` /
+`--selftest` for reviewing or checking it without a board. Standard library
+only, no new dependencies.
+
 ## Buffer sizing: a few seconds, not upstream's ~23
 
 Upstream sizes its RTP jitter buffer and decoded-PCM ring at 512 352-sample
