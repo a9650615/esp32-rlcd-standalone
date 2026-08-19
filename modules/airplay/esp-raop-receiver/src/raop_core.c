@@ -155,14 +155,26 @@ static bool internal_cmd_cb(raop_internal_event_t event, ...) {
             // Kept as a measurement rather than deleted because if genuine
             // drift ever does show up, it will show up here first - as an
             // error that grows steadily rather than one that sits still.
+            // Two maxima, because one of them was misleading. The all-time
+            // figure never resets, so a single excursion sets it forever and
+            // a later report showing a larger number looks like a trend when
+            // it is a memory. The window figure resets every report, so
+            // consecutive lines can be compared: if this is real clock drift
+            // the window maxima climb steadily, and if it is jitter they do
+            // not. That distinction is the whole question about leaving the
+            // correction switched off.
             static uint32_t evaluations = 0;
-            static int32_t worst_error = 0;
+            static int32_t worst_ever = 0, worst_window = 0;
             const int32_t magnitude = error < 0 ? -error : error;
-            if (magnitude > worst_error) worst_error = magnitude;
+            if (magnitude > worst_ever) worst_ever = magnitude;
+            if (magnitude > worst_window) worst_window = magnitude;
             if ((++evaluations % 16) == 0) {
-                ESP_LOGI(TAG, "drift: error=%d ms (worst |error| %d ms over %u "
-                              "evaluations, not corrected - see comment)",
-                         (int) error, (int) worst_error, (unsigned) evaluations);
+                ESP_LOGI(TAG, "drift: error=%d ms, window max %d ms, all-time "
+                              "max %d ms over %u evaluations (observed, not "
+                              "corrected - see comment)",
+                         (int) error, (int) worst_window, (int) worst_ever,
+                         (unsigned) evaluations);
+                worst_window = 0;
             }
             break;
         }
