@@ -1,6 +1,7 @@
 #define UI_THEME_GEOMETRY_ONLY
 #include "app_snapshot.hpp"
 #include "media_registry.hpp"
+#include "now_playing_controller.hpp"
 #include "page_registry.hpp"
 #include "ui_data.hpp"
 
@@ -153,4 +154,102 @@ HOST_TEST(volume_overlay_fits_the_content_area) {
   EXPECT_TRUE(inside(layout.bar_outline, content));
   EXPECT_EQ(ui::volume_overlay_fill_width(0.0f), 0);
   EXPECT_EQ(ui::volume_overlay_fill_width(1.0f), layout.bar_outline.width - 6);
+}
+
+HOST_TEST(seize_takes_the_screen_when_a_session_opens) {
+  app_core::SeizeState state;
+  EXPECT_TRUE(!app_core::seize_tick(state, false, "", 1'000).owns_screen);
+
+  const app_core::SeizeState opened =
+      app_core::seize_tick(state, true, "Midnight City", 1'000);
+  EXPECT_TRUE(opened.owns_screen);
+}
+
+HOST_TEST(seize_releases_after_the_hold_and_stays_released) {
+  app_core::SeizeState state =
+      app_core::seize_tick(app_core::SeizeState{}, true, "Midnight City", 1'000);
+  const uint64_t hold_ms = app_core::kNowPlayingSeizeSeconds * 1000;
+
+  state = app_core::seize_tick(state, true, "Midnight City", 1'000 + hold_ms - 1);
+  EXPECT_TRUE(state.owns_screen);
+
+  state = app_core::seize_tick(state, true, "Midnight City", 1'000 + hold_ms);
+  EXPECT_TRUE(!state.owns_screen);
+
+  state = app_core::seize_tick(state, true, "Midnight City", 9'999'999);
+  EXPECT_TRUE(!state.owns_screen);
+}
+
+HOST_TEST(seize_restarts_on_a_new_title_but_not_on_a_republished_one) {
+  const uint64_t hold_ms = app_core::kNowPlayingSeizeSeconds * 1000;
+  app_core::SeizeState state =
+      app_core::seize_tick(app_core::SeizeState{}, true, "Midnight City", 1'000);
+  state = app_core::seize_tick(state, true, "Midnight City", 1'000 + hold_ms);
+  EXPECT_TRUE(!state.owns_screen);
+
+  // Same title again: no reason to grab the screen back.
+  state = app_core::seize_tick(state, true, "Midnight City", 1'000 + hold_ms + 5);
+  EXPECT_TRUE(!state.owns_screen);
+
+  // A different one is a new track.
+  state = app_core::seize_tick(state, true, "Reunion", 1'000 + hold_ms + 10);
+  EXPECT_TRUE(state.owns_screen);
+}
+
+HOST_TEST(seize_lets_go_the_moment_the_session_closes) {
+  app_core::SeizeState state =
+      app_core::seize_tick(app_core::SeizeState{}, true, "Midnight City", 1'000);
+  EXPECT_TRUE(state.owns_screen);
+  state = app_core::seize_tick(state, false, "", 1'500);
+  EXPECT_TRUE(!state.owns_screen);
+}
+
+HOST_TEST(volume_overlay_opens_on_a_change_and_closes_on_a_timer) {
+  app_core::VolumeOverlayState state;
+  // First observation only records the level; there is nothing to compare it
+  // against yet, so restoring a volume at connect time must not flash the
+  // overlay.
+  state = app_core::volume_overlay_tick(state, 0.6f, true, 1'000);
+  EXPECT_TRUE(!state.visible);
+
+  state = app_core::volume_overlay_tick(state, 0.7f, true, 2'000);
+  EXPECT_TRUE(state.visible);
+
+  state = app_core::volume_overlay_tick(state, 0.7f, true,
+                                        2'000 + app_core::kVolumeOverlayMs - 1);
+  EXPECT_TRUE(state.visible);
+
+  state = app_core::volume_overlay_tick(state, 0.7f, true,
+                                        2'000 + app_core::kVolumeOverlayMs);
+  EXPECT_TRUE(!state.visible);
+}
+
+HOST_TEST(volume_overlay_stays_shut_when_the_page_is_not_on_screen) {
+  app_core::VolumeOverlayState state =
+      app_core::volume_overlay_tick(app_core::VolumeOverlayState{}, 0.6f, false,
+                                    1'000);
+  state = app_core::volume_overlay_tick(state, 0.9f, false, 2'000);
+  EXPECT_TRUE(!state.visible);
+
+  // Leaving the page closes an overlay that was already up.
+  app_core::VolumeOverlayState open =
+      app_core::volume_overlay_tick(app_core::VolumeOverlayState{}, 0.6f, true,
+                                    1'000);
+  open = app_core::volume_overlay_tick(open, 0.9f, true, 2'000);
+  EXPECT_TRUE(open.visible);
+  open = app_core::volume_overlay_tick(open, 0.9f, false, 2'100);
+  EXPECT_TRUE(!open.visible);
+}
+
+HOST_TEST(volume_overlay_ignores_a_source_with_no_level_to_report) {
+  app_core::VolumeOverlayState state;
+  state = app_core::volume_overlay_tick(state, -1.0f, true, 1'000);
+  state = app_core::volume_overlay_tick(state, -1.0f, true, 2'000);
+  EXPECT_TRUE(!state.visible);
+
+  // The first real level after that is still only a baseline, not a change.
+  state = app_core::volume_overlay_tick(state, 0.4f, true, 3'000);
+  EXPECT_TRUE(!state.visible);
+  state = app_core::volume_overlay_tick(state, 0.5f, true, 4'000);
+  EXPECT_TRUE(state.visible);
 }
