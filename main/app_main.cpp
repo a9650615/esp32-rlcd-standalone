@@ -29,6 +29,7 @@
 #include <array>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <string>
 
 #include <driver/i2c_master.h>
@@ -867,12 +868,18 @@ constexpr uint32_t kProviderRetryPeriodMs = 5 * 60'000;
   }
 }
 
-// US stays on the flat interval market.hpp defines (30 min) - see that
-// header's own comment on kRefreshIntervalSeconds for why: US trading
-// hours are a second, DST-observing timezone this component has no access
-// to (Taiwan's fixed CST-8/no-DST offset is what makes its market-hours
-// check simple enough to do without one), and there has been no reported
-// staleness complaint about this page the way there was for Taiwan.
+// US keeps the flat interval market.hpp defines (30 min) - unlike Taiwan it
+// gets no faster during its session. Only the *phase* is adjusted: the one
+// sleep that would otherwise step over the open is cut short so a refresh
+// lands just after it, instead of the page holding the previous session -
+// complete, correctly dated, and read as "not open yet" - for up to half an
+// hour into the new one.
+//
+// That needs no US timezone and no DST rules, which is what kept this page
+// on a blind flat interval until now: the exchange's own session start
+// arrives in the response as an epoch second (market::us_session_start()),
+// the device's clock is on that same scale, and the comparison is integer
+// arithmetic. See market_schedule.hpp's us_refresh_interval_seconds().
 [[noreturn]] void us_market_monitor_task(void*) {
   wait_for_station_ip();
   for (;;) {
@@ -881,8 +888,25 @@ constexpr uint32_t kProviderRetryPeriodMs = 5 * 60'000;
     ESP_LOGI(kTag, "us refresh ok=%d valid=%d value=%d intraday=%d", ok,
              us.valid, us.primary_value, us.has_intraday);
     wifi_provision::set_us_market(us);
-    vTaskDelay(pdMS_TO_TICKS(ok ? market::kRefreshIntervalSeconds * 1000
-                                : kProviderRetryPeriodMs));
+
+    uint32_t interval_ms;
+    if (!ok) {
+      interval_ms = kProviderRetryPeriodMs;
+    } else {
+      // std::time() only once net_time has actually synced - the same rule
+      // net_time::now() enforces for the Taiwan task above. An unsynced
+      // system clock is not a slightly wrong instant, it is 1970, and
+      // handing that to a comparison against a real session boundary would
+      // silently pick a sleep from arithmetic on a number that means
+      // nothing. 0 tells us_refresh_interval_seconds() there is no clock,
+      // and it answers with the flat interval.
+      const long long now_epoch =
+          net_time::synced() ? static_cast<long long>(std::time(nullptr)) : 0;
+      interval_ms = static_cast<uint32_t>(market::us_refresh_interval_seconds(
+                        now_epoch, market::us_session_start())) *
+                    1000;
+    }
+    vTaskDelay(pdMS_TO_TICKS(interval_ms));
   }
 }
 

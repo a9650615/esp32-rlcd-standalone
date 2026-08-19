@@ -32,6 +32,8 @@ app_core::MarketData g_taiwan;  // valid == false until the first success.
 app_core::MarketData g_us;
 // See taiwan_using_primary_source() below.
 bool g_taiwan_using_primary = false;
+// See us_session_start() below.
+long long g_us_session_start = 0;
 
 // GETs `url`, heap-allocating up to `max_bytes` for the body (never on the
 // caller's stack - MI_INDEX alone is tens of KB). Every esp_err_t and the
@@ -197,8 +199,15 @@ bool refresh_us() {
   parsed.valid = true;
 
   g_us = parsed;
+  g_us_session_start = primary.session_start;
   return true;
 }
+
+// Gated on g_us.valid rather than reset on each of refresh_us()'s four
+// failure paths: one condition cannot be forgotten by a fifth one added
+// later, and a scheduler must never be handed a session boundary from a
+// snapshot that is no longer on screen.
+long long us_session_start() { return g_us.valid ? g_us_session_start : 0; }
 
 app_core::MarketData taiwan() { return g_taiwan; }
 app_core::MarketData us() { return g_us; }

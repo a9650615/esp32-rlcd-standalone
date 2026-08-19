@@ -30,6 +30,11 @@ int weekday(const app_core::RtcDateTime& date) {
 constexpr int kSessionOpenMinute = 9 * 60;          // 09:00
 constexpr int kSessionCloseMinute = 13 * 60 + 30;  // 13:30
 
+// Floor on the shortened pre-open sleep. A wake-up seconds from now buys
+// nothing the next one would not, and a task that sleeps ~0 between two
+// pairs of HTTPS requests is a battery drain and a way to get rate-limited.
+constexpr int kMinSleepSeconds = 60;
+
 }  // namespace
 
 bool taiwan_market_hours(const app_core::RtcDateTime& local_time) {
@@ -49,21 +54,45 @@ int taiwan_refresh_interval_seconds(const app_core::RtcDateTime& local_time,
   // off-hours, so it used to take the flat 30-minute interval and the panel
   // kept showing yesterday's close until 09:25 - the exact staleness the
   // fast in-session interval exists to prevent, just moved to the one
-  // moment of the day it matters most. Minute granularity on purpose: the
-  // seconds already elapsed in the current minute put the next refresh a
-  // little after 09:00, not exactly on it, which is what Yahoo needs to
-  // have published the session's first bar.
+  // moment of the day it matters most. Same fix as
+  // us_refresh_interval_seconds() below and the same kOpenWarmupSeconds
+  // wait, by a different route: Taiwan's session bounds are already in this
+  // file, in a timezone with no DST, so this needs no epoch arithmetic and
+  // no session metadata from a response that may not have arrived.
+  //
+  // Only ever shorter than kRefreshIntervalSeconds, and only for the one
+  // sleep that would otherwise step over the open: this moves when a
+  // refresh lands, it never adds one.
   const int day = weekday(local_time);
   if (day != 0 && day != 6) {
     const int minute_of_day = local_time.hour * 60 + local_time.minute;
     if (minute_of_day < kSessionOpenMinute) {
-      const int seconds_until_open = (kSessionOpenMinute - minute_of_day) * 60;
-      if (seconds_until_open < kRefreshIntervalSeconds) {
-        return seconds_until_open;
-      }
+      const int until_warm =
+          (kSessionOpenMinute - minute_of_day) * 60 + kOpenWarmupSeconds;
+      if (until_warm < kRefreshIntervalSeconds) return until_warm;
     }
   }
   return kRefreshIntervalSeconds;
+}
+
+int us_refresh_interval_seconds(long long now_epoch, long long session_start) {
+  // No clock, or a response that did not date its session: the flat
+  // interval, which is what this page did before any of this existed.
+  if (now_epoch <= 0 || session_start <= 0) return kRefreshIntervalSeconds;
+  const long long until_warm =
+      session_start + kOpenWarmupSeconds - now_epoch;
+  // Already past the open (mid-session, or any time after the close, since
+  // the source keeps reporting a session start until it rolls to the next
+  // one) - nothing to align to.
+  if (until_warm <= 0) return kRefreshIntervalSeconds;
+  // Further out than one ordinary interval - including the whole of a
+  // weekend or an overnight - is also nothing to align to yet. Sleeping
+  // straight through to a distant open would mean trusting one number from
+  // one response with hours of blackout; the ordinary interval gets there
+  // in steps, and the last of those steps is the one that lands short.
+  if (until_warm >= kRefreshIntervalSeconds) return kRefreshIntervalSeconds;
+  return static_cast<int>(until_warm < kMinSleepSeconds ? kMinSleepSeconds
+                                                        : until_warm);
 }
 
 }  // namespace market

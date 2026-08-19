@@ -26,11 +26,11 @@ namespace market {
 // outright.
 //
 // This used to be the only interval, flat whether a market was open or
-// closed - "what's the S&P doing" still gets exactly that, unchanged (see
-// refresh_us() below; US trading hours are a second, DST-observing
-// timezone this component still has no access to, and nobody has reported
-// the same staleness complaint about that page - see market_schedule.hpp's
-// own comment for the fuller reasoning). Taiwan no longer does: the
+// closed. It is still the interval both markets use most of the time, US
+// included: the US page is not polled any faster during its session than
+// outside it (see market_schedule.hpp's us_refresh_interval_seconds(),
+// which only moves *when* a refresh lands, never how many there are).
+// Taiwan no longer does: the
 // operator hit the flat interval's actual cost directly - the market open
 // at 09:00 with the page still showing Friday's close - and a trading
 // calendar was never the missing piece for that, market hours were. See
@@ -76,6 +76,15 @@ bool taiwan_using_primary_source();
 // representable (there is one `valid` flag for the whole struct) and would
 // not be honest anyway. Returns true on success.
 bool refresh_us();
+
+// meta.currentTradingPeriod.regular.start from the last successful
+// refresh_us() - the epoch second the exchange itself said its regular
+// session begins - or 0 when the last call failed or the response did not
+// carry it. market_schedule.hpp's us_refresh_interval_seconds() needs it
+// to land a refresh just after the open instead of up to a full interval
+// past it. Mirrors taiwan_using_primary_source() above: refresh state the
+// scheduler needs and the screen does not, so it stays out of MarketData.
+long long us_session_start();
 
 // Returns the current cached snapshot. No I/O; safe to call from any task,
 // including the LVGL thread.
