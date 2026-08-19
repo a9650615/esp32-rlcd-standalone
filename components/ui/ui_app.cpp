@@ -55,6 +55,11 @@ struct Runtime {
   // rebuild the rotation immediately - see timer_callback for why waiting
   // for the carousel to wrap is not good enough.
   bool last_session_open = false;
+  // The whole-second the now-playing page last drew. m:ss only changes once a
+  // second, and the progress bar moves about 1.6 px/s on a 388 px span over a
+  // four-minute track, so a finer interval would repaint the panel for a
+  // difference nobody can see.
+  uint32_t last_now_playing_second = 0;
   lv_timer_t* timer = nullptr;
   uint32_t cycle = 0;
   bool initialized = false;
@@ -614,8 +619,25 @@ void timer_callback(lv_timer_t* timer) {
     const bool seize_changed =
         !previous_seize.owns_screen ||
         previous_seize.title != runtime->now_playing_seize.title;
-    if (!runtime->showing_now_playing || seize_changed ||
+    // Without this the bar and the times froze for the entire 60 s hold: the
+    // gating had no case for a progress change, so nothing repainted between
+    // taking the screen and changing track. Reported from the panel as
+    // "畫面更新可以勤一點", which was the polite version of "the progress
+    // bar does not move".
+    //
+    // One repaint per second, not per tick. A tick is 100 ms and a full page
+    // rebuild costs ~28 ms of conversion plus ~10.5 ms blocked on the panel's
+    // DMA, so repainting on every tick would spend a third of the CPU redrawing
+    // a bar that had moved a sixth of a pixel. If one per second still proves
+    // to disturb the audio path, the next step is label-only updates through
+    // update_visible_fields() rather than a full rebuild - the mechanism
+    // already exists, it just needs this page's labels registered.
+    const uint32_t now_playing_second = media.elapsed_ms / 1000;
+    const bool second_changed =
+        now_playing_second != runtime->last_now_playing_second;
+    if (!runtime->showing_now_playing || seize_changed || second_changed ||
         overlay_was_visible != runtime->volume_overlay.visible) {
+      runtime->last_now_playing_second = now_playing_second;
       const lv_obj_t* rendered =
           render_page(runtime->context, runtime->snapshot,
                       app_core::PageId::NowPlaying, safe_canvas(), 0, 0);

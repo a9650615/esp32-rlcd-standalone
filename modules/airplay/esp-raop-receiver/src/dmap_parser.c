@@ -272,7 +272,12 @@ const static struct {
 	{ NULL, 	NULL, 								0 },
 };
 
-static int  parse_value(dmap_settings *settings, int type, void *data, int len);
+// `tag` carries the four-character DMAP code down to the string callback.
+// Upstream passed NULL there, which made on_string useless to any consumer
+// that needs to know WHICH string it just received - see the TAG_STRING case
+// below and UPSTREAM.md.
+static int  parse_value(dmap_settings *settings, const char *tag, int type,
+                        void *data, int len);
 
 /*----------------------------------------------------------------------------*/
 static int get_field(char *tag, int *type)
@@ -312,7 +317,7 @@ static int parse_container(dmap_settings *settings, char *tag, void *data, int l
 			continue;
 		}
 
-		parse_value(settings, item_type, (char*) data + pos + 8, item_len);
+		parse_value(settings, item_tag, item_type, (char*) data + pos + 8, item_len);
 		pos += 8 + item_len;
 	}
 
@@ -320,7 +325,8 @@ static int parse_container(dmap_settings *settings, char *tag, void *data, int l
 }
 
 /*----------------------------------------------------------------------------*/
-static int parse_value(dmap_settings *settings, int type, void *data, int len)
+static int parse_value(dmap_settings *settings, const char *tag, int type,
+                       void *data, int len)
 {
 	switch (type) {
 	case TAG_BYTE:
@@ -336,7 +342,7 @@ static int parse_value(dmap_settings *settings, int type, void *data, int len)
 		if (settings->on_int64) settings->on_int64(settings->ctx, ntohll(*(uint64_t*)data));
 		break;
 	case TAG_STRING:
-		if (settings->on_string) settings->on_string(settings->ctx, NULL, NULL, (char*) data, len);
+		if (settings->on_string) settings->on_string(settings->ctx, tag, NULL, (char*) data, len);
 		break;
 	case TAG_DATE:
 		if (settings->on_date) settings->on_date(settings->ctx, ntohl(*(uint32_t*)data));
@@ -381,7 +387,7 @@ int dmap_parse(dmap_settings *settings, void *data, int len)
 
 	if (size != len - 8) return 0;
 
-	parse_value(settings, type, (char*) data + 8, size);
+	parse_value(settings, tag, type, (char*) data + 8, size);
 
 	return 1;
 }

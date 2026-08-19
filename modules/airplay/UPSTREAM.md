@@ -316,3 +316,16 @@ a guaranteed failure on every session.
   working progress bar and a permanently empty title, with no error logged
   anywhere - the body was arriving intact and parsing fine. Now `if
   (dmap_parse(...))`.
+
+- **`src/dmap_parser.c`: the string callback never received its tag.**
+  `parse_value()` called `settings->on_string(ctx, NULL, NULL, buf, len)` -
+  the second parameter is the four-character DMAP code, and passing NULL made
+  the callback unable to tell a title from an artist from an album.
+  `raop.c`'s own `on_dmap_string()` starts with `if (!code || !buf) return;`,
+  so every string was discarded on arrival. The tag was already in hand one
+  frame up the stack (`item_tag` in the container walk); it is now threaded
+  through `parse_value()` as a `const char *tag` parameter and passed to the
+  callback. Found immediately after fixing the inverted `dmap_parse` test
+  above: with that corrected the callback finally fired, and reported
+  `meta=yes title='' artist='' album=''` - the event arriving with every
+  field empty is what pointed here.
