@@ -89,7 +89,15 @@ operator remembering, and this incident is what happens when they do not.
   before `esp_ota_begin()`. It must return quickly and must not itself
   initiate network I/O.
 - `modules/audio` registers a hook that closes any open stream and drops the
-  amplifier. `modules/airplay` registers one that tears down the RAOP session
+  amplifier. **The order matters and is the whole mechanism behind the noise:**
+  GPIO46 has to go low *before* the codec stops being fed, or the amplifier
+  sits enabled with an undriven input, which is what the operator heard.
+  `audio_stream_close()` already sequences this correctly - trailing silence,
+  drain, GPIO46 low, codec closed - so the hook can most likely just call it
+  and wait, rather than needing teardown logic of its own. (Mechanism supplied
+  by the session that owns `modules/audio`; not measured here.) A hook that
+  merely stops writing PCM would leave the amplifier live and reproduce the
+  fault it was added to prevent. `modules/airplay` registers one that tears down the RAOP session
   so the sender is told, rather than left with a socket that stops answering.
 - Both registrations are named in each module's own README, as
   `modules/README.md` rule 5 requires.
