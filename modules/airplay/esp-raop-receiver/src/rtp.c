@@ -90,11 +90,9 @@ extern log_level 	raop_loglevel;
 // free at 4 KB. This task parses every RTP packet and calls data_cb all the
 // way down into the audio sink, so its depth follows the sink, not this
 // file - a change three modules away can eat that margin without anything
-// here changing. 6 KB leaves the measured peak at under half. Costs 2 KB of
-// internal RAM, but as its own heap_caps_malloc() (see xStack below), not as
-// part of the rtp_t struct - so it does not raise what rtp_init()'s ctx
-// allocation must find as one contiguous block. rtp_init() reports either
-// allocation's shortfall explicitly if it ever cannot.
+// here changing. 6 KB leaves the measured peak at under half. The stack lives
+// in .bss (s_rtp_stack, above rtp_init) rather than on the heap, so this size
+// is reserved at link time and costs nothing at runtime to obtain.
 #define RTP_STACK_SIZE	(6*1024)
 
 #define RTP_SYNC	(0x01)
@@ -156,17 +154,6 @@ typedef struct rtp_s {
 	pthread_t thread;
 #else
 	TaskHandle_t thread, joiner;
-	StaticTask_t *xTaskBuffer;
-	// Split out of the struct: this used to be a StackType_t[RTP_STACK_SIZE]
-	// member, which forced rtp_init()'s single heap_caps_calloc(sizeof(rtp_t))
-	// to find RTP_STACK_SIZE-plus-everything-else as one contiguous block. A
-	// second AirPlay SETUP after one completed session found internal RAM
-	// 51,263 bytes free but the largest block only 12,288 - 600 bytes short
-	// of the 12,888-byte struct - even though total free RAM was ample. Two
-	// separate allocations use the same total RAM without that contiguity
-	// cliff. Must stay MALLOC_CAP_INTERNAL: a static FreeRTOS task stack has
-	// to live in internal RAM, never PSRAM.
-    StackType_t *xStack;
 #endif
 
 	struct alac_codec_s *alac_codec;
@@ -234,6 +221,29 @@ static struct alac_codec_s* alac_init(int fmtp[12]) {
 }
 
 /*---------------------------------------------------------------------------*/
+// One RAOP session exists at a time - raop.c holds a single raop_ctx_s, and
+// cleanup_rtsp() calls rtp_end() (which joins the RTP thread via
+// ulTaskNotifyTake before deleting it) before another session can start. So
+// this context, its task stack and its TCB are reserved once at link time
+// instead of being allocated and freed per session.
+//
+// Why: as heap allocations these needed 6,752 + 6,144 bytes of *contiguous*
+// internal RAM on every SETUP, and internal RAM on this board fragments
+// enough that the request fails while total free space is ample - measured
+// "could not allocate 6752 bytes ... largest block 6144" with over 40 KB
+// free. That is the identical failure that made audio_buffer.c's 8 KiB task
+// stack fail five sessions in a row on one boot and succeed five in a row on
+// the next; see audio_buffer_start(). Same total memory, in .bss, where it
+// cannot fail at runtime. Only compiled when CONFIG_AIRPLAY_ENABLE=y, so a
+// build without AirPlay pays nothing.
+//
+// StackType_t is uint8_t on Xtensa, so s_rtp_stack is RTP_STACK_SIZE bytes
+// and the depth argument passed to xTaskCreateStatic is in bytes too.
+static rtp_t        s_rtp_ctx;
+static StackType_t  s_rtp_stack[RTP_STACK_SIZE] __attribute__((aligned(4)));
+static StaticTask_t s_rtp_tcb;
+static bool         s_rtp_ctx_in_use = false;
+
 rtp_resp_t rtp_init(struct in_addr host, int latency, char *aeskey, char *aesiv, char *fmtpstr,
 								short unsigned pCtrlPort, short unsigned pTimingPort,
 								uint8_t *buffer, size_t size,
@@ -243,27 +253,21 @@ rtp_resp_t rtp_init(struct in_addr host, int latency, char *aeskey, char *aesiv,
 	char *arg;
 	int fmtp[12];
 	bool rc = true;
-	rtp_t *ctx = heap_caps_calloc(1, sizeof(rtp_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 	rtp_resp_t resp = { 0, 0, 0, NULL };
 
-	if (!ctx) {
-		// Upstream returned an all-zero resp here with no message, so the only
-		// symptom reachable from outside was raop.c's "cannot start session,
-		// missing ports" - which names a consequence and not a cause, and made
-		// an intermittent allocation failure look like a protocol problem.
-		// rtp_t no longer embeds the RTP task's stack (see xStack), so this
-		// allocation is smaller and its own contiguity requirement is looser
-		// than before - but it is still MALLOC_CAP_INTERNAL, the scarcest
-		// memory on this board, so print what was actually available when
-		// the request failed: free size alone does not explain a refusal
-		// that a fragmented heap causes.
-		LOG_ERROR("rtp_init: could not allocate %u bytes of internal RAM "
-				  "(free %u, largest block %u)",
-				  (unsigned) sizeof(rtp_t),
-				  (unsigned) heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-				  (unsigned) heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+	// A second SETUP arriving before the first session was torn down would
+	// previously overwrite raop.c's ctx->rtp and leak the old rtp_t; with one
+	// shared context it would corrupt a session that is still running. Refuse
+	// instead - the caller already reports a zero-port return as "cannot
+	// start session", and a sender doing this is misbehaving.
+	if (s_rtp_ctx_in_use) {
+		LOG_ERROR("SETUP while a session is still active - refusing");
 		return resp;
 	}
+	s_rtp_ctx_in_use = true;
+
+	rtp_t *ctx = &s_rtp_ctx;
+	memset(ctx, 0, sizeof(*ctx));
 
 	ctx->host = host;
 	ctx->decrypt = false;
@@ -298,8 +302,7 @@ rtp_resp_t rtp_init(struct in_addr host, int latency, char *aeskey, char *aesiv,
 				  "key is unusable (aeskey %s, aesiv %s) - refusing rather than "
 				  "playing ciphertext as audio",
 				  ctx, aeskey ? "ok" : "MISSING", aesiv ? "ok" : "MISSING");
-		free(ctx->xStack);
-		free(ctx);
+		s_rtp_ctx_in_use = false;
 		return resp;
 	}
 
@@ -316,8 +319,7 @@ rtp_resp_t rtp_init(struct in_addr host, int latency, char *aeskey, char *aesiv,
 					  "buffer (free %u) - refusing the session",
 					  ctx, MAX_PACKET,
 					  (unsigned) heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
-			free(ctx->xStack);
-			free(ctx);
+			s_rtp_ctx_in_use = false;
 			return resp;
 		}
 
@@ -360,19 +362,15 @@ rtp_resp_t rtp_init(struct in_addr host, int latency, char *aeskey, char *aesiv,
 #ifdef WIN32
 	pthread_create(&ctx->thread, NULL, rtp_thread_func, (void *) ctx);
 #else
-	ctx->xStack = (StackType_t*) heap_caps_malloc(RTP_STACK_SIZE * sizeof(StackType_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-	ctx->xTaskBuffer = (StaticTask_t*) heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-	if (ctx->xStack && ctx->xTaskBuffer) {
-		BaseType_t core_id = (CONFIG_PTHREAD_TASK_CORE_DEFAULT == -1) ? tskNO_AFFINITY : CONFIG_PTHREAD_TASK_CORE_DEFAULT;
-		ctx->thread = xTaskCreateStaticPinnedToCore( (TaskFunction_t) rtp_thread_func, "RTP_thread", RTP_STACK_SIZE, ctx,
-																								CONFIG_ESP32_PTHREAD_TASK_PRIO_DEFAULT + 1, ctx->xStack, ctx->xTaskBuffer,
-																								core_id);
-	} else {
-		// Now two allocations instead of one, so this can fail on its own -
-		// log it the same way the ctx allocation above does, and unwind
-		// through the same rtp_end() cleanup path (running=false skips the
-		// task-notify wait since no task was ever created).
-		LOG_ERROR("[%p]: cannot allocate RTP task stack/TCB (stack=%p tcb=%p)", ctx, ctx->xStack, ctx->xTaskBuffer);
+	BaseType_t core_id = (CONFIG_PTHREAD_TASK_CORE_DEFAULT == -1) ? tskNO_AFFINITY : CONFIG_PTHREAD_TASK_CORE_DEFAULT;
+	ctx->thread = xTaskCreateStaticPinnedToCore( (TaskFunction_t) rtp_thread_func, "RTP_thread", RTP_STACK_SIZE, ctx,
+																							CONFIG_ESP32_PTHREAD_TASK_PRIO_DEFAULT + 1, s_rtp_stack, &s_rtp_tcb,
+																							core_id);
+	// Static storage, so this cannot fail for want of memory. It is still
+	// checked because a NULL handle here is the failure that used to be
+	// silent: no RTP thread, no audio, and nothing said so.
+	if (!ctx->thread) {
+		LOG_ERROR("[%p]: cannot create the RTP task", ctx);
 		ctx->running = false;
 		rc = false;
 	}
@@ -409,16 +407,6 @@ void rtp_end(rtp_t *ctx)
 #endif
 	}
 
-#if !defined WIN32
-	// Unconditional (not just on the ctx->running path above): xStack/
-	// xTaskBuffer can be allocated - or partially allocated - even when the
-	// task itself never got created, e.g. rtp_init()'s allocation failure
-	// path. SAFE_PTR_FREE(NULL) is a harmless no-op, so this covers every
-	// exit path without a separate NULL check.
-	SAFE_PTR_FREE(ctx->xTaskBuffer);
-	SAFE_PTR_FREE(ctx->xStack);
-#endif
-
 	for (i = 0; i < 3; i++) closesocket(ctx->rtp_sockets[i].sock);
 
 	if (ctx->alac_codec) alac_delete_decoder(ctx->alac_codec);
@@ -429,7 +417,10 @@ void rtp_end(rtp_t *ctx)
 
 	if (ctx->user_buffer) free(ctx->user_buffer);
 
-	free(ctx);
+	// The context is static; releasing it means letting the next SETUP claim
+	// it, not returning memory. Last, so nothing above can run against a
+	// context another session already believes it owns.
+	s_rtp_ctx_in_use = false;
 
 #ifdef __RTP_STORE
 	fclose(ctx->rtpIN);
