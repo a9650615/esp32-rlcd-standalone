@@ -51,9 +51,22 @@ constexpr int kChannels = 2;
 // cheap way to do that without a rebuild.
 constexpr int kOutputVolumePercent = 50;
 
-// Streams open the codec here instead, at unity - see audio_stream_open()
-// for why attenuating a remote-controlled stream locally is wrong.
-constexpr int kStreamVolumePercent = 100;
+// Streams open the codec here instead of at kOutputVolumePercent - see
+// audio_stream_open() for why attenuating a remote-controlled stream locally
+// is wrong.
+//
+// Not 100%, which is where this landed first and was wrong. The speaker is a
+// coin-sized MX1.25 (see kSweepSteps, whose ceiling was itself brought down
+// from 80% after a hardware run, and kToneAmplitude, capped at half of int16
+// full scale because a full-scale drive into this speaker is the harshest
+// thing the chain can produce). At 100% a phone sitting at -4.1 dB was
+// reported as audibly distorted. 60% puts a phone at maximum just under that
+// level, so the sender's slider covers a range that stays clean end to end
+// rather than one whose top third is unusable.
+//
+// This is a property of the speaker, not of the code. If a different one is
+// fitted, re-measure it rather than trusting this number.
+constexpr int kStreamVolumePercent = 60;
 
 // 50% of int16 full scale - the same ceiling /beep-sweep's diagnostic
 // staircase is capped at. A full-scale square wave into a coin-sized
