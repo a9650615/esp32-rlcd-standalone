@@ -21,7 +21,7 @@ namespace {
 constexpr char kTag[] = "board_display";
 // One frame goes out as ceil(kFramebufferBytes / this) SPI transfers. See
 // the bus config in init() for why it is not the whole frame.
-constexpr size_t kSpiChunkBytes = 4096;
+constexpr size_t kSpiChunkBytes = 2048;
 constexpr size_t kFramebufferBytes =
     static_cast<size_t>(kWidth) * static_cast<size_t>(kHeight) / 8U;
 constexpr size_t kPixelCount =
@@ -103,11 +103,22 @@ esp_err_t Display::init() {
   io_config.lcd_cmd_bits = 8;
   io_config.lcd_param_bits = 8;
   io_config.spi_mode = 0;
-  // Was 10. Each queued chunk holds its own bounce buffer until it is
-  // recycled, so a deep queue multiplies the transient internal RAM this
-  // costs - the thing being fixed. Two is enough to keep the bus busy while
-  // the next chunk is prepared.
-  io_config.trans_queue_depth = 2;
+  // One, not two, and not upstream's ten. Each queued chunk holds its own
+  // bounce buffer until it is recycled, so the transient internal RAM this
+  // costs is chunk size times queue depth - and that product, not the chunk
+  // size alone, is what has to fit.
+  //
+  // Measured in the field at depth 2 with 4 KB chunks, during the market and
+  // weather TLS handshakes at t=9.9 s: "display refresh failed:
+  // ESP_ERR_NO_MEM ... internal free=29807 largest=7680, dma largest=5120".
+  // Two 4 KB buffers is 8 KB against 5 KB available, so it still failed -
+  // less often than the 15 KB single transfer it replaced, which is why it
+  // looked fixed. Depth 1 with 2 KB chunks needs 2 KB at a time.
+  //
+  // Serialising costs nothing measurable: the whole frame transfers in
+  // 0.7 ms, so the per-chunk overhead of eight transfers instead of four is
+  // far below the noise on a 265 ms refresh.
+  io_config.trans_queue_depth = 1;
 
   auto* io = reinterpret_cast<esp_lcd_panel_io_handle_t*>(&io_handle_);
   result = esp_lcd_new_panel_io_spi(static_cast<esp_lcd_spi_bus_handle_t>(SPI3_HOST),
