@@ -581,7 +581,10 @@ void timer_callback(lv_timer_t* timer) {
       runtime->volume_overlay, media.volume, page_is_now_playing, now_ms);
   runtime->context.volume_overlay_visible = runtime->volume_overlay.visible;
 
-  if (runtime->now_playing_seize.owns_screen && !takeover_page_owns_screen) {
+  const bool now_playing_owns_screen =
+      runtime->now_playing_seize.owns_screen && !takeover_page_owns_screen;
+
+  if (now_playing_owns_screen) {
     // Rebuild only on a real transition - taking the screen, changing track,
     // or the overlay appearing or disappearing. A rebuild every tick would
     // repaint the whole reflective panel ten times a second, which is exactly
@@ -595,16 +598,39 @@ void timer_callback(lv_timer_t* timer) {
           render_page(runtime->context, runtime->snapshot,
                       app_core::PageId::NowPlaying, safe_canvas(), 0, 0);
       if (rendered == nullptr) ESP_LOGE(kTag, "renderer failure page=NowPlaying");
+      page_rebuilt = true;
     }
     runtime->showing_now_playing = true;
     // Keeps the carousel's dwell timer from expiring behind the seize, so
     // releasing lands on a fresh dwell rather than an already-stale one.
     runtime->carousel.page_started_ms = now_ms;
-    return;
+  } else if (runtime->showing_now_playing) {
+    // The release tick, and it has to repaint explicitly - exactly like
+    // ota-exit, setup-exit and settings-exit below and above. Letting the
+    // carousel block do it does not work: page_started_ms was stamped to
+    // now_ms on every tick of the hold, so on this tick the dwell has run
+    // for ~100 ms, carousel::tick reports no change, and nothing renders.
+    // The panel would sit on the last now-playing frame until the residual
+    // dwell elapsed and then jump to the *next* page, silently skipping
+    // whichever page the carousel was actually on when the session started.
+    runtime->showing_now_playing = false;
+    runtime->carousel.page_started_ms = now_ms;
+    (void)render_current(*runtime, "now-playing-exit", false);
+    page_rebuilt = true;
   }
-  runtime->showing_now_playing = false;
 
-  if (!takeover_page_owns_screen) {
+  // No early return above, unlike a first version of this block. Everything
+  // below - the carousel, the takeover pages, and the clock/tray updates at
+  // the end of this function - still has to run while the seize holds the
+  // screen. Returning skipped update_clock() and update_tray_indicators()
+  // for the whole 60 s hold, which froze the clock on a page that does carry
+  // the tray (page_shows_tray excludes only Ota) and reintroduced, for a full
+  // minute, precisely the missed-indicator-blip failure update_tray_indicators'
+  // own comment in render_shared.cpp exists to document. The takeover blocks
+  // below are self-guarding: while the seize holds the screen none of
+  // setup.active, showing_settings or the two ota_* predicates can be true,
+  // because takeover_page_owns_screen is what let the seize run at all.
+  if (!takeover_page_owns_screen && !now_playing_owns_screen) {
     const app_core::PageId current_page =
         runtime->active_pages[runtime->carousel.index];
     const auto transition = app_core::carousel::tick(
