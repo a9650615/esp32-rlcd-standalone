@@ -253,3 +253,49 @@ HOST_TEST(volume_overlay_ignores_a_source_with_no_level_to_report) {
   state = app_core::volume_overlay_tick(state, 0.5f, true, 4'000);
   EXPECT_TRUE(state.visible);
 }
+
+HOST_TEST(seize_takes_the_screen_when_a_session_opens_with_no_title_yet) {
+  // A session can open before any metadata has arrived: session_open true,
+  // no title published yet. Comparing titles alone ("" != "") would never
+  // seize in that case, and a source that never publishes a title at all
+  // would never seize, ever.
+  app_core::SeizeState state;
+  state = app_core::seize_tick(state, true, "", 1'000);
+  EXPECT_TRUE(state.owns_screen);
+}
+
+HOST_TEST(seize_ignores_a_clock_that_moves_backward) {
+  app_core::SeizeState state = app_core::seize_tick(
+      app_core::SeizeState{}, true, "Midnight City", 10'000);
+  EXPECT_TRUE(state.owns_screen);
+
+  // now_ms goes backward - an unguarded subtraction would underflow and
+  // release the hold immediately.
+  state = app_core::seize_tick(state, true, "Midnight City", 1'000);
+  EXPECT_TRUE(state.owns_screen);
+}
+
+HOST_TEST(volume_overlay_ignores_a_clock_that_moves_backward) {
+  app_core::VolumeOverlayState state;
+  state = app_core::volume_overlay_tick(state, 0.6f, true, 10'000);
+  state = app_core::volume_overlay_tick(state, 0.7f, true, 20'000);
+  EXPECT_TRUE(state.visible);
+
+  // now_ms goes backward - an unguarded subtraction would underflow and
+  // close the overlay immediately.
+  state = app_core::volume_overlay_tick(state, 0.7f, true, 1'000);
+  EXPECT_TRUE(state.visible);
+}
+
+HOST_TEST(volume_overlay_closes_on_timeout_even_while_volume_is_unknown) {
+  app_core::VolumeOverlayState state;
+  state = app_core::volume_overlay_tick(state, 0.6f, true, 1'000);
+  state = app_core::volume_overlay_tick(state, 0.7f, true, 2'000);
+  EXPECT_TRUE(state.visible);
+
+  // The source stops reporting a level while the overlay is up. The timeout
+  // must still fire; a negative reading must not pin the overlay open.
+  state = app_core::volume_overlay_tick(state, -1.0f, true,
+                                        2'000 + app_core::kVolumeOverlayMs);
+  EXPECT_TRUE(!state.visible);
+}

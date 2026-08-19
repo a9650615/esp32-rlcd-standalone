@@ -897,6 +897,52 @@ HOST_TEST(volume_overlay_ignores_a_source_with_no_level_to_report) {
   state = app_core::volume_overlay_tick(state, 0.5f, true, 4'000);
   EXPECT_TRUE(state.visible);
 }
+
+HOST_TEST(seize_takes_the_screen_when_a_session_opens_with_no_title_yet) {
+  // A session can open before any metadata has arrived: session_open true,
+  // no title published yet. Comparing titles alone ("" != "") would never
+  // seize in that case, and a source that never publishes a title at all
+  // would never seize, ever.
+  app_core::SeizeState state;
+  state = app_core::seize_tick(state, true, "", 1'000);
+  EXPECT_TRUE(state.owns_screen);
+}
+
+HOST_TEST(seize_ignores_a_clock_that_moves_backward) {
+  app_core::SeizeState state = app_core::seize_tick(
+      app_core::SeizeState{}, true, "Midnight City", 10'000);
+  EXPECT_TRUE(state.owns_screen);
+
+  // now_ms goes backward - an unguarded subtraction would underflow and
+  // release the hold immediately.
+  state = app_core::seize_tick(state, true, "Midnight City", 1'000);
+  EXPECT_TRUE(state.owns_screen);
+}
+
+HOST_TEST(volume_overlay_ignores_a_clock_that_moves_backward) {
+  app_core::VolumeOverlayState state;
+  state = app_core::volume_overlay_tick(state, 0.6f, true, 10'000);
+  state = app_core::volume_overlay_tick(state, 0.7f, true, 20'000);
+  EXPECT_TRUE(state.visible);
+
+  // now_ms goes backward - an unguarded subtraction would underflow and
+  // close the overlay immediately.
+  state = app_core::volume_overlay_tick(state, 0.7f, true, 1'000);
+  EXPECT_TRUE(state.visible);
+}
+
+HOST_TEST(volume_overlay_closes_on_timeout_even_while_volume_is_unknown) {
+  app_core::VolumeOverlayState state;
+  state = app_core::volume_overlay_tick(state, 0.6f, true, 1'000);
+  state = app_core::volume_overlay_tick(state, 0.7f, true, 2'000);
+  EXPECT_TRUE(state.visible);
+
+  // The source stops reporting a level while the overlay is up. The timeout
+  // must still fire; a negative reading must not pin the overlay open.
+  state = app_core::volume_overlay_tick(state, -1.0f, true,
+                                        2'000 + app_core::kVolumeOverlayMs);
+  EXPECT_TRUE(!state.visible);
+}
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -939,6 +985,13 @@ struct SeizeState {
   // republished identical title is the same track, and only a genuinely
   // different one is a new one worth interrupting the carousel for.
   std::string title;
+  // Whether this session has already been seen open on some earlier tick.
+  // Needed because a session can open before any metadata has arrived -
+  // session_open true, title still "" - and SeizeState{}'s own title also
+  // defaults to "", so comparing titles alone would read "" != "" as false
+  // and never seize. was_open makes the first tick of an open session seize
+  // unconditionally, whatever the title is at that point.
+  bool was_open = false;
 };
 
 // `now_ms` is the same monotonic millisecond clock the carousel already runs
@@ -946,13 +999,19 @@ struct SeizeState {
 inline SeizeState seize_tick(SeizeState state, bool session_open,
                              const std::string& title, uint64_t now_ms) {
   if (!session_open) return SeizeState{};
-  if (title != state.title) {
-    // Covers both the first track of a session and every later track change,
-    // without the two needing separate handling: at the start state.title is
-    // empty and any real title differs from it.
-    return SeizeState{true, now_ms, title};
+  if (!state.was_open || title != state.title) {
+    // Covers the first tick of a session (was_open false, so this fires
+    // regardless of title) and every later track change (title differs from
+    // the one last seized on) with the same branch.
+    return SeizeState{true, now_ms, title, true};
   }
-  if (state.owns_screen && now_ms - state.seized_ms >= kNowPlayingSeizeSeconds * 1000) {
+  // Guard against a backward-moving clock the same way carousel_controller
+  // does (see its tick()): an unguarded now_ms - state.seized_ms would
+  // underflow to near UINT64_MAX and release the hold immediately. A clock
+  // that has gone backward has not yet reached the timeout, so it must not
+  // release either.
+  if (state.owns_screen && now_ms >= state.seized_ms &&
+      now_ms - state.seized_ms >= kNowPlayingSeizeSeconds * 1000) {
     state.owns_screen = false;
   }
   return state;
@@ -979,18 +1038,32 @@ inline VolumeOverlayState volume_overlay_tick(VolumeOverlayState state,
     state.visible = false;
     return state;
   }
-  if (volume < 0.0f) return state;  // source has no level to report
-  if (state.last_volume < 0.0f) {
-    state.last_volume = volume;  // baseline only
-    return state;
+  // A negative reading means the source has nothing to report right now; it
+  // must not open the overlay or move the baseline, but it also must not
+  // pin an already-open overlay past its timeout, so it falls straight
+  // through to the close check below instead of returning early.
+  if (volume >= 0.0f) {
+    if (state.last_volume < 0.0f) {
+      state.last_volume = volume;  // baseline only
+      return state;
+    }
+    if (volume != state.last_volume) {
+      // Exact equality is safe today only because volume is a direct
+      // passthrough from the publishing module with no local arithmetic on
+      // it. A future source that derives it (averaging, scaling) would need
+      // an epsilon compare instead.
+      state.last_volume = volume;
+      state.visible = true;
+      state.shown_ms = now_ms;
+      return state;
+    }
   }
-  if (volume != state.last_volume) {
-    state.last_volume = volume;
-    state.visible = true;
-    state.shown_ms = now_ms;
-    return state;
-  }
-  if (state.visible && now_ms - state.shown_ms >= kVolumeOverlayMs) {
+  // Guard against a backward-moving clock the same way seize_tick() and
+  // carousel_controller's tick() do: an unguarded subtraction would
+  // underflow and close the overlay immediately. A clock that has gone
+  // backward has not yet reached the timeout, so it must not close either.
+  if (state.visible && now_ms >= state.shown_ms &&
+      now_ms - state.shown_ms >= kVolumeOverlayMs) {
     state.visible = false;
   }
   return state;
@@ -1002,7 +1075,7 @@ inline VolumeOverlayState volume_overlay_tick(VolumeOverlayState state,
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `cmake --build build-host --parallel && ./build-host/host_tests`
-Expected: the seven new cases print `PASS`, `N cases, 0 failures`.
+Expected: the eleven new cases print `PASS`, `N cases, 0 failures`.
 
 - [ ] **Step 5: Commit**
 
