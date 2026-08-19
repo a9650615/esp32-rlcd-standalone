@@ -118,7 +118,33 @@ static bool internal_cmd_cb(raop_internal_event_t event, ...) {
             if (error < -worst_error || error > worst_error) {
                 worst_error = error < 0 ? -error : error;
             }
-            if (error < -50) {
+            // The threshold was +/-50 ms. Measured against a real iPhone:
+            // 46 corrections in 97 evaluations - firing on half of all sync
+            // packets, roughly every two seconds, each one discarding 7 to 13
+            // frames, which is 56 to 104 ms of music thrown away. That is the
+            // stutter, and this code is producing it rather than correcting
+            // for it.
+            //
+            // The give-away is that it never converges. The error sat between
+            // -47 and -111 ms with no trend across the whole session: a
+            // constant offset with noise, not drift. Real drift accumulates,
+            // and skipping frames does nothing about an offset - the next
+            // evaluation reports the same figure and it skips again, forever.
+            //
+            // The correction is also redundant for drift on any timescale
+            // that matters here. audio_output_task() already gates every
+            // frame on its playtime, and playtime is derived from the
+            // sender's own sync packets, so it follows the sender's clock
+            // automatically. The ring holds RAOP_BUFFER_FRAMES = 384 frames,
+            // about 3 s; at a realistic 100 ppm clock difference it would
+            // take hours to drift that far, and audio_buffer_write() reports
+            // a full buffer long before then (measured at zero occurrences).
+            //
+            // So this stays only as a backstop against gross desynchronisation
+            // - the +393 ms and +556 ms seen once each at session start, which
+            // are real and worth absorbing - and no longer reacts to the
+            // steady-state offset it cannot fix.
+            if (error < -500) {
                 uint32_t skip = (-error * 44100) / (352 * 1000);
                 corrections++;
                 ESP_LOGW(TAG, "drift: error=%d ms, skipping %u frames "
@@ -126,7 +152,7 @@ static bool internal_cmd_cb(raop_internal_event_t event, ...) {
                          (int) error, (unsigned) skip, (unsigned) corrections,
                          (unsigned) evaluations, (int) worst_error);
                 audio_buffer_skip_frames(skip);
-            } else if (error > 50) {
+            } else if (error > 500) {
                 uint32_t pause = (error * 44100) / (352 * 1000);
                 corrections++;
                 ESP_LOGW(TAG, "drift: error=+%d ms, inserting %u silent frames "
