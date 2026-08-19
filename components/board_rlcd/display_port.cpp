@@ -8,6 +8,7 @@
 #include <esp_chip_info.h>
 #include <esp_flash.h>
 #include <esp_lcd_panel_io.h>
+#include <esp_memory_utils.h>
 #include <esp_log.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -119,14 +120,52 @@ esp_err_t Display::init() {
     return result;
   }
 
+  // DMA-capable internal RAM, not PSRAM, and the difference is not an
+  // optimisation.
+  //
+  // This buffer is handed straight to esp_lcd_panel_io_tx_color() on every
+  // refresh. When it sat in PSRAM, spi_master.c's setup_priv_desc() saw a
+  // tx_buffer that failed esp_ptr_dma_capable() and, for EVERY refresh,
+  // allocated a fresh kFramebufferBytes of contiguous MALLOC_CAP_DMA memory
+  // and memcpy'd the whole frame into it. Measured on hardware: internal RAM
+  // had ~51 KB free but its largest block moved between 7.9 and 14.3 KB
+  // against a 15 KB request, so the allocation failed and every refresh in
+  // the burst returned ESP_ERR_NO_MEM - 1,392 of 1,455 captured log lines at
+  // one point. It came and went with nothing in the firmware changing,
+  // because it depended on how the heap happened to be fragmented.
+  //
+  // Owning DMA-capable memory removes the per-refresh allocation and the
+  // per-refresh 15 KB copy along with it. The cost is the same 15 KB, held
+  // from boot - when it can actually be obtained - instead of demanded again
+  // every 265 ms when it often cannot. ESP32-S3 does not define
+  // SOC_CACHE_INTERNAL_MEM_VIA_L1CACHE, so spi_master.c's tx_unaligned test
+  // is compiled out and DMA-capability is the only condition that matters
+  // here; on a chip where that is not true this would also need the length
+  // aligned to the cache line.
   display_buffer_ = static_cast<uint8_t*>(
-      heap_caps_malloc(kFramebufferBytes, MALLOC_CAP_SPIRAM));
+      heap_caps_malloc(kFramebufferBytes, MALLOC_CAP_DMA | MALLOC_CAP_8BIT));
+  if (display_buffer_ == nullptr) {
+    // PSRAM rather than no display at all - but say so, because this puts the
+    // per-refresh bounce allocation back and the panel will start dropping
+    // frames again the moment internal RAM fragments.
+    ESP_LOGE(kTag,
+             "framebuffer could not get %u bytes of DMA-capable internal RAM "
+             "(free %u, largest %u); falling back to PSRAM, which makes every "
+             "refresh allocate and copy that much again",
+             static_cast<unsigned>(kFramebufferBytes),
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_DMA)),
+             static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_DMA)));
+    display_buffer_ = static_cast<uint8_t*>(
+        heap_caps_malloc(kFramebufferBytes, MALLOC_CAP_SPIRAM));
+  }
   if (display_buffer_ == nullptr) {
     ESP_LOGE(kTag, "display framebuffer allocation failed (%u bytes)",
              static_cast<unsigned>(kFramebufferBytes));
     release_resources();
     return ESP_ERR_NO_MEM;
   }
+  ESP_LOGI(kTag, "framebuffer at %p is %sDMA-capable", display_buffer_,
+           esp_ptr_dma_capable(display_buffer_) ? "" : "NOT ");
 
   pixel_index_lut_ = reinterpret_cast<uint16_t (*)[kHeight]>(heap_caps_malloc(
       kPixelCount * sizeof(uint16_t), MALLOC_CAP_SPIRAM));
