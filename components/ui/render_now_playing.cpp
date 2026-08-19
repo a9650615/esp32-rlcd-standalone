@@ -14,11 +14,30 @@ namespace {
 // stack buffer would be freed before the first flush. One buffer, because
 // exactly one artwork is ever on screen.
 //
-// Sized from LVGL's own stride rather than a tight (width+7)/8 pack - see
-// i1_canvas_stride()'s comment for the debugging round that distinction cost
-// once already.
-uint8_t g_artwork_storage[/* 4.3 KB at 176x176 */
-    ((176 / 8) + 8) * 176 + 64];
+// Sized by i1_canvas_storage_bound(), not by hand: it mirrors
+// lv_draw_buf_width_to_stride()'s own arithmetic at compile time, so the size
+// is *proven* rather than guessed at with headroom. The first version of this
+// buffer was a hand-rolled ((176/8)+8)*176+64, which over-allocated 1464 bytes
+// for no reason anyone could state - and that helper exists precisely because
+// an earlier over-allocation elsewhere in this file's neighbourhood cost 43 KB
+// of .bss and stopped net_log creating its sender task.
+//
+// Persistent because LVGL keeps the pointer it is given rather than copying,
+// so this must outlive the canvas and a stack buffer would be freed before the
+// first flush - the same reason tray_indicator_icon() owns per-slot buffers.
+// One buffer, because exactly one artwork is ever on screen.
+constexpr std::size_t kArtworkStorageBytes = i1_canvas_storage_bound(
+    kNowPlayingArtworkSize, kNowPlayingArtworkSize);
+uint8_t g_artwork_storage[kArtworkStorageBytes];
+
+// repack_artwork() rejects anything that does not fit the slot before it
+// computes a runtime size, so the runtime figure can never exceed the bound
+// this buffer is cut to. Asserted rather than trusted, because the two come
+// from different functions and only this line keeps them agreeing.
+static_assert(i1_canvas_storage_bound(kNowPlayingArtworkSize,
+                                      kNowPlayingArtworkSize) <=
+                  kArtworkStorageBytes,
+              "artwork backing store must cover a full-slot canvas");
 
 // Repacks a tight-packed, row-major MSB-first module bitmap (exactly what
 // app_core::MediaArtwork documents) into LVGL's padded stride, after the
