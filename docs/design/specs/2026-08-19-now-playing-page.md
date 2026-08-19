@@ -312,3 +312,50 @@ Host tests, no board required, in the existing geometry-test style:
   scroll text legibly. Two lines and an ellipsis.
 - **No artwork cache.** One image, replaced in place.
 - **No per-track history or queue view.** RAOP does not reliably provide it.
+
+## What the hardware said, 2026-08-20
+
+Tasks 1-7 are implemented and running on a board. Three things this document
+asserted turned out to be wrong or unproven, recorded here so the next reader
+does not rebuild on them.
+
+**The artwork pipeline above cannot work as written.** `esp-raop-receiver`'s
+`util.c` drops any HTTP body over 8192 bytes - it reads the remainder to
+nowhere and sets `*body = NULL, *len = 0`. AirPlay artwork JPEGs are far
+larger, so `raop.c`'s artwork branch sees a null body and never calls
+`cmd_cb`, and `RAOP_EVENT_ARTWORK` has therefore never fired once. The
+"Artwork pipeline" section starts from an event that does not arrive, and the
+plan's Tasks 8-9 both need rewriting: the first thing to fix is that ceiling,
+not the decoder. Note that `util.c` mallocs the body from internal RAM, which
+measured 29,807 bytes free during a TLS fetch; four separate defects in this
+codebase have been "free memory was ample, the largest contiguous block was
+not", so that buffer wants to come from PSRAM rather than a raised internal
+ceiling.
+
+**No sender has yet delivered title, artist or album.** Two were tried, an
+iPhone via YouTube Music and an Apple TV. Both give a live progress bar and
+no text metadata at all - and crucially the library's own
+`Unhandled SET PARAMETER` fallback does not fire either, so the DMAP request
+is not merely being rejected by a branch condition, it is not reaching the
+handler. An Apple TV omitting metadata is not plausible, so this reads as
+receiver-side. A diagnostic line at the `SET_PARAMETER` entry (printing
+`Content-Type` and whether a body survived) is deployed but has not yet caught
+a session. **The cause is unknown; do not assume it is the sender.**
+
+**The progress bar does not advance during the 60 s hold.** `ui_app.cpp`'s
+seize block repaints on first show, track change, and overlay toggle only - a
+progress update triggers nothing, so the bar and the times freeze for the
+whole hold. This contradicts the Verification section above. The fix is to
+repaint when `elapsed_ms / 1000` changes, which is the smallest interval that
+alters either the `m:ss` text or the bar by a visible pixel; if one repaint
+per second proves to starve the audio path, the upgrade is label-only updates
+through the existing `update_visible_fields` mechanism rather than a full page
+rebuild.
+
+**One assumption that did hold**, having been tested destructively: the
+layout's rects are now proven origin-invariant. The renderer originally
+discarded its `bounds` and used absolute coordinates, drawing the page 6 px
+right and clipping its right-hand column - caught by the board's own
+`ui_geometry` check, not by the tests, which compared absolute coordinates
+against an absolute box and passed throughout. The replacement tests were
+verified by sabotaging the translation and confirming they fail.
