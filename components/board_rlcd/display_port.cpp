@@ -402,6 +402,97 @@ void Display::init_landscape_lut() {
   }
 }
 
+// Measured at 157 ms per 400x300 frame before this existed, against 0.7 ms
+// for the SPI transfer that follows it - 230x the cost of the thing everyone
+// assumes is expensive, repeating every 265 ms, and the reason AirPlay
+// dropped packets intermittently.
+//
+// Three costs, all removed here:
+//
+//  - pixel_index_lut_[x][y] and pixel_bit_lut_[x][y] live in PSRAM and were
+//    indexed with x innermost, so consecutive lookups jumped kHeight*2 = 600
+//    bytes. Every one of the 240,000 lookups per frame was a cache miss on
+//    the slowest memory on the board. The values they held are four shifts
+//    and a multiply; computing them in registers is not a trade-off.
+//  - set_pixel() is in this translation unit and the caller was in another,
+//    so none of the 120,000 calls per frame could be inlined, and each one
+//    re-checked the same six bounds conditions.
+//  - The per-row terms were recomputed per pixel.
+//
+// The LUTs had exactly one caller, this path, and are gone with it - 360 KB
+// of PSRAM returned as well.
+void Display::write_rgb565_area(const uint16_t* rgb565, int x1, int y1,
+                                int x2, int y2) {
+  if (!initialized_ || display_buffer_ == nullptr || rgb565 == nullptr) return;
+  if (x1 < 0) x1 = 0;
+  if (y1 < 0) y1 = 0;
+  if (x2 >= kWidth) x2 = kWidth - 1;
+  if (y2 >= kHeight) y2 = kHeight - 1;
+
+  const int height_blocks = kHeight >> 2;
+  for (int y = y1; y <= y2; ++y) {
+    // Per-row, not per-pixel: none of this depends on x.
+    const int inverted_y = kHeight - 1 - y;
+    const int block_y = inverted_y >> 2;
+    const int local_y = inverted_y & 3;
+    const int bit_hi = 7 - (local_y << 1);        // x even
+    const int bit_lo = 7 - ((local_y << 1) | 1);  // x odd
+    const uint8_t mask_hi = static_cast<uint8_t>(1U << bit_hi);
+    const uint8_t mask_lo = static_cast<uint8_t>(1U << bit_lo);
+
+    const uint16_t* src = rgb565 + static_cast<size_t>(y - y1) * (x2 - x1 + 1);
+    for (int x = x1; x <= x2; ++x) {
+      // LVGL renders white as 0xffff and black as 0x0000; the original
+      // threshold is kept exactly rather than reinterpreted.
+      const bool black = *src++ < 0x7fff;
+      const size_t index =
+          static_cast<size_t>(x >> 1) * height_blocks + block_y;
+      const uint8_t mask = (x & 1) ? mask_lo : mask_hi;
+      if (black) {
+        display_buffer_[index] &= static_cast<uint8_t>(~mask);
+      } else {
+        display_buffer_[index] |= mask;
+      }
+    }
+  }
+}
+
+// The inverse of write_rgb565_area()'s layout, run on demand.
+//
+// A shadow copy of this used to be maintained pixel by pixel on every flush,
+// which is 120,000 iterations and a second PSRAM write pattern per frame, to
+// serve a screenshot route that fires when a person asks for one. Deriving it
+// here costs the same work once per request instead of four times a second
+// forever.
+bool Display::read_row_major(uint8_t* out, size_t length) const {
+  const size_t stride = kWidth / 8;
+  if (out == nullptr || display_buffer_ == nullptr ||
+      length < stride * kHeight) {
+    return false;
+  }
+  std::memset(out, 0, stride * kHeight);
+  const int height_blocks = kHeight >> 2;
+  for (int y = 0; y < kHeight; ++y) {
+    const int inverted_y = kHeight - 1 - y;
+    const int block_y = inverted_y >> 2;
+    const int local_y = inverted_y & 3;
+    const uint8_t mask_hi = static_cast<uint8_t>(1U << (7 - (local_y << 1)));
+    const uint8_t mask_lo =
+        static_cast<uint8_t>(1U << (7 - ((local_y << 1) | 1)));
+    uint8_t* row = out + static_cast<size_t>(y) * stride;
+    for (int x = 0; x < kWidth; ++x) {
+      const size_t index =
+          static_cast<size_t>(x >> 1) * height_blocks + block_y;
+      const uint8_t mask = (x & 1) ? mask_lo : mask_hi;
+      // write_rgb565_area() clears the bit for black and sets it for white.
+      if ((display_buffer_[index] & mask) == 0) {
+        row[x >> 3] |= static_cast<uint8_t>(0x80U >> (x & 7));
+      }
+    }
+  }
+  return true;
+}
+
 void Display::set_pixel(int x, int y, Color color) {
   if (!initialized_ || display_buffer_ == nullptr || pixel_index_lut_ == nullptr ||
       pixel_bit_lut_ == nullptr || x < 0 || x >= kWidth || y < 0 || y >= kHeight) {

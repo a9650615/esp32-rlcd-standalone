@@ -25,6 +25,16 @@ class Display {
   void clear(Color color);
   void set_pixel(int x, int y, Color color);
 
+  // Converts an LVGL RGB565 area straight into the panel's bit layout.
+  // Exists because doing it a pixel at a time through set_pixel() cost 157 ms
+  // per frame - see the definition.
+  void write_rgb565_area(const uint16_t* rgb565, int x1, int y1, int x2,
+                         int y2);
+
+  // Reads the panel buffer back as a row-major 1-bit bitmap, MSB leftmost,
+  // 1 = black. Only the screenshot route needs this, and only when asked.
+  bool read_row_major(uint8_t* out, size_t length) const;
+
  private:
   esp_err_t send_command(uint8_t command);
   esp_err_t send_data(uint8_t data);
