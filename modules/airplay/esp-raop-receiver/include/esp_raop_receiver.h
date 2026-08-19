@@ -197,6 +197,29 @@ esp_err_t raop_set_device_name(raop_handle_t *handle, const char *name);
 float raop_get_volume(raop_handle_t *handle);
 
 /**
+ * @brief mDNS hostname of the currently connected sender's DACP control
+ * service - the closest thing AirPlay 1 offers to a device name (no RTSP
+ * header carries one at all). Discovered asynchronously, a few seconds
+ * after RAOP_EVENT_CONNECTED, by a background mDNS search
+ * (esp-raop-receiver/src/raop.c's search_remote()) keyed off the DACP-ID the
+ * sender supplied at ANNOUNCE - so a caller that only checks this once, at
+ * CONNECTED, will always see the empty result. Poll it instead (e.g. from a
+ * periodic republish already running for other reasons).
+ *
+ * Takes no handle, unlike every other getter in this header: it is not
+ * actually a per-handle value, since raop_core.c and raop.c both already
+ * assume a single connected receiver instance throughout (see raop_core.c's
+ * s_handle) - there is never more than one hostname to have an opinion
+ * about. Kept in raop.c rather than raop_core.c (where every sibling getter
+ * here is implemented) for the same reason - see that file's
+ * g_remote_hostname comment if this asymmetry needs justifying again later.
+ *
+ * @return "" until a remote is found for the current session (or if the
+ *         session ends before one is), never NULL.
+ */
+const char *raop_get_remote_hostname(void);
+
+/**
  * @brief Whether the current sender has actually set a volume yet.
  *
  * raop_get_volume() always returns a number, and between SETUP and the

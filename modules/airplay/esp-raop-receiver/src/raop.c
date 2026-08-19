@@ -77,6 +77,28 @@ typedef struct raop_ctx_s {
 
 extern log_level	raop_loglevel;
 
+// The remote's mDNS hostname, discovered by search_remote() below and read
+// back by airplay.cpp through raop_get_remote_hostname() (esp_raop_
+// receiver.h). Defined here rather than in raop_core.c, which implements
+// every other public getter (raop_get_volume() and friends): raop_core.c is
+// out of scope for this change (see UPSTREAM.md for the boundary), and
+// struct raop_handle_s's fields are private to that file anyway, so there
+// is no path from a handle to a per-ctx value without editing it. A plain
+// global rather than a raop_ctx_t field for the same reason raop_core.c's
+// own s_handle is one: this receiver supports exactly one connected sender
+// at a time, so there is only ever one hostname worth remembering, and
+// raop_get_remote_hostname() takes no handle argument to match.
+//
+// Written exactly once per session (search_remote() below stops searching
+// the instant it finds one) and read roughly once a second from publish()'s
+// periodic republish (airplay.cpp) - on a different task than the one
+// writing it, with no lock between them. Unsynchronised on purpose: the one
+// possible outcome of that race is a garbled source name on the one publish
+// that lands mid-write, self-correcting on the very next one, and that is a
+// cheaper price than a mutex shared between a C file and a C++ one for a
+// cosmetic string. Sized like raop_core.c's own device_name[64].
+static char g_remote_hostname[64];
+
 static void		rtsp_thread(void *arg);
 static void 	search_remote(void *args);
 static void		cleanup_rtsp(raop_ctx_t *ctx, bool abort);
@@ -708,6 +730,12 @@ void cleanup_rtsp(raop_ctx_t *ctx, bool abort) {
 		if (ctx->active_remote.xTaskBuffer) free(ctx->active_remote.xTaskBuffer);
 		vSemaphoreDelete(ctx->active_remote.destroy_mutex);
 		memset(&ctx->active_remote, 0, sizeof(ctx->active_remote));
+		// Cleared with it: a session that ends before search_remote() ever
+		// finds a remote (or that never runs at all - a very short session)
+		// must not leave the *previous* sender's name sitting in g_remote_
+		// hostname for the next one to inherit until its own search happens
+		// to catch up.
+		g_remote_hostname[0] = '\0';
 		LOG_INFO("[%p]: Remote search thread aborted", ctx);
 	}
 
@@ -753,7 +781,28 @@ static void search_remote(void *args) {
 				found = true;
 				ctx->active_remote.host.s_addr = a->addr.u_addr.ip4.addr;
 				ctx->active_remote.port = r->port;
-				LOG_INFO("found remote %s %s:%hu", r->instance_name, inet_ntoa(ctx->active_remote.host), ctx->active_remote.port);
+				// hostname is printed alongside instance_name because it is
+				// the only human-readable name of the sender available
+				// anywhere in this protocol: instance_name is
+				// iTunes_Ctrl_<hex>, DACP-ID and Active-Remote are opaque
+				// ids, and no RTSP header carries one. If this reads as
+				// something like "Birdyos-iPhone" it is what the now-playing
+				// page should show instead of the literal "AIRPLAY". Logged
+				// before being wired to anything, because a field that turns
+				// out to be NULL or an IP literal is worth knowing about
+				// before building on it.
+				LOG_INFO("found remote %s hostname='%s' %s:%hu", r->instance_name,
+						 r->hostname ? r->hostname : "(null)",
+						 inet_ntoa(ctx->active_remote.host), ctx->active_remote.port);
+				// Remembered here so airplay.cpp's publish() can show it
+				// instead of the literal "AIRPLAY" - see
+				// raop_get_remote_hostname()'s own comment below for why
+				// this lives here rather than in raop_core.c (which owns
+				// the public API's implementation for every other getter)
+				// and why a plain global rather than a ctx field is the
+				// right shape for it.
+				snprintf(g_remote_hostname, sizeof(g_remote_hostname), "%s",
+						 r->hostname ? r->hostname : "");
 			}
 		}
 
@@ -763,6 +812,18 @@ static void search_remote(void *args) {
 	// can't use xNotifyGive as it seems LWIP is using it as well
 	xSemaphoreGive(ctx->active_remote.destroy_mutex);
 	vTaskSuspend(NULL);
+}
+
+/*----------------------------------------------------------------------------*/
+// Declared in the public esp_raop_receiver.h, defined here rather than in
+// raop_core.c (which implements every sibling getter - raop_get_volume() and
+// friends) - see g_remote_hostname's own comment above for why. Never
+// returns NULL, matching raop_get_device_name()'s contract: "" (the empty
+// string this buffer starts as, and is reset back to on TEARDOWN) is
+// airplay.cpp's own signal for "nothing found yet, keep showing the
+// protocol's name instead".
+const char *raop_get_remote_hostname(void) {
+	return g_remote_hostname;
 }
 
 /*----------------------------------------------------------------------------*/
