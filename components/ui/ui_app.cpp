@@ -1,6 +1,7 @@
 #include "ui_app.hpp"
 
 #include "carousel_controller.hpp"
+#include "now_playing_controller.hpp"
 
 #include <algorithm>
 #include <array>
@@ -39,6 +40,17 @@ struct Runtime {
   app_core::PageRegistry registry;
   std::vector<app_core::PageId> active_pages;
   app_core::CarouselState carousel;
+  // Now-playing seize and volume-overlay state machines (Task 4). Ticked
+  // every timer_callback regardless of which page is showing - see the call
+  // site for why - so both live here beside carousel rather than only being
+  // constructed when the now-playing page happens to be on screen.
+  app_core::SeizeState now_playing_seize;
+  app_core::VolumeOverlayState volume_overlay;
+  // Mirrors showing_setup/showing_ota/showing_settings below: true only once
+  // a seize has actually rendered PageId::NowPlaying, so the rebuild-gating
+  // comparison at the call site can tell "already showing it" from "about to
+  // take over this tick" without re-deriving it from now_playing_seize.
+  bool showing_now_playing = false;
   lv_timer_t* timer = nullptr;
   uint32_t cycle = 0;
   bool initialized = false;
@@ -530,6 +542,49 @@ void timer_callback(lv_timer_t* timer) {
     }
   }
 
+  // Both machines run every tick regardless of which page is up: the seize
+  // has to notice a session opening while another page is showing, and the
+  // overlay's own timer has to expire even on the tick where nothing else
+  // changed.
+  const app_core::NowPlaying media = app_core::now_playing();
+  const app_core::SeizeState previous_seize = runtime->now_playing_seize;
+  runtime->now_playing_seize = app_core::seize_tick(
+      previous_seize, media.session_open, media.title, now_ms);
+
+  const bool page_is_now_playing =
+      runtime->now_playing_seize.owns_screen ||
+      (!runtime->active_pages.empty() &&
+       runtime->active_pages[runtime->carousel.index] ==
+           app_core::PageId::NowPlaying);
+
+  const bool overlay_was_visible = runtime->volume_overlay.visible;
+  runtime->volume_overlay = app_core::volume_overlay_tick(
+      runtime->volume_overlay, media.volume, page_is_now_playing, now_ms);
+  runtime->context.volume_overlay_visible = runtime->volume_overlay.visible;
+
+  if (runtime->now_playing_seize.owns_screen) {
+    // Rebuild only on a real transition - taking the screen, changing track,
+    // or the overlay appearing or disappearing. A rebuild every tick would
+    // repaint the whole reflective panel ten times a second, which is exactly
+    // what update_visible_fields() exists to avoid.
+    const bool seize_changed =
+        !previous_seize.owns_screen ||
+        previous_seize.title != runtime->now_playing_seize.title;
+    if (!runtime->showing_now_playing || seize_changed ||
+        overlay_was_visible != runtime->volume_overlay.visible) {
+      const lv_obj_t* rendered =
+          render_page(runtime->context, runtime->snapshot,
+                      app_core::PageId::NowPlaying, safe_canvas(), 0, 0);
+      if (rendered == nullptr) ESP_LOGE(kTag, "renderer failure page=NowPlaying");
+    }
+    runtime->showing_now_playing = true;
+    // Keeps the carousel's dwell timer from expiring behind the seize, so
+    // releasing lands on a fresh dwell rather than an already-stale one.
+    runtime->carousel.page_started_ms = now_ms;
+    return;
+  }
+  runtime->showing_now_playing = false;
+
   if (!runtime->snapshot.setup.active && !runtime->showing_settings &&
       !app_core::ota_owns_screen(runtime->snapshot.ota) &&
       !app_core::ota_awaits_confirm(runtime->snapshot.ota)) {
@@ -546,7 +601,9 @@ void timer_callback(lv_timer_t* timer) {
         runtime->carousel.index + 1 >= runtime->active_pages.size() &&
         transition.state.index == 0;
     runtime->carousel = transition.state;
-    if (transition.page_changed) {
+    if (transition.page_changed ||
+        (current_page == app_core::PageId::NowPlaying &&
+         overlay_was_visible != runtime->volume_overlay.visible)) {
       if (wrapped) begin_cycle(*runtime, now_ms);
       // Automatic dwell only: KEY/BOOT navigation above goes through
       // carousel::next/previous, which never sees the snapshot and so cannot
