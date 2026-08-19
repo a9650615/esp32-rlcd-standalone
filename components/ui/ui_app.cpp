@@ -51,6 +51,10 @@ struct Runtime {
   // comparison at the call site can tell "already showing it" from "about to
   // take over this tick" without re-deriving it from now_playing_seize.
   bool showing_now_playing = false;
+  // Last observed media-session state, so a session opening or closing can
+  // rebuild the rotation immediately - see timer_callback for why waiting
+  // for the carousel to wrap is not good enough.
+  bool last_session_open = false;
   lv_timer_t* timer = nullptr;
   uint32_t cycle = 0;
   bool initialized = false;
@@ -547,6 +551,24 @@ void timer_callback(lv_timer_t* timer) {
   // overlay's own timer has to expire even on the tick where nothing else
   // changed.
   const app_core::NowPlaying media = app_core::now_playing();
+
+  // A session opening or closing changes which pages exist, and the registry
+  // is only consulted by begin_cycle(). Left to the carousel's own wrap, that
+  // is a two-minute wait for a page the operator expects to see immediately:
+  // the seize holds the screen for 60 s while stamping page_started_ms every
+  // tick, so rotation does not advance at all during the hold, and only then
+  // does a full five-page lap have to elapse before the registry is asked
+  // again. Rebuilding here makes it one tick.
+  //
+  // begin_cycle() resets the index to 0. On open that is invisible, because
+  // the seize below takes the screen on this same tick. On close it is a
+  // deliberate return to the top of the rotation, which is also when the page
+  // has to leave it.
+  if (media.session_open != runtime->last_session_open) {
+    runtime->last_session_open = media.session_open;
+    begin_cycle(*runtime, now_ms);
+  }
+
   const app_core::SeizeState previous_seize = runtime->now_playing_seize;
   runtime->now_playing_seize = app_core::seize_tick(
       previous_seize, media.session_open, media.title, now_ms);
