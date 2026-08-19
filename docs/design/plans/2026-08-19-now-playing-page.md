@@ -1462,10 +1462,16 @@ rather than repeating its four conditions:
     // would hold the last now-playing frame until the residual dwell elapsed
     // and then jump to the *next* page, skipping the one it was actually on
     // when the session opened.
+    // The flag clears either way, but the repaint is only worth doing when
+    // the hold ended on its own. If a takeover page grabbed the screen
+    // mid-hold, its own block renders this same tick, and painting the
+    // carousel first would be two full-panel repaints inside one tick.
     runtime->showing_now_playing = false;
-    runtime->carousel.page_started_ms = now_ms;
-    (void)render_current(*runtime, "now-playing-exit", false);
-    page_rebuilt = true;
+    if (!takeover_page_owns_screen) {
+      runtime->carousel.page_started_ms = now_ms;
+      (void)render_current(*runtime, "now-playing-exit", false);
+      page_rebuilt = true;
+    }
   }
 ```
 

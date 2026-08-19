@@ -613,10 +613,18 @@ void timer_callback(lv_timer_t* timer) {
     // The panel would sit on the last now-playing frame until the residual
     // dwell elapsed and then jump to the *next* page, silently skipping
     // whichever page the carousel was actually on when the session started.
+    // The flag clears either way, but the repaint is only worth doing when
+    // the hold ended on its own. If a takeover page grabbed the screen
+    // mid-hold, its own block a few lines down renders this same tick, and
+    // painting the carousel first would be two full-panel repaints inside
+    // one 100 ms tick - the exact cost every other piece of gating in this
+    // function exists to avoid.
     runtime->showing_now_playing = false;
-    runtime->carousel.page_started_ms = now_ms;
-    (void)render_current(*runtime, "now-playing-exit", false);
-    page_rebuilt = true;
+    if (!takeover_page_owns_screen) {
+      runtime->carousel.page_started_ms = now_ms;
+      (void)render_current(*runtime, "now-playing-exit", false);
+      page_rebuilt = true;
+    }
   }
 
   // No early return above, unlike a first version of this block. Everything
