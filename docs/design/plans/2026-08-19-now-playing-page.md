@@ -1391,9 +1391,12 @@ In the `Runtime` struct, beside `carousel`:
 - [ ] **Step 2: Run both machines on the tick**
 
 In `timer_callback`, immediately **before** the block that begins
-`if (!runtime->snapshot.setup.active && !runtime->showing_settings && ...)` —
-so the seize is evaluated before the carousel gets its turn, and OTA/Setup
-still outrank it further down:
+`if (!runtime->snapshot.setup.active && !runtime->showing_settings && ...)`, so
+the seize is evaluated before the carousel gets its turn. Position alone does
+NOT make OTA and Setup outrank it — this block returns early, so anything below
+it never runs. `takeover_page_owns_screen` is what actually enforces that
+precedence, and the carousel block below is rewritten to use the same flag
+rather than repeating its four conditions:
 
 ```c++
   // Both machines run every tick regardless of which page is up: the seize
@@ -1405,18 +1408,30 @@ still outrank it further down:
   runtime->now_playing_seize = app_core::seize_tick(
       previous_seize, media.session_open, media.title, now_ms);
 
+  // The four pages that own the screen for a reason of their own, in one
+  // named place because both the seize below and the carousel block further
+  // down must respect exactly the same set. Without this, a media session
+  // takes the screen away from an OTA write in progress - a track title on
+  // the panel while the firmware writes its own flash, and nothing left
+  // telling anyone not to pull the power.
+  const bool takeover_page_owns_screen =
+      runtime->snapshot.setup.active || runtime->showing_settings ||
+      app_core::ota_owns_screen(runtime->snapshot.ota) ||
+      app_core::ota_awaits_confirm(runtime->snapshot.ota);
+
   const bool page_is_now_playing =
-      runtime->now_playing_seize.owns_screen ||
-      (!runtime->active_pages.empty() &&
-       runtime->active_pages[runtime->carousel.index] ==
-           app_core::PageId::NowPlaying);
+      !takeover_page_owns_screen &&
+      (runtime->now_playing_seize.owns_screen ||
+       (!runtime->active_pages.empty() &&
+        runtime->active_pages[runtime->carousel.index] ==
+            app_core::PageId::NowPlaying));
 
   const bool overlay_was_visible = runtime->volume_overlay.visible;
   runtime->volume_overlay = app_core::volume_overlay_tick(
       runtime->volume_overlay, media.volume, page_is_now_playing, now_ms);
   runtime->context.volume_overlay_visible = runtime->volume_overlay.visible;
 
-  if (runtime->now_playing_seize.owns_screen) {
+  if (runtime->now_playing_seize.owns_screen && !takeover_page_owns_screen) {
     // Rebuild only on a real transition - taking the screen, changing track,
     // or the overlay appearing or disappearing. A rebuild every tick would
     // repaint the whole reflective panel ten times a second, which is exactly

@@ -551,18 +551,37 @@ void timer_callback(lv_timer_t* timer) {
   runtime->now_playing_seize = app_core::seize_tick(
       previous_seize, media.session_open, media.title, now_ms);
 
+  // The four pages that own the screen for a reason of their own, in one
+  // named place because both the seize below and the carousel block further
+  // down have to respect exactly the same set - and did not, at first. An
+  // earlier version of this block returned before these were ever consulted,
+  // which let a media session take the screen away from an OTA write in
+  // progress: the panel would show a track title while the firmware was
+  // writing its own flash, with nothing left on screen telling anyone not to
+  // pull the power.
+  //
+  // The state machines above still tick through all of this. Only taking the
+  // screen is suppressed, so an OTA that finishes inside the 60 s hold hands
+  // back to a seize that has been counting down the whole time, rather than
+  // to one that starts over.
+  const bool takeover_page_owns_screen =
+      runtime->snapshot.setup.active || runtime->showing_settings ||
+      app_core::ota_owns_screen(runtime->snapshot.ota) ||
+      app_core::ota_awaits_confirm(runtime->snapshot.ota);
+
   const bool page_is_now_playing =
-      runtime->now_playing_seize.owns_screen ||
-      (!runtime->active_pages.empty() &&
-       runtime->active_pages[runtime->carousel.index] ==
-           app_core::PageId::NowPlaying);
+      !takeover_page_owns_screen &&
+      (runtime->now_playing_seize.owns_screen ||
+       (!runtime->active_pages.empty() &&
+        runtime->active_pages[runtime->carousel.index] ==
+            app_core::PageId::NowPlaying));
 
   const bool overlay_was_visible = runtime->volume_overlay.visible;
   runtime->volume_overlay = app_core::volume_overlay_tick(
       runtime->volume_overlay, media.volume, page_is_now_playing, now_ms);
   runtime->context.volume_overlay_visible = runtime->volume_overlay.visible;
 
-  if (runtime->now_playing_seize.owns_screen) {
+  if (runtime->now_playing_seize.owns_screen && !takeover_page_owns_screen) {
     // Rebuild only on a real transition - taking the screen, changing track,
     // or the overlay appearing or disappearing. A rebuild every tick would
     // repaint the whole reflective panel ten times a second, which is exactly
@@ -585,9 +604,7 @@ void timer_callback(lv_timer_t* timer) {
   }
   runtime->showing_now_playing = false;
 
-  if (!runtime->snapshot.setup.active && !runtime->showing_settings &&
-      !app_core::ota_owns_screen(runtime->snapshot.ota) &&
-      !app_core::ota_awaits_confirm(runtime->snapshot.ota)) {
+  if (!takeover_page_owns_screen) {
     const app_core::PageId current_page =
         runtime->active_pages[runtime->carousel.index];
     const auto transition = app_core::carousel::tick(
