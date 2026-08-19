@@ -753,7 +753,19 @@ static void search_remote(void *args) {
 				found = true;
 				ctx->active_remote.host.s_addr = a->addr.u_addr.ip4.addr;
 				ctx->active_remote.port = r->port;
-				LOG_INFO("found remote %s %s:%hu", r->instance_name, inet_ntoa(ctx->active_remote.host), ctx->active_remote.port);
+				// hostname is printed alongside instance_name because it is
+				// the only human-readable name of the sender available
+				// anywhere in this protocol: instance_name is
+				// iTunes_Ctrl_<hex>, DACP-ID and Active-Remote are opaque
+				// ids, and no RTSP header carries one. If this reads as
+				// something like "Birdyos-iPhone" it is what the now-playing
+				// page should show instead of the literal "AIRPLAY". Logged
+				// before being wired to anything, because a field that turns
+				// out to be NULL or an IP literal is worth knowing about
+				// before building on it.
+				LOG_INFO("found remote %s hostname='%s' %s:%hu", r->instance_name,
+						 r->hostname ? r->hostname : "(null)",
+						 inet_ntoa(ctx->active_remote.host), ctx->active_remote.port);
 			}
 		}
 
