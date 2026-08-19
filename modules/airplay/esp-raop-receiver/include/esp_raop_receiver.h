@@ -196,6 +196,19 @@ esp_err_t raop_set_device_name(raop_handle_t *handle, const char *name);
  */
 float raop_get_volume(raop_handle_t *handle);
 
+/**
+ * @brief Whether the current sender has actually set a volume yet.
+ *
+ * raop_get_volume() always returns a number, and between SETUP and the
+ * sender's first SET_PARAMETER that number is a placeholder. It is a legal
+ * dB value - AirPlay's range is -30..0 with -144 for mute - so it cannot be
+ * told apart from a real level by inspection. A UI showing a volume needs to
+ * know the difference; this is how.
+ *
+ * @return false from SETUP until the sender sets a volume, true afterwards.
+ */
+bool raop_volume_is_known(raop_handle_t *handle);
+
 #ifdef __cplusplus
 }
 #endif
