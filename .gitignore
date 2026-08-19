@@ -21,7 +21,10 @@ compile_commands.json
 .worktrees/
 
 # Project-local ESP-IDF toolchain and generated build/dependency state.
-.tools/
+# No trailing slash on this one: a worktree that shares one installed
+# toolchain has .tools as a symlink, and the slash form only matches a real
+# directory, so the symlink showed up as untracked in every worktree.
+.tools
 managed_components/
 dependencies.lock
 sdkconfig
