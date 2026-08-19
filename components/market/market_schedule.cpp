@@ -45,6 +45,24 @@ int taiwan_refresh_interval_seconds(const app_core::RtcDateTime& local_time,
   if (primary_active && taiwan_market_hours(local_time)) {
     return kTaiwanFastRefreshIntervalSeconds;
   }
+  // Never sleep through the open. A refresh landing at 08:55 is still
+  // off-hours, so it used to take the flat 30-minute interval and the panel
+  // kept showing yesterday's close until 09:25 - the exact staleness the
+  // fast in-session interval exists to prevent, just moved to the one
+  // moment of the day it matters most. Minute granularity on purpose: the
+  // seconds already elapsed in the current minute put the next refresh a
+  // little after 09:00, not exactly on it, which is what Yahoo needs to
+  // have published the session's first bar.
+  const int day = weekday(local_time);
+  if (day != 0 && day != 6) {
+    const int minute_of_day = local_time.hour * 60 + local_time.minute;
+    if (minute_of_day < kSessionOpenMinute) {
+      const int seconds_until_open = (kSessionOpenMinute - minute_of_day) * 60;
+      if (seconds_until_open < kRefreshIntervalSeconds) {
+        return seconds_until_open;
+      }
+    }
+  }
   return kRefreshIntervalSeconds;
 }
 

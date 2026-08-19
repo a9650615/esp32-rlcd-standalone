@@ -432,6 +432,28 @@ HOST_TEST(taiwan_refresh_interval_is_fast_only_during_hours_on_the_primary) {
             market::kRefreshIntervalSeconds);
 }
 
+HOST_TEST(taiwan_refresh_before_the_open_lands_just_after_it) {
+  // The reported bug: a refresh at 08:55 took the flat 30-minute interval,
+  // so the panel showed yesterday's close from 09:00 until 09:25.
+  EXPECT_EQ(market::taiwan_refresh_interval_seconds(local(2026, 8, 17, 8, 55),
+                                                    true),
+            5 * 60);
+  EXPECT_EQ(market::taiwan_refresh_interval_seconds(local(2026, 8, 17, 8, 59),
+                                                    true),
+            60);
+  // Far enough out, and after the close, the flat interval still applies.
+  EXPECT_EQ(market::taiwan_refresh_interval_seconds(local(2026, 8, 17, 3, 0),
+                                                    true),
+            market::kRefreshIntervalSeconds);
+  EXPECT_EQ(market::taiwan_refresh_interval_seconds(local(2026, 8, 17, 14, 0),
+                                                    true),
+            market::kRefreshIntervalSeconds);
+  // Saturday morning has no open to wait for.
+  EXPECT_EQ(market::taiwan_refresh_interval_seconds(local(2026, 8, 15, 8, 55),
+                                                    true),
+            market::kRefreshIntervalSeconds);
+}
+
 // --- reduce_to_extremes: the whole point of this item ----------------------
 
 HOST_TEST(reduce_to_extremes_preserves_a_single_sharp_spike) {

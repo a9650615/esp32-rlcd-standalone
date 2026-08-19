@@ -27,6 +27,10 @@ bool taiwan_market_hours(const app_core::RtcDateTime& local_time);
 // unchanged number - so the fallback always gets the slow interval,
 // regardless of market hours.
 //
+// Before 09:00 on a weekday the slow interval is shortened to land the next
+// refresh just after the open, so a fetch at 08:55 no longer leaves
+// yesterday's close on the panel until 09:25.
+//
 // Otherwise: kTaiwanFastRefreshIntervalSeconds (market.hpp) while
 // taiwan_market_hours() is true, kRefreshIntervalSeconds (market.hpp, the
 // existing 30 min) everywhere else - off-hours, weekends, and the
