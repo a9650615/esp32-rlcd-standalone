@@ -8,8 +8,21 @@ AirPlay is the first source to feed it, and the whole design is driven by what
 RAOP actually provides — but the page, the layouts, and the core-side API
 below name no protocol.
 
-Mockups of all three screens (artwork, no artwork, volume) are at
-<https://claude.ai/code/artifact/42a83c8a-1f87-4485-bd14-f4de8917883e>.
+Mockups of all three screens (artwork, no artwork, volume) are kept in this
+repository at `docs/assets/2026-08-19-now-playing-mockup.html` - open it in a
+browser. It draws the panel at its real 400x300 pixel size, scaled 2x, with
+the album art generated through the same 4x4 ordered-dither matrix the
+firmware uses, so what it shows is what the panel can actually produce.
+
+The coordinates written on that page are the original absolute ones. The
+shipped layout translates the same rects to whatever content rect it is
+handed (see "What the hardware said" at the end of this document); the
+proportions, sizes and relative positions are unchanged, so the mockup is
+still accurate as a picture and stale only as a coordinate reference.
+
+The same mockup was also published at
+<https://claude.ai/code/artifact/42a83c8a-1f87-4485-bd14-f4de8917883e>, which
+may not outlive the repository copy.
 
 ## Why the page is not called AirPlay
 

@@ -1,0 +1,617 @@
+<title>Razorbill Now Playing</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=Montserrat:wght@400;500;600;700&display=swap">
+
+<style>
+:root {
+  --ground:      #F1F0EB;
+  --surface:     #FFFFFF;
+  --surface-2:   #E7E6DF;
+  --ink:         #1A1C19;
+  --ink-2:       #4B4F4A;
+  --muted:       #7E837C;
+  --rule:        #D3D2C9;
+  --accent:      #3F6C82;
+  --accent-soft: #E1EBEF;
+  --warn:        #8A5A1E;
+
+  /* Physical panel colours. Deliberately theme-independent: this is what the
+     reflective LCD actually looks like, not a styling choice. */
+  --panel-white: #DCDDD3;
+  --panel-ink:   #14150F;
+  --panel-edge:  #2A2C25;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground:      #121417;
+    --surface:     #1A1D21;
+    --surface-2:   #23272C;
+    --ink:         #E5E7E3;
+    --ink-2:       #B4B9B4;
+    --muted:       #848B8E;
+    --rule:        #2E3338;
+    --accent:      #86B2C6;
+    --accent-soft: #1E2A31;
+    --warn:        #D3A25F;
+  }
+}
+
+:root[data-theme="dark"] {
+  --ground:      #121417;
+  --surface:     #1A1D21;
+  --surface-2:   #23272C;
+  --ink:         #E5E7E3;
+  --ink-2:       #B4B9B4;
+  --muted:       #848B8E;
+  --rule:        #2E3338;
+  --accent:      #86B2C6;
+  --accent-soft: #1E2A31;
+  --warn:        #D3A25F;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: "IBM Plex Sans", system-ui, -apple-system, "Helvetica Neue", sans-serif;
+  font-size: 16px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap {
+  max-width: 920px;
+  margin: 0 auto;
+  padding: 56px 24px 96px;
+  display: flex;
+  flex-direction: column;
+  gap: 56px;
+}
+
+/* ---- masthead ---- */
+
+.masthead { display: flex; flex-direction: column; gap: 14px; }
+
+.eyebrow {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin: 0;
+}
+
+h1 {
+  margin: 0;
+  font-size: clamp(30px, 5vw, 44px);
+  line-height: 1.1;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  text-wrap: balance;
+}
+
+.lede {
+  margin: 0;
+  max-width: 62ch;
+  color: var(--ink-2);
+  font-size: 17px;
+}
+
+.specbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.specbar div {
+  flex: 1 1 150px;
+  padding: 12px 16px;
+  border-right: 1px solid var(--rule);
+}
+.specbar div:last-child { border-right: 0; }
+
+.specbar dt {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0 0 3px;
+}
+.specbar dd {
+  margin: 0;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 15px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- sections ---- */
+
+section { display: flex; flex-direction: column; gap: 20px; }
+
+.sec-head { display: flex; flex-direction: column; gap: 8px; }
+
+.sec-head h2 {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  text-wrap: balance;
+}
+
+.sec-head p {
+  margin: 0;
+  max-width: 66ch;
+  color: var(--ink-2);
+}
+
+/* ---- the panel ---- */
+
+.stage {
+  display: flex;
+  justify-content: center;
+  padding: 28px 20px;
+  background: var(--surface-2);
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  overflow-x: auto;
+}
+
+.scaler {
+  width: 800px;
+  height: 600px;
+  flex: none;
+}
+
+.panel {
+  width: 400px;
+  height: 300px;
+  transform: scale(2);
+  transform-origin: top left;
+  position: relative;
+  background: var(--panel-white);
+  color: var(--panel-ink);
+  font-family: Montserrat, "IBM Plex Sans", sans-serif;
+  outline: 1px solid var(--panel-edge);
+  overflow: hidden;
+}
+
+.panel * { position: absolute; margin: 0; }
+
+/* Panel type roles map 1:1 onto ui_fonts.hpp. */
+.f-s { font-size: 14px; line-height: 16px; font-weight: 600; }
+.f-m { font-size: 20px; line-height: 22px; font-weight: 600; }
+.f-l { font-size: 28px; line-height: 34px; font-weight: 700; }
+.f-d { font-size: 128px; line-height: 130px; font-weight: 700; letter-spacing: -0.04em; }
+
+.cap { letter-spacing: 0.1em; text-transform: uppercase; }
+.ink-fill { background: var(--panel-ink); }
+.clip1 { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.clip2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* tray: 28px band + 1px separator, per kSystemTrayReservedHeight */
+.tray-sep { left: 6px; top: 34px; width: 388px; height: 1px; background: var(--panel-ink); }
+
+/* ---- annotations ---- */
+
+.notes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1px;
+  background: var(--rule);
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+}
+
+.notes > div { background: var(--surface); padding: 14px 16px; }
+
+.notes h3 {
+  margin: 0 0 5px;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.notes p { margin: 0; font-size: 14px; color: var(--ink-2); line-height: 1.5; }
+
+code {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.88em;
+  background: var(--accent-soft);
+  color: var(--ink);
+  padding: 1px 5px;
+  border-radius: 2px;
+}
+
+/* ---- tables ---- */
+
+.tablewrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: 2px; }
+
+table {
+  width: 100%;
+  min-width: 560px;
+  border-collapse: collapse;
+  background: var(--surface);
+  font-size: 14px;
+}
+
+th, td {
+  text-align: left;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--rule);
+  vertical-align: top;
+}
+
+thead th {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 600;
+  background: var(--surface-2);
+}
+
+tbody tr:last-child td { border-bottom: 0; }
+
+td.mono {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.flag {
+  display: inline-block;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  padding: 1px 7px;
+  border-radius: 2px;
+  border: 1px solid currentColor;
+  color: var(--warn);
+  white-space: nowrap;
+}
+
+.flag.ok { color: var(--accent); }
+
+ol.steps {
+  margin: 0;
+  padding-left: 0;
+  list-style: none;
+  counter-reset: s;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  background: var(--surface);
+}
+
+ol.steps li {
+  counter-increment: s;
+  display: grid;
+  grid-template-columns: 44px 1fr;
+  gap: 14px;
+  padding: 13px 16px;
+  border-bottom: 1px solid var(--rule);
+  font-size: 15px;
+}
+ol.steps li:last-child { border-bottom: 0; }
+
+ol.steps li::before {
+  content: counter(s, decimal-leading-zero);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 13px;
+  color: var(--accent);
+  font-weight: 600;
+  padding-top: 2px;
+}
+
+ol.steps b { font-weight: 600; }
+
+footer {
+  border-top: 1px solid var(--rule);
+  padding-top: 20px;
+  color: var(--muted);
+  font-size: 13px;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+}
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <p class="eyebrow">ESP32-S3 · 4.2" reflective LCD · 1-bit</p>
+    <h1>AirPlay 播放頁</h1>
+    <p class="lede">
+      有 AirPlay session 時接管畫面的 now-playing 版面，加上一個調音量時蓋上來的音量畫面。
+      三張圖都是 400×300 的實際像素，放大兩倍顯示。
+    </p>
+    <dl class="specbar">
+      <div><dt>Canvas</dt><dd>400 × 300</dd></div>
+      <div><dt>Content</dt><dd>388 × 240 @ 6,42</dd></div>
+      <div><dt>Tray</dt><dd>28 + 1 + 7 px</dd></div>
+      <div><dt>Fonts</dt><dd>14 / 20 / 28 / 128</dd></div>
+    </dl>
+  </header>
+
+  <!-- ============ 1. artwork ============ -->
+  <section>
+    <div class="sec-head">
+      <h2>有封面：封面在左，歌名在右，進度條橫跨底部</h2>
+      <p>
+        封面 176×176 靠左，右欄由上而下是來源、歌名、歌手、專輯，字級一路遞減。
+        進度條吃滿 388px 全寬，左邊是狀態，右邊是時間。
+      </p>
+    </div>
+
+    <div class="stage">
+      <div class="scaler">
+        <div class="panel">
+          <!-- tray -->
+          <p class="f-m" style="left:6px; top:6px;">10:18</p>
+          <p class="f-s cap" style="left:74px; top:9px; color:#3E4038;">Wed 19 Aug</p>
+          <p class="f-s cap" style="right:6px; top:9px;">◧ ⏵ ▮</p>
+          <div class="tray-sep"></div>
+
+          <!-- artwork -->
+          <canvas id="art" width="176" height="176" style="left:6px; top:46px; width:176px; height:176px;"></canvas>
+
+          <!-- right column -->
+          <p class="f-s cap clip1" style="left:194px; top:46px; width:200px; color:#3E4038;">Birdyo’s iPhone</p>
+          <p class="f-l clip2" style="left:194px; top:66px; width:200px; height:68px;">Midnight City</p>
+          <p class="f-m clip1" style="left:194px; top:140px; width:200px;">M83</p>
+          <p class="f-s clip1" style="left:194px; top:166px; width:200px; color:#3E4038;">Hurry Up, We’re Dreaming</p>
+
+          <!-- transport -->
+          <p class="f-s cap" style="left:6px; top:244px;">▶ Play</p>
+          <p class="f-s" style="right:6px; top:244px; font-variant-numeric:tabular-nums;">1:42 / 3:58</p>
+          <div style="left:6px; top:266px; width:388px; height:10px; border:1px solid var(--panel-ink);"></div>
+          <div class="ink-fill" style="left:8px; top:268px; width:167px; height:6px;"></div>
+
+          <!-- page dots -->
+          <div class="ink-fill" style="left:187px; top:289px; width:5px; height:5px;"></div>
+          <div class="ink-fill" style="left:196px; top:289px; width:5px; height:5px;"></div>
+          <div style="left:205px; top:289px; width:5px; height:5px; border:1px solid var(--panel-ink);"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="notes">
+      <div>
+        <h3>封面 176 × 176</h3>
+        <p>JPEG 解到灰階後，用現有的 <code>dither_bayer4x4_dark()</code> 逐像素轉 1-bit，成品 4.3 KB。176 遠大於 16px 的 dither 下限。</p>
+      </div>
+      <div>
+        <h3>歌名兩行後截斷</h3>
+        <p>歌名 28px 最多兩行，約 20 個英文字元，超過顯示省略號。歌手一行 20px，專輯一行 14px。</p>
+      </div>
+      <div>
+        <h3>進度條取代「2 / 4 MIN」</h3>
+        <p>連續的長條比整數分鐘準。時間用 <code>current_ms</code> 與 <code>total_ms</code> 算，直播串流沒有總長就只畫已播時間、不畫條。</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 2. no artwork ============ -->
+  <section>
+    <div class="sec-head">
+      <h2>沒有封面：歌名置中放大，其餘不動</h2>
+      <p>
+        來源沒送封面、或 JPEG 解不開時走這版。歌名一樣是 28px 兩行，但吃滿 388px 全寬置中，一行可以放進約 20 個字元。
+        底部的進度條與狀態列跟上一版完全一樣，切換時不會跳動。
+      </p>
+    </div>
+
+    <div class="stage">
+      <div class="scaler">
+        <div class="panel">
+          <p class="f-m" style="left:6px; top:6px;">10:18</p>
+          <p class="f-s cap" style="left:74px; top:9px; color:#3E4038;">Wed 19 Aug</p>
+          <p class="f-s cap" style="right:6px; top:9px;">◧ ⏵ ▮</p>
+          <div class="tray-sep"></div>
+
+          <p class="f-s cap" style="left:6px; top:60px; width:388px; text-align:center; color:#3E4038;">Birdyo’s iPhone</p>
+          <p class="f-l clip2" style="left:6px; top:92px; width:388px; height:68px; text-align:center;">Midnight City</p>
+          <p class="f-m clip1" style="left:6px; top:168px; width:388px; text-align:center;">M83</p>
+          <p class="f-s clip1" style="left:6px; top:196px; width:388px; text-align:center; color:#3E4038;">Hurry Up, We’re Dreaming</p>
+
+          <p class="f-s cap" style="left:6px; top:244px;">▶ Play</p>
+          <p class="f-s" style="right:6px; top:244px; font-variant-numeric:tabular-nums;">1:42 / 3:58</p>
+          <div style="left:6px; top:266px; width:388px; height:10px; border:1px solid var(--panel-ink);"></div>
+          <div class="ink-fill" style="left:8px; top:268px; width:167px; height:6px;"></div>
+
+          <div class="ink-fill" style="left:187px; top:289px; width:5px; height:5px;"></div>
+          <div class="ink-fill" style="left:196px; top:289px; width:5px; height:5px;"></div>
+          <div style="left:205px; top:289px; width:5px; height:5px; border:1px solid var(--panel-ink);"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 3. volume HUD ============ -->
+  <section>
+    <div class="sec-head">
+      <h2>調音量：數字放到 128px，2 秒後退回</h2>
+      <p>
+        音量一變就蓋住內容區，兩秒沒再動就換回 now-playing。系統列留著，所以時間跟電量不會消失，重畫面積也只有內容區。
+        數字用既有的 128px 數字字型，隔一段距離也讀得到。
+      </p>
+    </div>
+
+    <div class="stage">
+      <div class="scaler">
+        <div class="panel">
+          <p class="f-m" style="left:6px; top:6px;">10:18</p>
+          <p class="f-s cap" style="left:74px; top:9px; color:#3E4038;">Wed 19 Aug</p>
+          <p class="f-s cap" style="right:6px; top:9px;">◧ ⏵ ▮</p>
+          <div class="tray-sep"></div>
+
+          <p class="f-s cap" style="left:6px; top:50px;">Volume</p>
+          <p class="f-s cap" style="right:6px; top:50px; color:#3E4038;">Birdyo’s iPhone</p>
+
+          <p class="f-d" style="left:6px; top:74px; width:388px; text-align:center; font-variant-numeric:tabular-nums;">60<span class="f-l" style="position:static; vertical-align:top; line-height:130px;">%</span></p>
+
+          <div style="left:6px; top:232px; width:388px; height:36px; border:1px solid var(--panel-ink);"></div>
+          <div class="ink-fill" style="left:9px; top:235px; width:229px; height:30px;"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="notes">
+      <div>
+        <h3>不用改 volume mode</h3>
+        <p><code>raop_get_volume()</code> 在 SOFTWARE 模式一樣讀得到。UI 每 100 ms 比一次值，變了就開 HUD，不必碰 PCM 路徑或 library。</p>
+      </div>
+      <div>
+        <h3>百分比是換算來的</h3>
+        <p>AirPlay 走 dB，<code>-30 dB</code> 到 <code>0 dB</code>。library 已經正規化成 0.0–1.0，乘 100 取整就是螢幕上的數字。</p>
+      </div>
+      <div>
+        <h3>靜音要單獨處理</h3>
+        <p>AirPlay 的靜音是 <code>-144 dB</code>，不是 0%。這個值要顯示 <code>MUTE</code> 而不是 <code>0%</code>，長條全空。</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 4. states ============ -->
+  <section>
+    <div class="sec-head">
+      <h2>狀態列的五種寫法</h2>
+      <p>左下角那一行是唯一會變的狀態文字。每個狀態都對應一個 RAOP 事件，沒有推測出來的狀態。</p>
+    </div>
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr><th>畫面文字</th><th>RAOP 事件</th><th>進度條</th><th>說明</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">▶ PLAY</td><td class="mono">RAOP_EVENT_PLAYING</td><td>照 progress 走</td><td>正常播放。</td></tr>
+          <tr><td class="mono">❙❙ PAUSE</td><td class="mono">RAOP_EVENT_PAUSED</td><td>停在原位</td><td>手機按暫停。畫面留著，不退回輪播。</td></tr>
+          <tr><td class="mono">⋯ BUFFER</td><td class="mono">RAOP_EVENT_BUFFERING</td><td>空白</td><td>剛連上、還在填音訊緩衝。</td></tr>
+          <tr><td class="mono">⚠ STALL</td><td class="mono">RAOP_EVENT_STALLED</td><td>停在原位</td><td>網路斷斷續續。這是唯一的警示狀態。</td></tr>
+          <tr><td class="mono">■ STOP</td><td class="mono">RAOP_EVENT_STOPPED</td><td>歸零</td><td>播完或手機停止，開始倒數退回輪播。</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============ 5. lifecycle ============ -->
+  <section>
+    <div class="sec-head">
+      <h2>先霸佔再放手</h2>
+      <p>連上時搶畫面，之後把主導權還給輪播，但輪播多一張 AirPlay。</p>
+    </div>
+    <ol class="steps">
+      <li><b>手機連上。</b><code>RAOP_EVENT_CONNECTED</code> 進來，AirPlay 頁立刻蓋掉當前頁面，不等輪播。</li>
+      <li><b>停 60 秒。</b>這段時間輪播不動，讓人看清楚在放什麼。這個秒數是要在板子上試的旋鈕，不是定案的數字。</li>
+      <li><b>放手。</b>60 秒後輪播恢復，AirPlay 以一張頁面的身分加入，跟天氣、股市輪流。</li>
+      <li><b>換歌時再搶一次。</b>新的 <code>RAOP_EVENT_METADATA</code> 表示換歌，重跑第 1 步。</li>
+      <li><b>斷線就退場。</b><code>RAOP_EVENT_DISCONNECTED</code> 後 AirPlay 退出輪播，畫面回到原本的頁序。</li>
+      <li><b>音量 HUD 不管上面這些。</b>只要 AirPlay 頁正在畫面上，音量一變就蓋上去，2 秒後退回。輪播到別頁時不跳出來。</li>
+    </ol>
+  </section>
+
+  <!-- ============ 6. data sources ============ -->
+  <section>
+    <div class="sec-head">
+      <h2>每個欄位從哪裡來</h2>
+      <p>畫面上沒有一個字是猜的。左邊是欄位，右邊是它唯一的來源。</p>
+    </div>
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr><th>畫面欄位</th><th>來源</th><th>狀態</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>歌名 / 歌手 / 專輯</td><td class="mono">raop_metadata_t</td><td><span class="flag ok">現成</span></td></tr>
+          <tr><td>進度條與時間</td><td class="mono">raop_progress_t</td><td><span class="flag ok">現成</span></td></tr>
+          <tr><td>封面</td><td class="mono">raop_artwork_t</td><td><span class="flag">要加 JPEG 解碼</span></td></tr>
+          <tr><td>音量百分比</td><td class="mono">raop_get_volume()</td><td><span class="flag ok">現成，輪詢即可</span></td></tr>
+          <tr><td>來源裝置名稱</td><td class="mono">RTSP DACP / 連線資訊</td><td><span class="flag">要確認 library 有沒有帶出來</span></td></tr>
+          <tr><td>狀態文字</td><td class="mono">raop_event_t</td><td><span class="flag ok">現成</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============ 7. risks ============ -->
+  <section>
+    <div class="sec-head">
+      <h2>還沒證實的兩件事</h2>
+      <p>設計本身不擋這兩件，但實作前要在板子上量。</p>
+    </div>
+    <div class="notes">
+      <div>
+        <h3>JPEG 原始大小</h3>
+        <p>AirPlay 封面可能是 500×500 以上的 JPEG。library 會不會一次交出整段 buffer、多大，要實測。PSRAM 有 8 MB，但音訊緩衝也在搶。</p>
+      </div>
+      <div>
+        <h3>裝置名稱拿不拿得到</h3>
+        <p>畫面上的「Birdyo’s iPhone」目前沒有對應的 API。拿不到就整行拿掉，改成固定的 <code>AIRPLAY</code>，版面不變。</p>
+      </div>
+    </div>
+  </section>
+
+  <footer>razorbill · airplay now-playing 版面規劃 · 2026-08-19</footer>
+</div>
+
+<script>
+// 1-bit album art, produced the same way the firmware will: greyscale source,
+// then the 4x4 ordered-dither matrix from components/ui/include/dither.hpp.
+(function () {
+  var BAYER = [
+    [0, 8, 2, 10],
+    [12, 4, 14, 6],
+    [3, 11, 1, 9],
+    [15, 7, 13, 5]
+  ];
+
+  var canvas = document.getElementById("art");
+  if (!canvas) return;
+  var ctx = canvas.getContext("2d");
+  var N = canvas.width;
+  var img = ctx.createImageData(N, N);
+  var cx = N * 0.5, cy = N * 0.44;
+
+  for (var y = 0; y < N; y++) {
+    for (var x = 0; x < N; x++) {
+      var dx = x - cx, dy = y - cy;
+      var r = Math.sqrt(dx * dx + dy * dy) / (N * 0.5);
+      var ang = Math.atan2(dy, dx);
+
+      // A record sleeve: bright disc, grooved rings, dark label, soft corners.
+      var lum = 0.92 - 0.55 * r;
+      lum += 0.10 * Math.sin(r * 46.0);              // grooves
+      lum -= 0.30 * Math.exp(-Math.pow((r - 0.30) * 6.0, 2)); // label ring
+      if (r < 0.16) lum = 0.06;                       // centre label
+      lum += 0.06 * Math.sin(ang * 3.0 + r * 4.0);    // off-axis light
+      lum -= 0.22 * Math.max(0, r - 0.86);            // vignette
+
+      var level = Math.round(Math.max(0, Math.min(1, 1 - lum)) * 16);
+      var dark = level > 0 && (level >= 16 || BAYER[y & 3][x & 3] < level);
+      var v = dark ? 20 : 220;
+      var i = (y * N + x) * 4;
+      img.data[i] = v; img.data[i + 1] = v; img.data[i + 2] = v - 4; img.data[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+})();
+</script>
