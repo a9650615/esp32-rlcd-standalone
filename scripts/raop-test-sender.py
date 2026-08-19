@@ -522,7 +522,7 @@ def build_sync_packet(rtp_now, rtp_now_latency, first):
 # RTSP layer
 # ---------------------------------------------------------------------------
 
-def build_sdp(our_ip, receiver_ip):
+def build_sdp(our_ip, receiver_ip, crypto=None):
     fmtp = f"{FMTP_PAYLOAD_TYPE} {FRAME_SIZE} 0 {BIT_DEPTH} {PB} {MB} {KB} {CHANNELS} {MAX_RUN} 0 0 {SAMPLE_RATE}"
     lines = [
         "v=0",
@@ -534,7 +534,64 @@ def build_sdp(our_ip, receiver_ip):
         f"a=rtpmap:{FMTP_PAYLOAD_TYPE} AppleLossless",   # not parsed by raop.c - see module docstring
         f"a=fmtp:{fmtp}",
     ]
+    if crypto is not None:
+        # raop.c pulls these out with strcasestr(body, "rsaaeskey") /
+        # strextract(p, ":", "\r\n"), so the name must be followed by ':' and
+        # the value must end the line. Apple strips the base64 '=' padding and
+        # raop.c pads it back with base64_pad(), so send it stripped - that is
+        # the input the receiver's padding code actually has to handle.
+        lines.append("a=rsaaeskey:" + crypto.rsaaeskey_b64)
+        lines.append("a=aesiv:" + crypto.aesiv_b64)
     return ("\r\n".join(lines) + "\r\n").encode("ascii")
+
+
+class StreamCrypto:
+    """The sender half of AirPlay 1's audio encryption.
+
+    A real sender generates a random AES-128 session key, encrypts it to the
+    receiver's public key with RSA-OAEP-SHA1, and sends that as `rsaaeskey`
+    with a random IV as `aesiv`. Every RTP payload is then AES-128-CBC
+    encrypted, the IV reset for each packet and any trailing bytes past the
+    last whole 16-byte block left in the clear - see rtp.c's alac_decode(),
+    which mirrors exactly that.
+
+    OAEP-SHA1 is not a guess: raop.c's rsa_apply(RSA_MODE_KEY) sets
+    mbedtls_rsa_set_padding(MBEDTLS_RSA_PKCS_V21, MBEDTLS_MD_SHA1) before
+    decrypting. Padding that does not match makes the decrypt fail, which the
+    receiver reports as "RSA decrypt error".
+
+    Takes a PUBLIC key file. This tool never reads the private key - derive
+    the public half once with:
+
+        openssl rsa -in modules/airplay/secrets/raop_private_key.pem \
+                    -pubout -out /tmp/raop_public.pem
+    """
+
+    def __init__(self, pubkey_path):
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import padding
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+        self._Cipher, self._algorithms, self._modes = Cipher, algorithms, modes
+
+        with open(pubkey_path, "rb") as f:
+            pub = serialization.load_pem_public_key(f.read())
+
+        self.key = os.urandom(16)
+        self.iv = os.urandom(16)
+        wrapped = pub.encrypt(
+            self.key,
+            padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA1()),
+                         algorithm=hashes.SHA1(), label=None))
+        self.rsaaeskey_b64 = base64.b64encode(wrapped).decode().rstrip("=")
+        self.aesiv_b64 = base64.b64encode(self.iv).decode().rstrip("=")
+
+    def encrypt_payload(self, payload):
+        aeslen = len(payload) & ~0xF
+        if aeslen == 0:
+            return payload
+        enc = self._Cipher(self._algorithms.AES(self.key),
+                           self._modes.CBC(self.iv)).encryptor()
+        return enc.update(payload[:aeslen]) + enc.finalize() + payload[aeslen:]
 
 
 def format_request(request_line, headers, body=b""):
@@ -688,6 +745,12 @@ def run(args):
     print(f"bound local UDP ports: control={our_ctrl_port} timing={our_timing_port} "
           f"data={data_sock.getsockname()[1]}")
 
+    # Built before anything is sent so a bad key path fails immediately rather
+    # than halfway through an RTSP conversation the receiver has to time out.
+    crypto = StreamCrypto(args.pubkey) if args.pubkey else None
+    if crypto:
+        print(f"[crypto]  AES-128 session key wrapped with RSA-OAEP-SHA1 from {args.pubkey}")
+
     stop_event = threading.Event()
     threads = []
     try:
@@ -719,8 +782,9 @@ def run(args):
             print(f"[auth]    Apple-Challenge accepted, {decoded_len}-byte Apple-Response")
 
         # 2. ANNOUNCE - SDP with fmtp, no rsaaeskey/aesiv.
-        sdp = build_sdp(session.our_ip, args.host)
-        assert b"rsaaeskey" not in sdp and b"aesiv" not in sdp
+        sdp = build_sdp(session.our_ip, args.host, crypto)
+        if crypto is None:
+            assert b"rsaaeskey" not in sdp and b"aesiv" not in sdp
         session.request(
             "ANNOUNCE", f"rtsp://{session.our_ip}/raop-test", {
                 "Content-Type": "application/sdp",
@@ -755,8 +819,9 @@ def run(args):
         # Encode before the clock starts. start_ms anchors every sync packet's
         # rtp_now, so any work done after this line is time the receiver is told
         # the stream advanced through when it did not.
-        packets = encode_packets(samples, start_seq, start_rtptime)
-        print(f"pre-encoded {len(packets)} ALAC frames")
+        packets = encode_packets(samples, start_seq, start_rtptime, crypto)
+        print(f"pre-encoded {len(packets)} ALAC frames"
+              + (" (AES-128-CBC encrypted)" if crypto else ""))
 
         start_ms = now_ms()
 
@@ -801,7 +866,7 @@ def run(args):
         session.close()
 
 
-def encode_packets(samples, seqno, rtptime):
+def encode_packets(samples, seqno, rtptime, crypto=None):
     """Build every RTP data packet up front. See stream_audio() for why."""
     packets = []
     idx = 0
@@ -809,8 +874,13 @@ def encode_packets(samples, seqno, rtptime):
     while idx < len(samples):
         chunk = min(FRAME_SIZE, len(samples) - idx)
         chan = samples[idx:idx + chunk]
-        packets.append(build_rtp_data_header(seqno, rtptime, first)
-                       + encode_cpe_frame(chan, chan))
+        payload = encode_cpe_frame(chan, chan)
+        # Encrypted after ALAC, never before: the receiver decrypts and then
+        # decodes (rtp.c alac_decode), so the ciphertext has to wrap the
+        # compressed frame, not the PCM.
+        if crypto is not None:
+            payload = crypto.encrypt_payload(payload)
+        packets.append(build_rtp_data_header(seqno, rtptime, first) + payload)
         first = False
         seqno = (seqno + 1) & 0xffff
         rtptime = (rtptime + chunk) & 0xffffffff
@@ -1201,6 +1271,13 @@ def main():
                          "256-byte Apple-Response, the way a real sender does; "
                          "exercises the RSA path (and its stack cost) that the "
                          "default run skips entirely")
+    ap.add_argument("--pubkey", metavar="PEM",
+                    help="encrypt the stream the way a real sender does: wrap a random "
+                         "AES-128 key with this RSA PUBLIC key (RSA-OAEP-SHA1), send it "
+                         "as rsaaeskey with a random aesiv, and AES-128-CBC every RTP "
+                         "payload. This is the only way to exercise the receiver's "
+                         "decrypt path without a real iPhone. Derive the public half "
+                         "with: openssl rsa -in <private>.pem -pubout -out pub.pem")
     ap.add_argument("--selftest", action="store_true", help="run internal self-tests and exit")
     ap.add_argument("--quiet", dest="verbose", action="store_false", default=True,
                     help="suppress the RTSP/timing/sync exchange log")
