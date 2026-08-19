@@ -305,3 +305,14 @@ a guaranteed failure on every session.
   did arrive - is indistinguishable from the log. The added line names the
   `Content-Type` and whether a body survived, which separates those cases in
   one read. No behaviour changes; it is `LOG_INFO` beside the existing ones.
+
+- **`src/raop.c`: the DMAP metadata condition was inverted.** Upstream tested
+  `if (!dmap_parse(&settings, body, len))`, but `dmap_parse()` returns 1 on
+  success and 0 on every failure path (`dmap_parser.c`: `return 1` after
+  `parse_value()`; `return 0` for a short buffer, an unknown tag, or a size
+  that disagrees with the payload). The metadata callback therefore fired
+  only when parsing had failed, and every correctly parsed track title was
+  discarded. Symptom on hardware: an iPhone and an Apple TV both produced a
+  working progress bar and a permanently empty title, with no error logged
+  anywhere - the body was arriving intact and parsing fine. Now `if
+  (dmap_parse(...))`.
