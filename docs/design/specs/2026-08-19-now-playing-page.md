@@ -68,7 +68,27 @@ library exactly as they are.
 scales locally generated sound only, and its own header says so: the phone
 owns AirPlay volume and multiplying by a second local scale would be wrong.
 
-**The device name has no source.** "Birdyo's iPhone" in the mockup is
+**The device name has one imperfect source, and one better one nobody has
+fetched.** What ships reads the sender's mDNS hostname through
+`raop_get_remote_hostname()` and swaps hyphens for spaces. That value is the
+mDNS-normalised form - a real iPhone came through as
+`yuu-matosho-iPhone-16-ha`: spaces hyphenated, non-ASCII transliterated, and
+truncated. It is better than a literal `AIRPLAY` and it is not the name the
+owner set.
+
+The name the owner set is in the DACP service's TXT record, under `CtlN`
+(Controller Name), in UTF-8 and untruncated. It is reachable:
+`mdns_query_txt()` exists in this project's mDNS component
+(`managed_components/espressif__mdns/include/mdns.h`) and takes the
+`instance_name` that `search_remote()` already has in hand. It is not fetched
+because `mdns_query_ptr()`'s results come back with `txt_count == 0`, so it
+would need a second query - one more network round trip and more stack in a
+task whose 5 KB was sized from a measured peak, for a cosmetic string, and
+with no guarantee every sender publishes `CtlN`. Recorded as a known,
+costed, deliberately-unspent option rather than an unknown.
+
+**Historical note: the device name was originally specified as having no
+source at all.** "Birdyo's iPhone" in the mockup is
 aspirational. If the library cannot be made to surface it without a fork, the
 whole line is simply not drawn. Every other rect keeps its coordinates — the
 row becomes empty space rather than shifting the block up, so the two cases
