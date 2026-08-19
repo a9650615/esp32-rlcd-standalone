@@ -114,7 +114,16 @@ answered Apple-Challenge with a 256-byte signature
 
 so the sequence is legible: that line, then several more `received OPTIONS`,
 then `disconnected on the other end` and no `ANNOUNCE`, means the key is not
-Apple's. There is no firmware change that fixes this - see the section below
+Apple's.
+
+**The `answered Apple-Challenge` line is a required part of that signature,
+not a detail.** Bare `received OPTIONS` with no challenge behind it is other
+devices on the network enumerating the mDNS advert, and there are far more of
+those than there are sessions - measured at 76 OPTIONS against 3 challenges
+and 3 ANNOUNCEs in one 150 s capture. Counting OPTIONS alone therefore looks
+like a receiver rejecting sender after sender while it is in fact streaming
+happily, which is exactly the reading it produced for someone once. The
+number to compare is challenges against ANNOUNCEs: one-to-one is healthy. There is no firmware change that fixes this - see the section below
 for why the key is structurally part of AirPlay 1.
 
 Two things this does NOT indicate, both of which were suspected first and
