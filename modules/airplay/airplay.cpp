@@ -90,6 +90,18 @@ void publish() {
       }
     }
   }
+  // A session ran with the tray icon lit, audio playing, and the page never
+  // appearing - which means this call and the UI's own read of the registry
+  // disagree, and nothing in either logs enough to say which side is wrong.
+  // The handle's slot is here because an invalid one is silently ignored by
+  // publish_now_playing() (it logs, but only under its own tag), and
+  // session_open because that single bool is what the page's availability
+  // and its seize both hang off.
+  ESP_LOGI(kTag, "publish: slot=%d open=%d state=%d title='%s' vol=%.2f",
+           static_cast<int>(g_media_source.slot),
+           g_now_playing.session_open ? 1 : 0,
+           static_cast<int>(g_now_playing.state), g_now_playing.title.c_str(),
+           g_now_playing.volume);
   app_core::publish_now_playing(g_media_source, g_now_playing);
 }
 
