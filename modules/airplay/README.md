@@ -3,13 +3,16 @@
 A vendored AirPlay 1 (RAOP) receiver: `airplay_init()` starts a real
 RTSP/RTP/mDNS/ALAC receiver and feeds the decoded PCM into `modules/audio`'s
 streaming sink for the session's lifetime, using the RAOP receiver's own
-connected/disconnected events as the session boundary. It registers its own
-tray indicator (active only while a session is open) and disables Wi-Fi
-power save for the session's duration. See `modules/README.md` for the
-module contract this follows (`CONFIG_AIRPLAY_ENABLE`, default `n`, compiles
-to nothing when off, one-way dependency on core - here, `airplay -> audio`
-and `airplay -> app_core`, never the reverse). See `UPSTREAM.md` for exactly
-what was vendored, from where, and what was changed.
+connected/disconnected events as the session boundary. `airplay_register_tray()`
+registers its own tray indicator (active only while a session is open) -
+called separately from, and before, `airplay_init()`, because it has no
+network dependency and `airplay_init()` does (see "What this depends on"
+below). It disables Wi-Fi power save for the session's duration. See
+`modules/README.md` for the module contract this follows
+(`CONFIG_AIRPLAY_ENABLE`, default `n`, compiles to nothing when off, one-way
+dependency on core - here, `airplay -> audio` and `airplay -> app_core`,
+never the reverse). See `UPSTREAM.md` for exactly what was vendored, from
+where, and what was changed.
 
 ## What this is, precisely
 
@@ -25,11 +28,11 @@ Two vendored upstreams (`UPSTREAM.md` has the full provenance):
   `libalac.a` - an unauditable 169 KB opaque binary has no place in an
   open-source repository.
 
-`airplay_init()`/`airplay_deinit()` in `include/airplay.hpp` are the only
-public surface. Calling `airplay_init()` starts mDNS advertisement and the
-RAOP receiver for real - RTSP listener, RTP reception, ALAC decoding of
-actual streamed audio - and its `audio_output_cb` (`airplay.cpp`'s
-`feed_audio()`) writes every decoded chunk straight into
+`airplay_register_tray()`, `airplay_init()`, and `airplay_deinit()` in
+`include/airplay.hpp` are the only public surface. Calling `airplay_init()`
+starts mDNS advertisement and the RAOP receiver for real - RTSP listener, RTP
+reception, ALAC decoding of actual streamed audio - and its `audio_output_cb`
+(`airplay.cpp`'s `feed_audio()`) writes every decoded chunk straight into
 `audio::audio_stream_write()`. The session's open/close boundary comes from
 the RAOP receiver's own `event_cb` (`handle_event()`): `RAOP_EVENT_CONNECTED`
 calls `audio::audio_stream_open(44100)`, disables Wi-Fi power save, and
@@ -42,13 +45,24 @@ and is deliberately left unhandled - confirmed by reading `raop_core.c`'s
 that fire once each, at RTSP SETUP/TEARDOWN, rather than repeatedly within a
 session.
 
+`airplay_init()` must be called only once the Wi-Fi station has a real,
+DHCP-assigned IP address: `raop_init()` (`esp-raop-receiver/src/raop_core.c`)
+resolves that address itself via `esp_netif_get_ip_info()` on `WIFI_STA_DEF`
+and fails immediately, with no wait and no retry, if it is still 0.0.0.0.
+`airplay_register_tray()` has no such dependency and is called separately,
+earlier - see "What this depends on" just below.
+
 ## What this depends on, and what depends on it
 
-`main/app_main.cpp` calls `airplay::airplay_init()` once, alongside (and with
-the same non-fatal treatment as) `audio::audio_init()` - no `#ifdef` at that
-call site; `airplay.hpp`'s inline no-ops make the call correct whether or not
-`CONFIG_AIRPLAY_ENABLE` is on. That is this module's only core touch point;
-see "Core touch points" below.
+`main/app_main.cpp` calls `airplay::airplay_register_tray()` once, early,
+alongside `audio::audio_init()`'s own tray registration, before the network
+exists. `airplay::airplay_init()` itself is called later, from a task
+(`airplay_startup_task`) created after `wifi_provision::start()` that waits
+for the station to have an IP first - same non-fatal treatment either way:
+a failure is logged, never fatal. No `#ifdef` at either call site;
+`airplay.hpp`'s inline no-ops make both calls correct whether or not
+`CONFIG_AIRPLAY_ENABLE` is on. Those are this module's only core touch
+points; see "Core touch points" below.
 
 The dependency direction the module contract requires (rule 4: modules point
 at core, never the other way; and for this module specifically, `airplay ->
@@ -62,6 +76,46 @@ directly. Neither `audio` nor `app_core` includes anything from this module
 - registering a second tray indicator needed zero changes to
 `components/app_core/tray_registry.*` or anywhere else in `components/`,
 which is the acceptance test that registry design was built to pass.
+
+## What a self-generated key does, and how to recognise it
+
+Measured on hardware, with a self-generated 2048-bit RSA key in place of
+Apple's: an iPhone finds the receiver, opens the RTSP connection, sends
+`OPTIONS` **four times**, and disconnects without ever sending `ANNOUNCE`.
+No error appears anywhere on the device.
+
+That silence is the important part. `rsa_apply(RSA_MODE_AUTH)` signs with
+whatever key it was given and reports success - `mbedtls` has no way to know
+which key it was supposed to be. The rejection happens on the sender, which
+verifies `Apple-Response` against the AirPort Express *public* key baked into
+iOS. So the device log shows a clean, successful handshake attempt and the
+user sees "it connects but will not play".
+
+`raop.c`'s `apple_challenge()` now logs
+
+```
+answered Apple-Challenge with a 256-byte signature
+```
+
+so the sequence is legible: that line, then several more `received OPTIONS`,
+then `disconnected on the other end` and no `ANNOUNCE`, means the key is not
+Apple's. There is no firmware change that fixes this - see the section below
+for why the key is structurally part of AirPlay 1.
+
+Two things this does NOT indicate, both of which were suspected first and
+ruled out by measurement:
+
+- It is not the AES stream decryption (`RSA_MODE_KEY`, `rsaaeskey`). That
+  path is never reached, because `ANNOUNCE` never arrives.
+- It is not the audio pipeline. `scripts/raop-test-sender.py` drives the same
+  receiver through RTSP, RTP, ALAC decode, buffering and the codec, and plays
+  5 of 5 consecutive sessions with zero discarded frames. The test sender
+  omits `Apple-Challenge` by default, which is exactly why it passes.
+
+`--challenge` on the test sender checks that a 256-byte `Apple-Response` came
+back. It cannot check that the signature is *correct*, because verifying it
+needs Apple's public key. A passing `--challenge` run therefore says nothing
+about whether an iPhone will accept the same response.
 
 ## The RSA key situation
 
@@ -114,6 +168,42 @@ published across open-source AirPlay projects (shairport-sync and its many
 derivatives all carry a copy under this same name, `super_secret_key`) -
 finding one is not the point of this module's design; keeping this specific
 repository from being the thing that ships it is.
+
+## Testing without a real key or a phone
+
+An iPhone cannot test this receiver either: it always sends an
+Apple-Challenge on `OPTIONS`, which requires signing with the withheld key
+above, so a real AirPlay client fails at the very first request regardless
+of whether authentication is actually wired up correctly. `raop.c`'s two RSA
+paths are both conditional, not mandatory, though -
+`apple_challenge()` returns immediately when there is no Apple-Challenge
+header, and the `rsaaeskey`/AES-decrypt path in the `ANNOUNCE` handler only
+runs `if (strcasestr(body, "rsaaeskey"))` - so a sender that simply omits
+both can complete the handshake and stream real audio with no key at all.
+
+`scripts/raop-test-sender.py` is exactly that sender, built for this
+project's own use in exercising this receiver end to end. It is a real (if
+minimal) RTSP client and ALAC *encoder* - not just an RTP framer: rtp.c's
+`buffer_put_packet()` calls `alac_to_pcm()` unconditionally for every
+arriving packet, with no PCM path at all, so the tool always encodes a real,
+losslessly-compressed ALAC bitstream (derived by reading the vendored
+decoder backwards; there is no encoder anywhere in this repository or its
+vendored code, only Apple's decoder). It generates a known sine tone at a
+stated frequency/amplitude/duration so what comes out of the speaker can be
+judged by ear against what went in, at a conservative default amplitude
+(-20dBFS) since it drives a real speaker in someone's home. It implements
+enough of `rtp.c`'s NTP-timing and sync-packet exchange for the receiver to
+actually reach `RTP_PLAY` and start calling its audio data callback, not
+just accept the RTSP handshake.
+
+It cannot exercise the RSA/authentication paths themselves (deliberately -
+that's the whole point), AES-encrypted audio, resend recovery, or mDNS
+discovery - see the tool's own module docstring
+(`python3 scripts/raop-test-sender.py --help` or read the file directly) for
+the full list of what it does and does not prove, field-by-field citations
+into `raop.c`/`rtp.c` for every byte it sends, and `--dry-run` /
+`--selftest` for reviewing or checking it without a board. Standard library
+only, no new dependencies.
 
 ## Buffer sizing: a few seconds, not upstream's ~23
 
@@ -181,10 +271,13 @@ has ever reached the speaker - see "What is unverified" below.
 
 ## Core touch points
 
-One: `main/app_main.cpp` calls `airplay::airplay_init()` once, right after
-`audio::audio_init()`, logging readiness or unavailability but never
-treating failure as fatal. No other file in `components/` or `main/`
-references this module - the tray indicator and the audio sink are both
+Two, both in `main/app_main.cpp`: `airplay::airplay_register_tray()`, called
+right after `audio::audio_init()`, before Wi-Fi exists; and
+`airplay::airplay_init()`, called from `airplay_startup_task` after
+`wifi_provision::start()` once the station has an IP, logging readiness or
+unavailability but never treating failure as fatal. No other file in
+`components/` or `main/` references this module - the tray indicator and the
+audio sink are both
 reached through the same registries `modules/audio` already uses
 (`app_core::register_tray_indicator()`, `audio::audio_stream_open()`), not
 through any new core surface. That a second module's tray icon needed zero

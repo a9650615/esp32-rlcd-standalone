@@ -775,11 +775,28 @@ constexpr uint32_t kIndoorHistoryIntervalMs = 30 * 60'000;
 // the provider then sleeps its full refresh interval - which is how a boot race
 // turned into half an hour of NO DATA on a network that was already up. Wait
 // for the address rather than guessing a startup delay.
-void wait_for_station_ip() {
+// stagger_ms holds a caller off for a while *after* the address arrives.
+// The three HTTPS providers used to be released by this function at the same
+// instant, so their TLS handshakes overlapped. mbedTLS takes handshake buffers
+// from internal RAM, which is also the only memory the display's SPI DMA can
+// use, and for about 1.3 s at boot the panel lost that race - five dropped
+// frames, logged as panel_io_spi_tx_color(395) queue failures from 6.6 s to
+// 7.9 s and never again afterwards. Spacing the first fetch costs nothing a
+// person can perceive; nobody notices weather arriving eight seconds later.
+// Callers that must not be delayed - net_log, which has to be able to explain
+// what starts after it, and the AirPlay bring-up - pass nothing and are
+// unaffected.
+void wait_for_station_ip(uint32_t stagger_ms = 0) {
   while (!wifi_provision::station_has_ip()) {
     vTaskDelay(pdMS_TO_TICKS(500));
   }
+  if (stagger_ms != 0) vTaskDelay(pdMS_TO_TICKS(stagger_ms));
 }
+
+// Spacing between the first fetch of each HTTPS provider. Roughly twice the
+// ~2 s a handshake took when they were measured overlapping, so one finishes
+// and frees its buffers before the next begins.
+constexpr uint32_t kProviderStaggerMs = 4000;
 
 // A failed fetch retries sooner than the normal interval so a transient outage
 // does not cost a full cycle, but not so often that a rate-limited or broken
@@ -787,7 +804,7 @@ void wait_for_station_ip() {
 constexpr uint32_t kProviderRetryPeriodMs = 5 * 60'000;
 
 [[noreturn]] void weather_monitor_task(void*) {
-  wait_for_station_ip();
+  wait_for_station_ip(2 * kProviderStaggerMs);
   for (;;) {
     const bool ok = weather::refresh();
     const app_core::WeatherData current = weather::current();
@@ -881,7 +898,7 @@ constexpr uint32_t kProviderRetryPeriodMs = 5 * 60'000;
 // the device's clock is on that same scale, and the comparison is integer
 // arithmetic. See market_schedule.hpp's us_refresh_interval_seconds().
 [[noreturn]] void us_market_monitor_task(void*) {
-  wait_for_station_ip();
+  wait_for_station_ip(kProviderStaggerMs);
   for (;;) {
     const bool ok = market::refresh_us();
     const app_core::MarketData us = market::us();
@@ -977,6 +994,46 @@ void format_clock(const app_core::RtcDateTime& clock, app_core::ClockData& out) 
     vTaskDelay(pdMS_TO_TICKS(kNetTimeCheckPeriodMs));
     since_rtc_write_ms += kNetTimeCheckPeriodMs;
   }
+}
+
+// One-shot, same shape as net_log_startup_task below: airplay_init() either
+// starts the RAOP receiver for the rest of this boot or fails once - there
+// is nothing here to retry in a loop.
+//
+// Created after wifi_provision::start(), same as net_log_startup_task and
+// the weather/taiwan-market/us-market monitor tasks above, and for the
+// exact same reason: wait_for_station_ip() polls a mutex wifi_provision::
+// start() creates, so a task calling it must not exist before that call
+// returns. (A previous attempt got this backwards for net_log_startup_task
+// - see commit 4b330e1, reverted in c81d932 - and put the board into a boot
+// loop; do not move this task earlier than here without rereading that
+// history.)
+//
+// This is also why airplay_init() itself moved out of the fixed
+// display/audio/airplay diagnostics block earlier in app_main(): raop_init()
+// (esp-raop-receiver/src/raop_core.c) resolves the station's own IP via
+// esp_netif_get_ip_info() on WIFI_STA_DEF and fails immediately - no wait,
+// no retry - if that address is still 0.0.0.0, which it always is at the
+// point the old call site ran, long before wifi_provision::start() even
+// creates the station interface.
+//
+// 4096 B: raop_init() heap-allocates its own state and the RTSP/"search
+// remote" task stacks it embeds (esp_raop_receiver.h's own comment) rather
+// than putting them on this caller's stack, so this task's own frame stays
+// small - no TLS, no JSON, no large local buffers.
+void airplay_startup_task(void*) {
+  wait_for_station_ip();
+  const esp_err_t result = airplay::airplay_init();
+  if (result == ESP_OK) {
+    ESP_LOGI(kTag, "startup diagnostics airplay=ready");
+  } else if (result == ESP_ERR_NOT_SUPPORTED) {
+    ESP_LOGI(kTag,
+             "startup diagnostics airplay=disabled (CONFIG_AIRPLAY_ENABLE=n)");
+  } else {
+    ESP_LOGW(kTag, "startup diagnostics airplay=unavailable: %s",
+             airplay::airplay_err_to_name(result));
+  }
+  vTaskDelete(nullptr);
 }
 
 // One-shot, not [[noreturn]] like the monitor tasks above: net_log::start()
@@ -1097,27 +1154,20 @@ extern "C" void app_main() {
   ESP_LOGI(kTag, "startup diagnostics audio=disabled (CONFIG_AUDIO_ENABLE=n)");
 #endif
 
-  // Same non-fatal treatment as audio_init() just above, for the same
-  // reason: this board's primary job is the display, and a real AirPlay
-  // stack that fails to start must mean no AirPlay, not no boot. No #ifdef
-  // around the call itself - airplay.hpp's inline no-ops make it correct
-  // either way. Unlike audio just above, the disabled-vs-failed split here
-  // can lean on the return code instead of a second #ifdef:
-  // ESP_ERR_NOT_SUPPORTED is airplay_init()'s stub signature and only its
-  // stub signature - the real path's raop_init() returns ESP_OK or one of
-  // ESP_ERR_RAOP_* (0x7000+, esp_raop_receiver.h), never
-  // ESP_ERR_NOT_SUPPORTED, so this can't misclassify a genuine startup
-  // failure as "not compiled in".
-  const esp_err_t airplay_result = airplay::airplay_init();
-  if (airplay_result == ESP_OK) {
-    ESP_LOGI(kTag, "startup diagnostics airplay=ready");
-  } else if (airplay_result == ESP_ERR_NOT_SUPPORTED) {
-    ESP_LOGI(kTag,
-             "startup diagnostics airplay=disabled (CONFIG_AIRPLAY_ENABLE=n)");
-  } else {
-    ESP_LOGW(kTag, "startup diagnostics airplay=unavailable: %s",
-             esp_err_to_name(airplay_result));
-  }
+  // Tray registration only - no #ifdef around the call itself, airplay.hpp's
+  // inline no-op makes it correct either way. This has to happen here, before
+  // ui::start() a few lines down, and not alongside the rest of this module's
+  // startup: it has no network dependency, but airplay_init() (the RAOP
+  // receiver itself) does, and the tray's layout only re-reserves a slot's
+  // cell on a full page rebuild - see airplay_register_tray()'s own comment
+  // (airplay.hpp) for why registering it late could leave this module's
+  // tray cell zero-width indefinitely. airplay_init() itself - and the
+  // "airplay=ready/unavailable/disabled" diagnostic that used to be logged
+  // right here - moved to airplay_startup_task below, alongside
+  // wifi_provision::start(): raop_init() resolves the station's own IP and
+  // fails immediately if it is not yet assigned, so it cannot run this
+  // early. See that task's own comment.
+  airplay::airplay_register_tray();
 
   app_core::RtcDateTime clock = compile_clock();
   const bool rtc_ok = read_rtc(clock);
@@ -1230,8 +1280,17 @@ extern "C" void app_main() {
   // (kForecastBufferBytes) on the calling task's stack, on top of which
   // esp_http_client's TLS handshake (mbedTLS) and cJSON parsing add their
   // own several-KiB of depth. Doubling the raw buffer size is the margin.
-  if (xTaskCreate(&weather_monitor_task, "weather_monitor", 16384, nullptr,
-                  tskIDLE_PRIORITY + 1, nullptr) != pdPASS) {
+  //
+  // In PSRAM (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT), same as update_check_task
+  // above (see its own comment) and for the same reason: HTTPS plus a JSON
+  // parse never touches flash or NVS, so nothing here ever runs with the
+  // cache disabled. Unlike update_check_task this loops forever and is never
+  // deleted, so vTaskDeleteWithCaps does not enter into it - that call only
+  // matters for freeing a WithCaps task's statically-allocated TCB/stack on
+  // deletion, and a task that is never deleted never needs it.
+  if (xTaskCreateWithCaps(&weather_monitor_task, "weather_monitor", 16384,
+                          nullptr, tskIDLE_PRIORITY + 1, nullptr,
+                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
     ESP_LOGE(kTag, "weather monitor task creation failed");
   }
 
@@ -1241,13 +1300,29 @@ extern "C" void app_main() {
   // large local buffer. Two tasks, not one, now that Taiwan and US refresh
   // on genuinely different cadences - see taiwan_market_monitor_task's own
   // comment for why a shared task could not do that.
-  if (xTaskCreate(&taiwan_market_monitor_task, "taiwan_market_monitor", 8192,
-                  nullptr, tskIDLE_PRIORITY + 1, nullptr) != pdPASS) {
+  //
+  // In PSRAM for the same reason as weather_monitor_task just above: both
+  // are HTTPS+JSON fetchers that never touch flash/NVS (market::refresh_*
+  // only calls market::http_get() and the pure-parsing market_parse.cpp/
+  // market_schedule.cpp), and both loop forever so vTaskDeleteWithCaps is
+  // moot for them too.
+  if (xTaskCreateWithCaps(&taiwan_market_monitor_task, "taiwan_market_monitor",
+                          8192, nullptr, tskIDLE_PRIORITY + 1, nullptr,
+                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
     ESP_LOGE(kTag, "taiwan market monitor task creation failed");
   }
-  if (xTaskCreate(&us_market_monitor_task, "us_market_monitor", 8192, nullptr,
-                  tskIDLE_PRIORITY + 1, nullptr) != pdPASS) {
+  if (xTaskCreateWithCaps(&us_market_monitor_task, "us_market_monitor", 8192,
+                          nullptr, tskIDLE_PRIORITY + 1, nullptr,
+                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
     ESP_LOGE(kTag, "us market monitor task creation failed");
+  }
+
+  // See airplay_startup_task's own comment for the stack size and why this
+  // has to be created here, after wifi_provision::start(), rather than
+  // alongside audio/airplay's other startup diagnostics earlier above.
+  if (xTaskCreate(&airplay_startup_task, "airplay_startup", 4096, nullptr,
+                  tskIDLE_PRIORITY + 1, nullptr) != pdPASS) {
+    ESP_LOGE(kTag, "airplay startup task creation failed");
   }
 
   // 4096 B: waits, then makes a handful of esp_netif/socket/task-creation
@@ -1265,11 +1340,14 @@ extern "C" void app_main() {
   }
 
   // The other half of the pair at the top of this function: every
-  // permanent stack this board holds at boot - audio's I2S/DMA buffers,
-  // the codec device, and every monitor task above - now exists. Note what
-  // this number does NOT include: update_check_task's and the audio
-  // tone/sweep tasks' stacks, which are on demand and in PSRAM (see their
-  // own comments) precisely so they never show up in this budget at all.
+  // permanent internal-RAM stack this board holds at boot - audio's I2S/DMA
+  // buffers, the codec device, and every monitor task above that still
+  // costs internal RAM - now exists. Note what this number does NOT
+  // include: update_check_task's and the audio tone/sweep tasks' stacks
+  // (on demand, in PSRAM, see their own comments), and weather_monitor_task/
+  // taiwan_market_monitor_task/us_market_monitor_task's stacks (permanent,
+  // but also in PSRAM - see their own comments above) - none of these ever
+  // show up in this budget at all.
   ESP_LOGI(kTag,
            "startup diagnostics internal RAM free=%u largest_free_block=%u "
            "(after startup)",

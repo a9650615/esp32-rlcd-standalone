@@ -70,8 +70,29 @@ std::string row_value(SettingsItem item, const app_core::BatteryData& battery,
       return buffer;
     }
     case SettingsItem::Firmware: {
+      // Version alone cannot tell two builds apart when only the hash
+      // changed - which is exactly the ambiguity that made three OTA
+      // pushes unverifiable with no cable attached (see portal.cpp's
+      // /build route, added for the same reason). The first 8 hex
+      // characters of app_elf_sha256 make the running build identifiable
+      // by eye, from the panel, on the one channel that still works when
+      // the board is not serving what it should: no network needed.
+      //
+      // "version hash8" measures to ~94px at font_small() (Montserrat 14)
+      // for a build like "0.1.2 fe865dcf" - comfortably inside
+      // kSettingsValueWidth (150px), checked with the offline glyph-width
+      // pass over lv_font_montserrat_14.c's adv_w table (see
+      // ui-text-and-layout memory) rather than assumed.
       const esp_app_desc_t* desc = esp_app_get_description();
-      return desc != nullptr ? desc->version : "unknown";
+      if (desc == nullptr) return "unknown";
+      char buffer[64];
+      std::snprintf(buffer, sizeof(buffer),
+                    "%s %02x%02x%02x%02x%02x%02x%02x%02x", desc->version,
+                    desc->app_elf_sha256[0], desc->app_elf_sha256[1],
+                    desc->app_elf_sha256[2], desc->app_elf_sha256[3],
+                    desc->app_elf_sha256[4], desc->app_elf_sha256[5],
+                    desc->app_elf_sha256[6], desc->app_elf_sha256[7]);
+      return buffer;
     }
     case SettingsItem::WifiSetup:
     case SettingsItem::Count:

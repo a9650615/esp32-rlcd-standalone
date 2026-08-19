@@ -131,6 +131,65 @@ case "${1:-}" in
       exit 1
     fi
     echo
+
+    # The board accepting the upload is not the same as the board running it -
+    # that ambiguity is the whole reason this block exists (three prior pushes
+    # each reported this exact success and changed nothing observable). It
+    # reboots after accepting, so read back GET /build only once it answers
+    # again, and compare against what this side just offered.
+    #
+    # version at desc+16, sha256 at desc+144: offsets confirmed against
+    # esp_app_desc.h in .tools/esp-idf, and desc itself sits at 0x20 in the
+    # .bin because esp_image_header_t (24B) + esp_image_segment_header_t (8B)
+    # = 0x20 precedes it - also confirmed independently via `esptool.py
+    # image_info`, which reports the same version and hash this reads.
+    echo "waiting for the board to reboot..." >&2
+    board_back=""
+    for _ in $(seq 1 40); do
+      sleep 2
+      if curl -s -m 3 -o /dev/null "http://$ip/shot"; then
+        board_back=1
+        break
+      fi
+    done
+    if [[ -z "$board_back" ]]; then
+      echo "board did not answer within 80 s after the push - cannot verify" >&2
+      exit 1
+    fi
+
+    status="$(curl -s -o /dev/null -w '%{http_code}' -m 10 "http://$ip/build")"
+    if [[ "$status" == "404" ]]; then
+      echo "GET /build 404'd - the board answered, but the firmware now" >&2
+      echo "running predates this identity route, so the push cannot be" >&2
+      echo "verified this way" >&2
+      exit 1
+    fi
+    if [[ "$status" != "200" ]]; then
+      echo "GET /build failed (HTTP $status) - cannot verify the push" >&2
+      exit 1
+    fi
+    remote_build="$(curl --fail-with-body -sS -m 10 "http://$ip/build")"
+    remote_version="$(printf '%s\n' "$remote_build" | awk -F= '/^version=/{print $2}')"
+    remote_sha="$(printf '%s\n' "$remote_build" | awk -F= '/^sha256=/{print $2}')"
+
+    read -r local_version local_sha < <(python3 - "$bin" <<'PYEOF'
+import sys
+with open(sys.argv[1], "rb") as f:
+    data = f.read()
+DESC_OFFSET = 0x20  # esp_image_header_t (24B) + esp_image_segment_header_t (8B)
+version = data[DESC_OFFSET + 16:DESC_OFFSET + 48].split(b"\x00", 1)[0].decode()
+sha256 = data[DESC_OFFSET + 144:DESC_OFFSET + 176].hex()
+print(version, sha256)
+PYEOF
+)
+
+    if [[ "$local_version" != "$remote_version" || "$local_sha" != "$remote_sha" ]]; then
+      echo "MISMATCH: offered $local_version/$local_sha, board is running" >&2
+      echo "$remote_version/$remote_sha - the push did NOT install; the" >&2
+      echo "board is still on its previous firmware" >&2
+      exit 1
+    fi
+    echo "verified: board is now running $remote_version ($remote_sha)" >&2
     ;;
 
   *)

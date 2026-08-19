@@ -51,6 +51,23 @@ constexpr int kChannels = 2;
 // cheap way to do that without a rebuild.
 constexpr int kOutputVolumePercent = 50;
 
+// Streams open the codec here instead of at kOutputVolumePercent - see
+// audio_stream_open() for why attenuating a remote-controlled stream locally
+// is wrong.
+//
+// Not 100%, which is where this landed first and was wrong. The speaker is a
+// coin-sized MX1.25 (see kSweepSteps, whose ceiling was itself brought down
+// from 80% after a hardware run, and kToneAmplitude, capped at half of int16
+// full scale because a full-scale drive into this speaker is the harshest
+// thing the chain can produce). At 100% a phone sitting at -4.1 dB was
+// reported as audibly distorted. 60% puts a phone at maximum just under that
+// level, so the sender's slider covers a range that stays clean end to end
+// rather than one whose top third is unusable.
+//
+// This is a property of the speaker, not of the code. If a different one is
+// fitted, re-measure it rather than trusting this number.
+constexpr int kStreamVolumePercent = 60;
+
 // 50% of int16 full scale - the same ceiling /beep-sweep's diagnostic
 // staircase is capped at. A full-scale square wave into a coin-sized
 // MX1.25 speaker is both the loudest and harshest thing this chain can
@@ -749,11 +766,18 @@ uint32_t g_stream_sample_rate = 0;
 
 // A stream is "abandoned" - the writer task died, or simply stopped
 // calling audio_stream_write() without ever calling audio_stream_close() -
-// rather than merely idle: real audio (AirPlay included) does not have
-// multi-second gaps between chunks in normal operation, so this is
-// generous against a genuine network hiccup while still bounding how long
-// the amplifier can be left on by something that is never coming back.
-constexpr uint32_t kStreamWatchdogTimeoutMs = 2000;
+// rather than merely idle.
+//
+// The longest legitimate gap is not between two chunks mid-stream, it is
+// between open() and the FIRST chunk. RAOP opens the sink as soon as the
+// sender says RECORD, then holds every frame until its scheduled playtime
+// arrives; that hold is the sender's declared latency, capped at
+// MAX_LATENCY = 120 * 44100 * 2 / 100 = 105,840 frames = 2.4 s (see
+// rtp.c). At 2000 ms this watchdog fired during that hold on every single
+// AirPlay session, closed the stream before one sample was written, and
+// made a working receiver look like a silent one. Anything below ~2.4 s is
+// not a tuning choice, it is a guaranteed failure.
+constexpr uint32_t kStreamWatchdogTimeoutMs = 5000;
 
 // Ends the session: trailing silence, the same drain wait
 // write_tone_step() uses (here at whatever rate the stream opened at, via
@@ -966,10 +990,21 @@ esp_err_t audio_stream_open(int sample_rate) {
     xSemaphoreGive(g_playback_busy);
     return ESP_FAIL;
   }
-  // Re-applied on every open, same as audio_play_tone(): nothing here
-  // assumes the codec remembers a volume from a previous, since-closed
-  // session.
-  esp_codec_dev_set_out_vol(g_codec_dev, g_volume_percent);
+  // Unity, not g_volume_percent - a stream's volume belongs to whoever is
+  // sending it.
+  //
+  // AirPlay senders carry their own volume control and apply it before the
+  // samples ever get here (RAOP SET_PARAMETER -> the software scaling in
+  // audio_buffer.c). Opening the codec at the local 50% then attenuated a
+  // second time, so a phone sitting at a perfectly ordinary -12.5 dB
+  // measured rms=1400 out of 32767 at the sink - roughly 40 dB below the
+  // /beep tone, which is to say inaudible across a room - and the phone's
+  // slider at maximum still could not reach full output, because half of it
+  // had already been spent locally.
+  //
+  // Tones and the diagnostic sweep keep g_volume_percent: those are the
+  // device's own sounds, with no remote to ask.
+  esp_codec_dev_set_out_vol(g_codec_dev, kStreamVolumePercent);
   g_stream_sample_rate = static_cast<uint32_t>(sample_rate);
   g_stream_amp_active = false;
   g_stream_open = true;

@@ -296,9 +296,56 @@ Do not claim completion from a successful compile alone. Preserve the first fail
 
 `app-flash` writes to the `factory` offset, not to the slot the device is currently booting from. After pointing otadata at an OTA slot - during an update, or with `otatool.py switch_ota_partition` - every subsequent `app-flash` lands in a partition the bootloader will not read, and nothing warns: the write succeeds, esptool verifies its hash, the board reboots, and the old image comes back up looking exactly like a successful flash. Several rounds of "flashed and verified" can pass this way while the change under test never runs. Check `boot: Loaded app from partition at offset` in the boot log against where you wrote, or run `otatool.py erase_otadata` to return to `factory` before iterating with `app-flash`.
 
+Once the partition table carries OTA slots, `app-flash` stops being the way to
+install a build. It writes the application to `factory`, but the bootloader
+boots whichever slot `otadata` selects - so the flash succeeds, esptool
+verifies the hash, and the board keeps running the old firmware from `ota_0`.
+The symptom is a fix that "does not work" while the boot log quietly reports
+the previous version; check `App version:` or `GET /build` against what was
+just built before concluding anything about the change itself. Install through
+the OTA path instead (this project: `POST /ota` with the raw `.bin`), or clear
+`otadata` if a factory boot is genuinely wanted.
+
 Never build or flash while an agent or editor may be mid-edit on `partitions.csv`. `app-flash` writes only the application, at whatever offset the *current* CSV declares, while the device keeps the partition table it was last given. Moving the app from `0x10000` to `0x20000` that way produces `No bootable app partition` and a reset loop within seconds. Recovery is a full `flash` of bootloader, table, otadata and app - not an erase - but the cheaper habit is to run `git status partitions.csv` before any build you intend to flash.
 
 A feature that can fail at runtime and fall back silently needs a log line saying which branch it took. The same session lost a cycle to a QR that was compiled out and to a battery reading that was sampled correctly but never printed, so the documented multimeter calibration procedure had no number to compare against.
+
+## Four ways the log will lie to you
+
+Every one of these produced a confident wrong conclusion in a single session,
+and three of them produced numbers that looked like evidence.
+
+**`grep` treats net_log captures as binary.** They contain a byte that makes
+BSD grep print nothing at all and exit non-zero, which reads exactly like
+"zero occurrences". Three rounds of counts were reported as 0 before this was
+noticed. Always `grep -a`, and count with `grep -a ... | wc -l` rather than
+`grep -c`, whose non-zero exit on no-match can also abort a command chain in
+this shell.
+
+**Port 3334 replays its whole ring buffer on connect.** A fresh capture is
+full of old lines from earlier boots and earlier sessions. Five test-sender
+sessions were once read back out of the ring and reported as a successful
+phone test; the giveaway was that all five amplifier-on times were exactly
+the tool's `--duration`. Record a marker before doing anything:
+
+    nc <ip> 3334 > mark.log & sleep 6; kill %1
+    MARK=$(grep -a -oE '^[A-Z] \([0-9]+\)' mark.log | tail -1 | tr -dc '0-9')
+
+then read only lines whose `I (nnnnn)` timestamp exceeds `$MARK`. Run the
+thing under test first and pull the ring afterwards - a live capture opened
+before a session sometimes stops delivering partway through.
+
+**Some log lines are `static`-gated and print once per boot, not once per
+session.** `playback gate: first frame released` is one. Their absence in the
+second session of a boot is not evidence of anything. Prefer markers that
+re-arm every session, like the GPIO46 amplifier lines.
+
+**A measurement placed before the stage that breaks things measures nothing.**
+An instrument in `audio_buffer.c` reported `rms=11000` for a stream nobody
+could hear, because it sat before the software volume that was scaling the
+audio down. It was a true statement about the decoder and a useless one about
+the speaker. Put the probe at the last point before the data leaves, and log
+the parameters the stage applied, not just the samples.
 
 ## Never burn eFuses
 

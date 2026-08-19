@@ -9,6 +9,7 @@
 
 #include <algorithm>
 
+#include <esp_heap_caps.h>
 #include <esp_log.h>
 #include <esp_wifi.h>
 
@@ -178,18 +179,42 @@ void handle_event(raop_event_t event, void * /*event_data*/,
   }
 }
 
+// esp_raop_receiver.h anchors ESP_ERR_RAOP_BASE at 0x7000; esp_http_client.h
+// anchors ESP_ERR_HTTP_BASE at the same 0x7000 (confirmed by reading both
+// headers side by side - this is not a guess). esp_err_to_name() walks a
+// table of ranges registered by each component and returns the first name
+// that matches a given number, so ESP_ERR_RAOP_NETWORK_FAILED (0x7003) and
+// ESP_ERR_HTTP_WRITE_DATA (0x7000 + 3) are the same integer and
+// esp_err_to_name() reports whichever one it finds - which is why a
+// raop_init() failure has been logged as "ESP_ERR_HTTP_WRITE_DATA", a name
+// from a component this module never calls. This does not affect any
+// comparison against a specific named constant (== ESP_ERR_NOT_SUPPORTED
+// still means exactly what it says) - only the printable name is wrong.
+const char *raop_err_to_name(esp_err_t err) {
+  switch (err) {
+    case ESP_ERR_RAOP_NO_MEMORY: return "ESP_ERR_RAOP_NO_MEMORY";
+    case ESP_ERR_RAOP_INVALID_CONFIG: return "ESP_ERR_RAOP_INVALID_CONFIG";
+    case ESP_ERR_RAOP_NETWORK_FAILED: return "ESP_ERR_RAOP_NETWORK_FAILED";
+    case ESP_ERR_RAOP_CODEC_FAILED: return "ESP_ERR_RAOP_CODEC_FAILED";
+    case ESP_ERR_RAOP_MDNS_FAILED: return "ESP_ERR_RAOP_MDNS_FAILED";
+    case ESP_ERR_RAOP_ALREADY_INIT: return "ESP_ERR_RAOP_ALREADY_INIT";
+    case ESP_ERR_RAOP_NOT_INIT: return "ESP_ERR_RAOP_NOT_INIT";
+    default: return esp_err_to_name(err);  // none of raop_init()'s other
+                                            // possible codes collide
+  }
+}
+
 }  // namespace
 
-esp_err_t airplay_init() {
-  if (g_handle != nullptr) {
-    return ESP_ERR_INVALID_STATE;
-  }
+const char *airplay_err_to_name(esp_err_t err) { return raop_err_to_name(err); }
 
-  // Registered unconditionally, before anything below that could fail -
-  // same reasoning as modules/audio/audio.cpp's own tray registration: the
-  // tray reserves this module's slot regardless of whether raop_init()
-  // actually succeeds, so the tray's layout does not shift depending on
-  // it.
+void airplay_register_tray() {
+  // Registered unconditionally, before anything that could fail - same
+  // reasoning as modules/audio/audio.cpp's own tray registration: the tray
+  // reserves this module's slot the moment it is registered, not once
+  // raop_init() actually succeeds, so the tray's layout does not shift
+  // depending on it. See this function's declaration (airplay.hpp) for why
+  // it is called separately from, and before, airplay_init().
   if (!g_tray_indicator.valid()) {
     build_icon_bitmap();
     g_tray_indicator = app_core::register_tray_indicator(
@@ -199,6 +224,32 @@ esp_err_t airplay_init() {
       ESP_LOGW(kTag, "tray indicator registration failed: registry full");
     }
   }
+}
+
+esp_err_t airplay_init() {
+  if (g_handle != nullptr) {
+    return ESP_ERR_INVALID_STATE;
+  }
+
+#ifndef NDEBUG
+  // The RTSP exchange is the only place a failed session says anything about
+  // itself, and upstream logs it at ESP_LOGD - which means at this project's
+  // default level it is not merely hidden but compiled out. Raising it for
+  // this one tag is the difference between "the sender connected and left"
+  // and knowing which method it got to.
+  //
+  // Only this tag: raising CONFIG_LOG_DEFAULT_LEVEL instead was tried, and
+  // spi_master's per-transaction debug lines alone starved the portal's
+  // socket until port 80 stopped answering - on a board whose firmware
+  // upload shares that port.
+  //
+  // No effect unless CONFIG_LOG_MAXIMUM_LEVEL is DEBUG or higher, because
+  // that is what decides whether ESP_LOGD exists in the binary at all.
+  // Deliberately not asserted here: the useful build is the verbose one, and
+  // a board that cannot say why a session failed is still better than one
+  // that refuses to boot over a logging preference.
+  esp_log_level_set("raop", ESP_LOG_DEBUG);
+#endif
 
   raop_config_t config = {};
   config.audio_output_cb = feed_audio;
@@ -208,7 +259,25 @@ esp_err_t airplay_init() {
 
   esp_err_t err = raop_init(&config, &g_handle);
   if (err != ESP_OK) {
-    ESP_LOGE(kTag, "raop_init failed: %s", esp_err_to_name(err));
+    // raop_ctx_s (esp-raop-receiver/src/raop.c) is one heap_caps_malloc(...,
+    // MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) block - it embeds the RTSP and
+    // "search remote" task stacks as member arrays, so it needs one
+    // contiguous ~27KB internal-DRAM block to succeed, not just that much
+    // free in total. A failure here is indistinguishable from mDNS/network
+    // setup failing - raop_core.c's raop_init() returns the same
+    // ESP_ERR_RAOP_NETWORK_FAILED whether IP resolution, raop_create()'s
+    // socket bind, or this allocation is what actually failed - so these
+    // figures are logged as context for that possibility, not asserted as
+    // the cause. Same fields as app_main.cpp's boot-time
+    // "startup diagnostics" log, largest_free_block (not just free) because
+    // this allocation needs one contiguous block.
+    ESP_LOGE(kTag,
+             "raop_init failed: %s (internal RAM free=%u "
+             "largest_free_block=%u)",
+             raop_err_to_name(err),
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+             static_cast<unsigned>(
+                 heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)));
     g_handle = nullptr;
   }
   return err;

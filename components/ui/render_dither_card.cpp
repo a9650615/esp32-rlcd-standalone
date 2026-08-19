@@ -40,59 +40,72 @@ constexpr const char* kSizeRampLabels[kSwatchCount] = {
     "64px", "48px", "32px", "24px", "16px", "12px"};
 
 constexpr int kMaxSwatchSize = 64;
-// ponytail: this tight (width+7)/8 ceiling-divide, and swatch_canvas()
-// below binding it to lv_canvas_set_buffer() at byte 0, is the same
-// pattern ui::tray_indicator_icon() (ui_theme.cpp) had until it was found
-// to render nothing/smeared on real hardware - LVGL reserves palette bytes
-// at the buffer's front and pads rows to its own stride, neither of which
-// this accounts for. Not yet fixed here (this card is debug-only and
-// nobody had looked closely at it), but see ui::repack_i1_bits() /
-// ui::bind_i1_canvas() / ui::i1_canvas_stride() for the corrected pattern
-// if this ever gets the same look. One static backing array per swatch,
-// sized for the largest size ramp entry and reused as-is (smaller swatches
-// simply use fewer of their own bytes).
-constexpr int kMaxSwatchStride = (kMaxSwatchSize + 7) / 8;
-
-uint8_t g_density_bitmaps[kSwatchCount][kMaxSwatchStride * kMaxSwatchSize];
-uint8_t g_size_ramp_bitmaps[kSwatchCount][kMaxSwatchStride * kMaxSwatchSize];
+// This used to be its own tight (width+7)/8 ceiling-divide, bound to
+// lv_canvas_set_buffer() at byte 0 - the same pattern ui::tray_indicator_icon()
+// (ui_theme.cpp) had until it was found to render nothing/smeared on real
+// hardware: LVGL reserves palette bytes at the buffer's front and pads rows
+// to its own stride, neither of which that formula accounted for. Sized via
+// ui::i1_canvas_storage_bytes() now, the same call every other I1 canvas in
+// this codebase sizes its backing store with, rather than a second
+// hand-derived formula that could drift from LVGL's own the same way the
+// original one did. One static backing array per swatch, sized for the
+// largest size ramp entry and reused as-is (smaller swatches simply use
+// fewer of their own bytes).
+//
+// i1_canvas_storage_bound(), not `kMaxSwatchSize * kMaxSwatchSize`: that
+// spelling is width x height *bytes*, which is the size of an 8-bit-per-pixel
+// buffer. These are I1 - one bit per pixel - so it over-allocated by a factor
+// of eight, and at six swatches in two arrays that came to 43 KB of .bss.
+// This board has about 100 KB of internal DRAM to spend, so it was not merely
+// wasteful: it left too little for net_log to create its 4 KiB sender task,
+// and the log transport simply stopped coming up. A debug screen nobody had
+// opened cost the ability to read any log at all.
+uint8_t g_density_bitmaps[kSwatchCount]
+                         [i1_canvas_storage_bound(kMaxSwatchSize,
+                                                  kMaxSwatchSize)];
+uint8_t g_size_ramp_bitmaps[kSwatchCount]
+                           [i1_canvas_storage_bound(kMaxSwatchSize,
+                                                    kMaxSwatchSize)];
+static_assert(sizeof(g_density_bitmaps[0]) ==
+                  i1_canvas_storage_bound(kMaxSwatchSize, kMaxSwatchSize),
+              "swatch backing store must match the I1 bound it is sized by");
 
 void set_bit(uint8_t* buffer, int stride, int x, int y) {
   buffer[y * stride + x / 8] |= static_cast<uint8_t>(0x80 >> (x & 7));
 }
 
-// Fills a size x size 1bpp bitmap (row-major, MSB-first, byte-padded rows -
-// the same layout app_core::TrayIndicatorBitmap documents) with the ordered
-// dither pattern at the given level. stride must be (size + 7) / 8, the
-// caller's to compute and pass - not always kMaxSwatchStride, since a
-// smaller swatch's canvas buffer uses its own, smaller stride and reading
-// it back with the wrong one would misalign every row after the first.
-void build_swatch_bitmap(uint8_t* buffer, int stride, int size, int level) {
+// Fills a size x size 1bpp bitmap into `buffer`, starting at
+// i1_canvas_pixel_offset() (LVGL's own palette lives in the bytes before
+// that - see i1_canvas_pixel_offset()'s own comment) and laid out at
+// i1_canvas_stride(size)'s own row pitch, not a tight (width+7)/8 pack -
+// the same two rules ui::repack_i1_bits() and
+// ui::build_battery_charging_composite() already follow, asked from LVGL
+// directly here for the same reason their own comments give: a bare
+// (width+7)/8 only agrees with LVGL's real stride when the project's row-
+// padding config happens to be 1, and silently drifts the moment it isn't.
+void build_swatch_bitmap(uint8_t* buffer, int size, int level) {
+  uint8_t* pixels = buffer + i1_canvas_pixel_offset();
+  const int stride = i1_canvas_stride(size);
   for (int y = 0; y < size; ++y) {
     for (int x = 0; x < size; ++x) {
-      if (dither_bayer4x4_dark(x, y, level)) set_bit(buffer, stride, x, y);
+      if (dither_bayer4x4_dark(x, y, level)) set_bit(pixels, stride, x, y);
     }
   }
 }
 
 lv_obj_t* swatch_canvas(lv_obj_t* parent, uint8_t* buffer, int size, Rect bounds) {
-  lv_obj_t* canvas = lv_canvas_create(parent);
-  if (canvas == nullptr) return nullptr;
-  apply_surface(canvas);
-  lv_canvas_set_buffer(canvas, buffer, size, size, LV_COLOR_FORMAT_I1);
   // Opaque both ways, unlike tray_indicator_icon()'s transparent "off" -
   // this is a standalone full-screen card, not an overlay on other content.
-  lv_canvas_set_palette(canvas, 0, lv_color_to_32(lv_color_white(), LV_OPA_COVER));
-  lv_canvas_set_palette(canvas, 1, lv_color_to_32(lv_color_black(), LV_OPA_COVER));
-  lv_obj_set_pos(canvas, bounds.x, bounds.y);
-  lv_obj_set_size(canvas, size, size);
-  return canvas;
+  return bind_i1_canvas(parent, bounds.x, bounds.y, size, size, buffer,
+                        lv_color_white(), LV_OPA_COVER, lv_color_black());
 }
 
 // One row of swatches, evenly spread across `safe`'s width, with a caption
 // label centered under each. Returns the y just below the captions, so the
 // caller can stack the next row under it.
 int build_ramp_row(lv_obj_t* screen, const Rect& safe, int row_y,
-                   uint8_t (*bitmaps)[kMaxSwatchStride * kMaxSwatchSize],
+                   uint8_t (*bitmaps)[i1_canvas_storage_bound(kMaxSwatchSize,
+                                                              kMaxSwatchSize)],
                    const int* sizes, const int* levels, const char* const* labels,
                    int row_height) {
   const int cell_width = safe.width / kSwatchCount;
@@ -102,8 +115,7 @@ int build_ramp_row(lv_obj_t* screen, const Rect& safe, int row_y,
 
   for (int i = 0; i < kSwatchCount; ++i) {
     const int size = sizes[i];
-    const int stride = (size + 7) / 8;
-    build_swatch_bitmap(bitmaps[i], stride, size, levels[i]);
+    build_swatch_bitmap(bitmaps[i], size, levels[i]);
     const int column_x = start_x + i * cell_width;
     swatch_canvas(screen, bitmaps[i], size,
                   {column_x + (cell_width - size) / 2, row_bottom - size, size, size});

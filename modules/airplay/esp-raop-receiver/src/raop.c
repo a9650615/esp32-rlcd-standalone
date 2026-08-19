@@ -23,8 +23,25 @@
 #include "dmap_parser.h"
 #include "log_util.h"
 
-#define RTSP_STACK_SIZE 	(24*1024)
-#define SEARCH_STACK_SIZE	(3*1024)
+// PROVISIONAL pending hardware measurement - see UPSTREAM.md and the
+// uxTaskGetStackHighWaterMark() logging in rtsp_thread()/search_remote()
+// below. Upstream's 24KB was never measured against actual usage; it alone
+// pushed raop_ctx_s (this stack embedded as a struct member, see below) past
+// every contiguous internal-DRAM block available at raop_create() time on
+// this board. 8KB is a cut deep enough to fit, generous enough for what this
+// task actually does (HTTP header/DMAP parsing, one mbedtls RSA-2048
+// sign/decrypt per session - no deep recursion) not to be an obviously
+// reckless guess. Final value comes from the high-water-mark measurement,
+// not from this comment.
+#define RTSP_STACK_SIZE 	(8*1024)
+// MEASURED, was 3*1024. uxTaskGetStackHighWaterMark() reported 736 bytes
+// free at 3 KB - it survived, but 736 bytes is not headroom, it is luck.
+// This task runs an mDNS query for the sender's DACP service, and mDNS
+// resolution depth varies with what else is on the network, so the peak
+// this board happened to see is not the peak it will ever see. 5 KB puts
+// the measured peak at roughly half the stack. Costs 2 KB of internal RAM
+// inside raop_ctx_s, which is allocated once per receiver, not per session.
+#define SEARCH_STACK_SIZE	(5*1024)
 
 typedef struct raop_ctx_s {
 	struct in_addr host;	// IP of bridge
@@ -83,6 +100,28 @@ struct raop_ctx_s *raop_create(uint32_t host, char *name,
 	struct sockaddr_in addr;
 	char id[64];
 
+	// raop_ctx_t also embeds two static task stacks (RTSP_STACK_SIZE +
+	// SEARCH_STACK_SIZE, same shape as rtp_t's xStack before it was split
+	// out - see rtp.c). Left as one allocation here on purpose: unlike
+	// rtp_init(), which runs on every AirPlay SETUP and inherits whatever
+	// fragmentation earlier sessions left behind, raop_create() runs exactly
+	// once per boot, before any session has run, so it is not subject to the
+	// same fragmentation-driven contiguity failure. It previously had no
+	// failure log at all (silent NULL return) - add one so this claim stays
+	// checkable if it ever stops holding.
+	LOG_INFO("raop_create: allocating %u bytes of internal RAM (free %u, largest block %u)",
+			  (unsigned) sizeof(struct raop_ctx_s),
+			  (unsigned) heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+			  (unsigned) heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+	if (!ctx) {
+		LOG_ERROR("raop_create: could not allocate %u bytes of internal RAM "
+				  "(free %u, largest block %u)",
+				  (unsigned) sizeof(struct raop_ctx_s),
+				  (unsigned) heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+				  (unsigned) heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+		return NULL;
+	}
+
 	const mdns_txt_item_t txt[] = {
 		{"am", "airesp32"},
 		{"tp", "UDP"},
@@ -98,8 +137,6 @@ struct raop_ctx_s *raop_create(uint32_t host, char *name,
 		{"vn","3"},
 		{"txtvers","1"},
 	};
-
-	if (!ctx) return NULL;
 
 	// make sure we have a clean context
 	memset(ctx, 0, sizeof(raop_ctx_t));
@@ -283,12 +320,23 @@ bool raop_cmd(struct raop_ctx_s *ctx, raop_internal_event_t event, void *param) 
 static void rtsp_thread(void *arg) {
 	raop_ctx_t *ctx = (raop_ctx_t*) arg;
 	int  sock = -1;
+	// Provisional RTSP_STACK_SIZE instrumentation pending hardware
+	// measurement - see UPSTREAM.md. Logged only on a new minimum: this loop
+	// wakes on every ~100ms select() timeout even when idle, so logging every
+	// iteration would spam the log without adding information.
+	UBaseType_t stack_min = (UBaseType_t) -1;
 
 	while (ctx->running) {
 		fd_set rfds;
 		struct timeval timeout = {0, 100*1000};
 		int n;
 		bool res = false;
+
+		UBaseType_t stack_now = uxTaskGetStackHighWaterMark(NULL);
+		if (stack_now < stack_min) {
+			stack_min = stack_now;
+			LOG_INFO("[%p]: RTSP task stack high water mark %u bytes free (new minimum)", ctx, (unsigned) stack_min);
+		}
 
 		if (sock == -1) {
 			struct sockaddr_in peer;
@@ -356,6 +404,9 @@ static void apple_challenge(raop_ctx_t *ctx, int sock, key_data_t *req_headers, 
 	hex_dump[64] = '\0';
 	int n;
 	char *rsa_result = rsa_apply((unsigned char*) data, 32, &n, RSA_MODE_AUTH);
+	// Kept separately because the padding-strip loop below reuses `n` as a
+	// string index, so by the time the log line runs `n` is no longer a length.
+	const int sig_len = n;
 
 	char *data_b64 = NULL;
 	base64_encode(rsa_result, n, &data_b64);
@@ -364,6 +415,18 @@ static void apple_challenge(raop_ctx_t *ctx, int sock, key_data_t *req_headers, 
 	for (n = strlen(data_b64) - 1; n > 0 && data_b64[n] == '='; data_b64[n--] = '\0');
 
 	kd_add(resp_headers, "Apple-Response", data_b64);
+
+	// Logged because the failure mode this sits in front of is otherwise
+	// completely silent. The sender verifies this signature against the
+	// AirPort Express PUBLIC key that ships inside iOS. Signing with any
+	// other private key succeeds here - mbedtls has no idea which key it is
+	// supposed to be - and is then rejected by the sender, which retries
+	// OPTIONS a few times and disconnects without ever sending ANNOUNCE.
+	// Nothing on this device errors, so "the sender connects but will not
+	// play" is all you get. If you see this line, then several more OPTIONS,
+	// then a disconnect and no ANNOUNCE, the key at
+	// modules/airplay/secrets/raop_private_key.pem is not Apple's.
+	LOG_INFO("[%p]: answered Apple-Challenge with a %d-byte signature", ctx, sig_len);
 
 	if (rsa_result) free(rsa_result);
 	if (buf_pad) free(buf_pad);
@@ -378,13 +441,19 @@ static bool handle_rtsp(raop_ctx_t *ctx, int sock)
 	int len;
 	bool success = true;
 
-	LOG_DEBUG("[%p]: received %s", ctx, method);
-
 	if (!http_parse(sock, method, headers, &body, &len)) {
 		if (body) free(body);
 		kd_free(headers);
 		return false;
 	}
+
+	// Upstream logged this line *before* http_parse() filled `method`, so it
+	// printed the empty initialiser every time. That is worse than logging
+	// nothing: an empty method reads as "the request did not parse", which is
+	// exactly the wrong conclusion to hand someone debugging a session that
+	// went nowhere. Moved after the parse, the only point at which the value
+	// exists.
+	LOG_DEBUG("[%p]: received %s", ctx, method);
 
 	// Handle Apple-Challenge
 	apple_challenge(ctx, sock, headers, resp);
@@ -618,6 +687,10 @@ void cleanup_rtsp(raop_ctx_t *ctx, bool abort) {
 static void search_remote(void *args) {
 	raop_ctx_t *ctx = (raop_ctx_t*) args;
 	bool found = false;
+	// Not resized (see SEARCH_STACK_SIZE comment above) but instrumented
+	// anyway per the same provisional-pending-measurement plan - see
+	// UPSTREAM.md. Logged only on a new minimum.
+	UBaseType_t stack_min = (UBaseType_t) -1;
 
 	LOG_INFO("starting remote search");
 
@@ -625,6 +698,12 @@ static void search_remote(void *args) {
 		mdns_result_t *results = NULL;
 		mdns_result_t *r;
 		mdns_ip_addr_t *a;
+
+		UBaseType_t stack_now = uxTaskGetStackHighWaterMark(NULL);
+		if (stack_now < stack_min) {
+			stack_min = stack_now;
+			LOG_INFO("[%p]: search-remote task stack high water mark %u bytes free (new minimum)", ctx, (unsigned) stack_min);
+		}
 
 		if (mdns_query_ptr("_dacp", "_tcp", 3000, 32,  &results)) {
 			LOG_ERROR("mDNS active remote query Failed");
