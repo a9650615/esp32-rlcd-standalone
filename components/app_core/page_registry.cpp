@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <string>
 
+#include "media_registry.hpp"
+
 namespace app_core {
 namespace {
 
@@ -20,11 +22,22 @@ bool indoor_available(const AppSnapshot& snapshot) {
   return snapshot.availability.indoor;
 }
 
+// Ignores the snapshot deliberately: this page's availability lives in the
+// media registry, not in AppSnapshot, because a module - not a core provider
+// task - is what fills it (modules/README.md rule 4). The PageDescriptor
+// signature already permits this; no signature change is needed.
+bool now_playing_available(const AppSnapshot&) {
+  return now_playing().session_open;
+}
+
 const PageDescriptor kHome{PageId::Home, 30, always_available};
 const PageDescriptor kTaiwan{PageId::TaiwanMarket, 12, taiwan_available};
 const PageDescriptor kUs{PageId::UsMarket, 12, us_available};
 const PageDescriptor kWeather{PageId::Weather, 12, weather_available};
 const PageDescriptor kIndoor{PageId::Indoor, 12, indoor_available};
+// 12 seconds, the same dwell every data page uses, because this page is in
+// the rotation, not privileged within it.
+const PageDescriptor kNowPlaying{PageId::NowPlaying, 12, now_playing_available};
 
 }  // namespace
 
@@ -32,21 +45,23 @@ void PageRegistry::begin_cycle(const AppSnapshot& snapshot) {
   descriptors_.clear();
   descriptors_.push_back(kHome);
 
-  const PageDescriptor* ordered[] = {&kTaiwan, &kUs, &kWeather, &kIndoor};
+  // Now Playing goes first among the optional pages, so a session that just
+  // started is the next thing rotation reaches.
+  const PageDescriptor* ordered[] = {&kNowPlaying, &kTaiwan, &kUs, &kWeather, &kIndoor};
   switch (snapshot.scenario) {
     case DemoScenario::MorningAlert:
-      ordered[0] = &kWeather;
-      ordered[1] = &kTaiwan;
-      ordered[2] = &kUs;
-      ordered[3] = &kIndoor;
+      ordered[1] = &kWeather;
+      ordered[2] = &kTaiwan;
+      ordered[3] = &kUs;
+      ordered[4] = &kIndoor;
       break;
     case DemoScenario::TaiwanSession:
       break;
     case DemoScenario::NightSession:
-      ordered[0] = &kUs;
-      ordered[1] = &kWeather;
-      ordered[2] = &kTaiwan;
-      ordered[3] = &kIndoor;
+      ordered[1] = &kUs;
+      ordered[2] = &kWeather;
+      ordered[3] = &kTaiwan;
+      ordered[4] = &kIndoor;
       break;
   }
 
@@ -74,6 +89,7 @@ bool page_data_valid(PageId page, const AppSnapshot& snapshot) {
     case PageId::Setup:
     case PageId::Settings:
     case PageId::Ota:
+    case PageId::NowPlaying:
       return true;
   }
   return true;

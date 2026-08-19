@@ -11,6 +11,7 @@ add_executable(host_tests
     test_main.cpp
     test_page_registry.cpp
     test_media_registry.cpp
+    test_now_playing.cpp
     test_carousel.cpp
     test_button_filter.cpp
     test_ui_theme.cpp
