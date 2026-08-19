@@ -109,7 +109,16 @@ struct raop_ctx_s *raop_create(uint32_t host, char *name,
 	// same fragmentation-driven contiguity failure. It previously had no
 	// failure log at all (silent NULL return) - add one so this claim stays
 	// checkable if it ever stops holding.
-	LOG_INFO("raop_create: allocating %u bytes of internal RAM (free %u, largest block %u)",
+	// Worded as a remainder, not a budget. This line sits after the malloc
+	// above, so its figures are what is left once the allocation has been
+	// taken - and read as "allocating N (largest block M)" with M below N it
+	// looks exactly like a failure that has just happened. Two people read it
+	// that way on the same day, one of whom had a change queued to spend
+	// 13.5 KB of permanent .bss fixing a path that works. On a healthy boot
+	// the remainder is genuinely smaller than the request; that is the normal
+	// case, not a warning.
+	LOG_INFO("raop_create: allocated %u bytes of internal RAM; heap now has "
+			 "%u free, largest block %u (both AFTER this allocation)",
 			  (unsigned) sizeof(struct raop_ctx_s),
 			  (unsigned) heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
 			  (unsigned) heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
