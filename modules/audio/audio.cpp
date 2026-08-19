@@ -66,7 +66,7 @@ constexpr int kOutputVolumePercent = 50;
 //
 // This is a property of the speaker, not of the code. If a different one is
 // fitted, re-measure it rather than trusting this number.
-constexpr int kStreamVolumePercent = 60;
+constexpr int kStreamVolumePercent = 80;
 
 // 50% of int16 full scale - the same ceiling /beep-sweep's diagnostic
 // staircase is capped at. A full-scale square wave into a coin-sized

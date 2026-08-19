@@ -19,6 +19,9 @@ namespace board {
 namespace {
 
 constexpr char kTag[] = "board_display";
+// One frame goes out as ceil(kFramebufferBytes / this) SPI transfers. See
+// the bus config in init() for why it is not the whole frame.
+constexpr size_t kSpiChunkBytes = 4096;
 constexpr size_t kFramebufferBytes =
     static_cast<size_t>(kWidth) * static_cast<size_t>(kHeight) / 8U;
 constexpr size_t kPixelCount =
@@ -79,7 +82,12 @@ esp_err_t Display::init() {
   bus_config.sclk_io_num = kDisplaySck;
   bus_config.quadwp_io_num = -1;
   bus_config.quadhd_io_num = -1;
-  bus_config.max_transfer_sz = kFramebufferBytes;
+  // Not kFramebufferBytes. This is what esp_lcd chunks colour transfers by
+  // (spi_bus_get_max_transaction_len), and therefore the size of the bounce
+  // buffer spi_master.c allocates per chunk for a PSRAM source. 15 KB in one
+  // piece could not be found on a fragmented heap; 4 KB always can, and the
+  // frame simply goes out as four transfers instead of one.
+  bus_config.max_transfer_sz = kSpiChunkBytes;
 
   esp_err_t result = spi_bus_initialize(SPI3_HOST, &bus_config, SPI_DMA_CH_AUTO);
   if (result != ESP_OK) {
@@ -95,7 +103,11 @@ esp_err_t Display::init() {
   io_config.lcd_cmd_bits = 8;
   io_config.lcd_param_bits = 8;
   io_config.spi_mode = 0;
-  io_config.trans_queue_depth = 10;
+  // Was 10. Each queued chunk holds its own bounce buffer until it is
+  // recycled, so a deep queue multiplies the transient internal RAM this
+  // costs - the thing being fixed. Two is enough to keep the bus busy while
+  // the next chunk is prepared.
+  io_config.trans_queue_depth = 2;
 
   auto* io = reinterpret_cast<esp_lcd_panel_io_handle_t*>(&io_handle_);
   result = esp_lcd_new_panel_io_spi(static_cast<esp_lcd_spi_bus_handle_t>(SPI3_HOST),
@@ -120,52 +132,34 @@ esp_err_t Display::init() {
     return result;
   }
 
-  // DMA-capable internal RAM, not PSRAM, and the difference is not an
-  // optimisation.
+  // PSRAM, and the transfer below is chunked so that this does not cost a
+  // 15 KB contiguous internal allocation per refresh.
   //
-  // This buffer is handed straight to esp_lcd_panel_io_tx_color() on every
-  // refresh. When it sat in PSRAM, spi_master.c's setup_priv_desc() saw a
-  // tx_buffer that failed esp_ptr_dma_capable() and, for EVERY refresh,
-  // allocated a fresh kFramebufferBytes of contiguous MALLOC_CAP_DMA memory
-  // and memcpy'd the whole frame into it. Measured on hardware: internal RAM
-  // had ~51 KB free but its largest block moved between 7.9 and 14.3 KB
-  // against a 15 KB request, so the allocation failed and every refresh in
-  // the burst returned ESP_ERR_NO_MEM - 1,392 of 1,455 captured log lines at
-  // one point. It came and went with nothing in the firmware changing,
-  // because it depended on how the heap happened to be fragmented.
+  // The history matters because both obvious answers are wrong. Left in PSRAM
+  // with the whole frame as one transfer, spi_master.c's setup_priv_desc()
+  // saw a tx_buffer failing esp_ptr_dma_capable() and allocated a fresh
+  // kFramebufferBytes of contiguous MALLOC_CAP_DMA memory for every refresh -
+  // against a largest free block measured between 7.9 and 14.3 KB, so most
+  // refreshes returned ESP_ERR_NO_MEM.
   //
-  // Owning DMA-capable memory removes the per-refresh allocation and the
-  // per-refresh 15 KB copy along with it. The cost is the same 15 KB, held
-  // from boot - when it can actually be obtained - instead of demanded again
-  // every 265 ms when it often cannot. ESP32-S3 does not define
-  // SOC_CACHE_INTERNAL_MEM_VIA_L1CACHE, so spi_master.c's tx_unaligned test
-  // is compiled out and DMA-capability is the only condition that matters
-  // here; on a chip where that is not true this would also need the length
-  // aligned to the cache line.
+  // Moving the framebuffer itself into MALLOC_CAP_DMA fixed that and broke
+  // something else: 15 KB taken permanently, before wifi initialises, left
+  // the wifi RX path short, and AirPlay went from 0-1 inserted silence frames
+  // per capture to 1,266. The display worked and the audio turned to
+  // crackle. Internal RAM here is not a resource one subsystem can quietly
+  // claim.
+  //
+  // kSpiChunkBytes below is the actual fix: the driver still bounces through
+  // an internal buffer, but one small enough that a fragmented heap can
+  // always satisfy it, and nothing is held between refreshes.
   display_buffer_ = static_cast<uint8_t*>(
-      heap_caps_malloc(kFramebufferBytes, MALLOC_CAP_DMA | MALLOC_CAP_8BIT));
-  if (display_buffer_ == nullptr) {
-    // PSRAM rather than no display at all - but say so, because this puts the
-    // per-refresh bounce allocation back and the panel will start dropping
-    // frames again the moment internal RAM fragments.
-    ESP_LOGE(kTag,
-             "framebuffer could not get %u bytes of DMA-capable internal RAM "
-             "(free %u, largest %u); falling back to PSRAM, which makes every "
-             "refresh allocate and copy that much again",
-             static_cast<unsigned>(kFramebufferBytes),
-             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_DMA)),
-             static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_DMA)));
-    display_buffer_ = static_cast<uint8_t*>(
-        heap_caps_malloc(kFramebufferBytes, MALLOC_CAP_SPIRAM));
-  }
+      heap_caps_malloc(kFramebufferBytes, MALLOC_CAP_SPIRAM));
   if (display_buffer_ == nullptr) {
     ESP_LOGE(kTag, "display framebuffer allocation failed (%u bytes)",
              static_cast<unsigned>(kFramebufferBytes));
     release_resources();
     return ESP_ERR_NO_MEM;
   }
-  ESP_LOGI(kTag, "framebuffer at %p is %sDMA-capable", display_buffer_,
-           esp_ptr_dma_capable(display_buffer_) ? "" : "NOT ");
 
   pixel_index_lut_ = reinterpret_cast<uint16_t (*)[kHeight]>(heap_caps_malloc(
       kPixelCount * sizeof(uint16_t), MALLOC_CAP_SPIRAM));
