@@ -27,8 +27,11 @@ const lv_font_t* font_large();   // Montserrat 28 + CJK 28
 // Clock hero: a 128px Montserrat subset of the ten digits and a colon, and
 // NOTHING else - no letters, no percent sign, no space, no decimal point.
 //
-// Only the clock may use it. Anything else renders the missing characters as
-// empty boxes, silently: the sensor page lost its temperature to this and the
+// Two callers only: the clock hero, and the volume readout on the now-playing
+// page (render_now_playing.cpp). Both pass digits and nothing else, which is
+// the actual rule - ui::volume_percent_text() exists in the shape it does
+// precisely so that its one non-digit return, "MUTE", never reaches this face.
+// Anything else renders the missing characters as empty boxes, silently: the
 // OTA page showed "WORKING" as five boxes, and neither produced a warning,
 // because a missing glyph is not an overflow and not an out-of-bounds object.
 // Reach for font_large() when a big number needs a unit or a sign.

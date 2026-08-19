@@ -542,6 +542,10 @@ lv_obj_t* render_page(UiContext& context,
       render_settings(replacement, snapshot, content, page_index, page_count,
                       &context);
       break;
+    case app_core::PageId::NowPlaying:
+      render_now_playing(replacement, snapshot, content, page_index, page_count,
+                         &context);
+      break;
     case app_core::PageId::Ota:
       render_ota(replacement, snapshot, content, page_index, page_count,
                  &context);

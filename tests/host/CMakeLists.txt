@@ -10,6 +10,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 add_executable(host_tests
     test_main.cpp
     test_page_registry.cpp
+    test_media_registry.cpp
+    test_now_playing.cpp
     test_carousel.cpp
     test_button_filter.cpp
     test_ui_theme.cpp
@@ -32,6 +34,7 @@ add_executable(host_tests
     ../../components/app_core/page_registry.cpp
     ../../components/app_core/carousel_controller.cpp
     ../../components/app_core/tray_registry.cpp
+    ../../components/app_core/media_registry.cpp
     ../../components/wifi_config/wifi_config.cpp
     ../../components/net_time/net_time_convert.cpp
     ../../components/weather/weather_parse.cpp

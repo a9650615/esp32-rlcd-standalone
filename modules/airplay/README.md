@@ -35,15 +35,25 @@ reception, ALAC decoding of actual streamed audio - and its `audio_output_cb`
 (`airplay.cpp`'s `feed_audio()`) writes every decoded chunk straight into
 `audio::audio_stream_write()`. The session's open/close boundary comes from
 the RAOP receiver's own `event_cb` (`handle_event()`): `RAOP_EVENT_CONNECTED`
-calls `audio::audio_stream_open(44100)`, disables Wi-Fi power save, and
-raises the tray indicator; `RAOP_EVENT_DISCONNECTED` closes the stream,
-restores Wi-Fi power save, and lowers the tray indicator. Every other RAOP
-event (`BUFFERING`/`PLAYING`/`STOPPED`/`PAUSED`/`VOLUME`/`METADATA`/
-`ARTWORK`/`PROGRESS`/`STALLED`) is a sub-state within one still-open session
-and is deliberately left unhandled - confirmed by reading `raop_core.c`'s
-`internal_cmd_cb()` dispatch that `CONNECTED`/`DISCONNECTED` are the only two
-that fire once each, at RTSP SETUP/TEARDOWN, rather than repeatedly within a
-session.
+calls `audio::audio_stream_open(44100)`, disables Wi-Fi power save, raises
+the tray indicator, and opens a now-playing session
+(`app_core::publish_now_playing()`) with no metadata yet - the page's own
+seize logic takes the screen on `session_open` alone, not on a title
+arriving; `RAOP_EVENT_DISCONNECTED` closes the stream, restores Wi-Fi power
+save, lowers the tray indicator, and clears the session
+(`app_core::clear_media_session()`). Every other RAOP event
+(`BUFFERING`/`PLAYING`/`STOPPED`/`PAUSED`/`METADATA`/`ARTWORK`/`PROGRESS`/
+`STALLED`) is a sub-state within one still-open session: none of them touch
+the audio path (confirmed by reading `raop_core.c`'s `internal_cmd_cb()`
+dispatch that `CONNECTED`/`DISCONNECTED` are the only two that fire once
+each, at RTSP SETUP/TEARDOWN, rather than repeatedly within a session), but
+`METADATA`/`PROGRESS`/`PLAYING`/`PAUSED`/`BUFFERING`/`STALLED`/`STOPPED` each
+update and republish the now-playing state so the page stays current.
+`VOLUME` never fires - this module always configures
+`RAOP_VOLUME_SOFTWARE`, and that event is hardware-mode-only; volume is
+instead read from `raop_get_volume()` at publish time. `ARTWORK` is left
+unhandled - not this task, see `components/app_core/include/media_registry.hpp`'s
+`MediaArtwork` comment.
 
 `airplay_init()` must be called only once the Wi-Fi station has a real,
 DHCP-assigned IP address: `raop_init()` (`esp-raop-receiver/src/raop_core.c`)
@@ -61,21 +71,26 @@ exists. `airplay::airplay_init()` itself is called later, from a task
 for the station to have an IP first - same non-fatal treatment either way:
 a failure is logged, never fatal. No `#ifdef` at either call site;
 `airplay.hpp`'s inline no-ops make both calls correct whether or not
-`CONFIG_AIRPLAY_ENABLE` is on. Those are this module's only core touch
-points; see "Core touch points" below.
+`CONFIG_AIRPLAY_ENABLE` is on. Those are the only two call sites in
+`main/app_main.cpp`; see "Core touch points" below for the full list,
+including the media-session registration `airplay_init()` itself makes.
 
 The dependency direction the module contract requires (rule 4: modules point
 at core, never the other way; and for this module specifically, `airplay ->
 audio`, never `audio -> airplay`) now holds as a real, exercised dependency
 rather than merely "upheld by construction": this module's `CMakeLists.txt`
 lists both `audio` and `app_core` in `PRIV_REQUIRES`, `airplay.cpp` includes
-`audio.hpp` and `tray_registry.hpp`, and calls
-`audio::audio_stream_open()`/`_write()`/`_close()` and
-`app_core::register_tray_indicator()`/`set_tray_indicator_active()`
-directly. Neither `audio` nor `app_core` includes anything from this module
-- registering a second tray indicator needed zero changes to
-`components/app_core/tray_registry.*` or anywhere else in `components/`,
-which is the acceptance test that registry design was built to pass.
+`audio.hpp`, `media_registry.hpp`, and `tray_registry.hpp`, and calls
+`audio::audio_stream_open()`/`_write()`/`_close()`,
+`app_core::register_tray_indicator()`/`set_tray_indicator_active()`, and
+`app_core::register_media_source()`/`publish_now_playing()`/
+`clear_media_session()` directly. Neither `audio` nor `app_core` includes
+anything from this module - registering a second tray indicator, and
+filling the one now-playing slot `app_core` reserves without ever knowing
+RAOP is what filled it, both needed zero changes to
+`components/app_core/tray_registry.*`/`media_registry.*` or anywhere else in
+`components/`, which is the acceptance test both registry designs were built
+to pass.
 
 ## What a self-generated key does, and how to recognise it
 
@@ -271,18 +286,29 @@ has ever reached the speaker - see "What is unverified" below.
 
 ## Core touch points
 
-Two, both in `main/app_main.cpp`: `airplay::airplay_register_tray()`, called
-right after `audio::audio_init()`, before Wi-Fi exists; and
-`airplay::airplay_init()`, called from `airplay_startup_task` after
-`wifi_provision::start()` once the station has an IP, logging readiness or
-unavailability but never treating failure as fatal. No other file in
-`components/` or `main/` references this module - the tray indicator and the
-audio sink are both
-reached through the same registries `modules/audio` already uses
-(`app_core::register_tray_indicator()`, `audio::audio_stream_open()`), not
-through any new core surface. That a second module's tray icon needed zero
-changes to `components/app_core/tray_registry.*` is exactly what that
-registry design set out to prove.
+Three:
+
+- `airplay::airplay_register_tray()` in `main/app_main.cpp`, called right
+  after `audio::audio_init()`, before Wi-Fi exists.
+- `airplay::airplay_init()` in `main/app_main.cpp`, called from
+  `airplay_startup_task` after `wifi_provision::start()` once the station has
+  an IP, logging readiness or unavailability but never treating failure as
+  fatal.
+- `app_core::register_media_source()` in `airplay_init()`, and
+  `app_core::publish_now_playing()` / `app_core::clear_media_session()` from
+  `handle_event()` (both in `airplay.cpp`). Core reserves one media-session
+  slot and renders whatever fills it; it never learns that RAOP is what did.
+  See `components/app_core/include/media_registry.hpp`.
+
+No other file in `components/` or `main/` references this module - the tray
+indicator, the audio sink, and the now-playing session are all reached
+through the same kind of registry `modules/audio` already established
+(`app_core::register_tray_indicator()`, `audio::audio_stream_open()`,
+`app_core::register_media_source()`), not through any new core surface. That
+a second module's tray icon, and the first module to ever fill the
+now-playing slot, both needed zero changes to
+`components/app_core/tray_registry.*`/`media_registry.*` is exactly what
+those registry designs set out to prove.
 
 ## What is unverified
 

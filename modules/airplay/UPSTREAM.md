@@ -295,3 +295,24 @@ a guaranteed failure on every session.
   undefined on this chip, but its `#else` branch (taken when undefined) is
   the little-endian-correct byte ordering already, so no fix was needed
   there.
+
+- **`src/raop.c`: one diagnostic log line at the `SET_PARAMETER` entry.**
+  A panel test with two different senders (an iPhone and an Apple TV) showed
+  a live progress bar and no track title at all. The upstream code logs only
+  on a *successful* DMAP parse, so every other outcome - the sender not
+  sending metadata, the body being dropped by `util.c`'s 8192-byte ceiling
+  before the handler sees it, or the branch conditions rejecting a body that
+  did arrive - is indistinguishable from the log. The added line names the
+  `Content-Type` and whether a body survived, which separates those cases in
+  one read. No behaviour changes; it is `LOG_INFO` beside the existing ones.
+
+- **`src/raop.c`: the DMAP metadata condition was inverted.** Upstream tested
+  `if (!dmap_parse(&settings, body, len))`, but `dmap_parse()` returns 1 on
+  success and 0 on every failure path (`dmap_parser.c`: `return 1` after
+  `parse_value()`; `return 0` for a short buffer, an unknown tag, or a size
+  that disagrees with the payload). The metadata callback therefore fired
+  only when parsing had failed, and every correctly parsed track title was
+  discarded. Symptom on hardware: an iPhone and an Apple TV both produced a
+  working progress bar and a permanently empty title, with no error logged
+  anywhere - the body was arriving intact and parsing fine. Now `if
+  (dmap_parse(...))`.

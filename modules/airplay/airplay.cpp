@@ -5,6 +5,7 @@
 #include "esp_raop_receiver.h"
 
 #include "audio.hpp"
+#include "media_registry.hpp"
 #include "tray_registry.hpp"
 
 #include <algorithm>
@@ -37,6 +38,72 @@ constexpr int kIconHeight = 12;
 constexpr int kIconStride = (kIconWidth + 7) / 8;
 uint8_t g_icon_bitmap[kIconStride * kIconHeight];
 app_core::TrayIndicatorHandle g_tray_indicator;
+
+// --- Now-playing page: this module's own copy of what it has published so
+// far. Kept here rather than read back out of the registry because RAOP
+// delivers this in pieces - METADATA carries no progress, PROGRESS carries
+// no title - and each event must update its own fields without blanking the
+// others.
+app_core::MediaSourceHandle g_media_source;
+app_core::NowPlaying g_now_playing;
+
+void publish() {
+  // Volume is read at publish time rather than tracked: raop_get_volume()
+  // returns the current level in SOFTWARE mode too (RAOP_EVENT_VOLUME is
+  // HARDWARE-only), so there is nothing to subscribe to and nothing to keep
+  // in sync.
+  //
+  // What it returns is not 0.0-1.0, though - it is handle->volume, set
+  // verbatim from the RTSP SET_PARAMETER body's "volume: <dB>" field
+  // (raop.c) and consumed the same raw way in audio_buffer.c's software
+  // gain stage: AirPlay's wire format is dB, roughly -30.0 (quietest) to
+  // 0.0 (loudest), with -144.0 as the protocol's explicit mute sentinel
+  // (the exact threshold audio_buffer.c zeroes PCM at). Convert to the
+  // 0.0-1.0 NowPlaying::volume expects, and leave the level untouched on
+  // mute rather than reporting 0 - NowPlaying::muted is what says
+  // "silenced"; the dB value that produced it is not recoverable once the
+  // sender has overwritten handle->volume with -144.0, so the last known
+  // level is the best available answer to "where the level was".
+  if (g_handle != nullptr) {
+    // Asked before the level is read, not inferred from the level itself.
+    // Between SETUP and the sender's first SET_PARAMETER the library holds a
+    // placeholder, and that placeholder is a perfectly ordinary dB value - it
+    // was -20.0 when this was written, which this file's own conversion below
+    // would have turned into a confident, wrong "33%" on the panel before any
+    // sender had chosen anything. Testing the placeholder's value would also
+    // make a sender that genuinely picks it read as unset. This flag is the
+    // only thing that separates the two, and it re-arms on every SETUP.
+    if (!raop_volume_is_known(g_handle)) {
+      // Negative is NowPlaying::volume's own "nothing reported yet", which
+      // the overlay already declines to open on.
+      g_now_playing.volume = -1.0f;
+      g_now_playing.muted = false;
+    } else {
+      const float vol_db = raop_get_volume(g_handle);
+      if (vol_db <= -144.0f) {
+        g_now_playing.muted = true;
+      } else {
+        constexpr float kMinDb = -30.0f;
+        g_now_playing.muted = false;
+        g_now_playing.volume =
+            (std::clamp(vol_db, kMinDb, 0.0f) - kMinDb) / -kMinDb;
+      }
+    }
+  }
+  // A session ran with the tray icon lit, audio playing, and the page never
+  // appearing - which means this call and the UI's own read of the registry
+  // disagree, and nothing in either logs enough to say which side is wrong.
+  // The handle's slot is here because an invalid one is silently ignored by
+  // publish_now_playing() (it logs, but only under its own tag), and
+  // session_open because that single bool is what the page's availability
+  // and its seize both hang off.
+  ESP_LOGI(kTag, "publish: slot=%d open=%d state=%d title='%s' vol=%.2f",
+           static_cast<int>(g_media_source.slot),
+           g_now_playing.session_open ? 1 : 0,
+           static_cast<int>(g_now_playing.state), g_now_playing.title.c_str(),
+           g_now_playing.volume);
+  app_core::publish_now_playing(g_media_source, g_now_playing);
+}
 
 void set_icon_pixel(int x, int y) {
   if (x < 0 || x >= kIconWidth || y < 0 || y >= kIconHeight) return;
@@ -137,14 +204,15 @@ void feed_audio(const uint8_t *data, size_t len, void * /*user_ctx*/) {
 // RTSP SETUP, before any audio can arrive; DISCONNECTED fires once, at
 // RTSP TEARDOWN, after which audio_buffer_deinit() means no more audio
 // ever will (confirmed by reading raop_core.c's internal_cmd_cb - both are
-// real, already-wired dispatch sites, not stubs). Every other event
-// (BUFFERING/PLAYING/STOPPED/PAUSED/VOLUME/METADATA/ARTWORK/PROGRESS/
-// STALLED) is a sub-state within one still-open session and is
-// deliberately not handled here: audio_stream_write() already holds the
-// amplifier continuously across chunks and only drops it at close, so
-// reacting to every play/pause within a session would only add close-then-
-// reopen churn for no benefit.
-void handle_event(raop_event_t event, void * /*event_data*/,
+// real, already-wired dispatch sites, not stubs).
+//
+// Every other event (BUFFERING/PLAYING/STOPPED/PAUSED/METADATA/ARTWORK/
+// PROGRESS/STALLED) is a sub-state within one still-open session. None of
+// them touches the audio path - audio_stream_write() holds the amplifier
+// continuously across chunks and only drops it at close, so reacting to
+// play/pause there would add close-then-reopen churn for no benefit. They
+// are handled below solely to keep the now-playing page current.
+void handle_event(raop_event_t event, void *event_data,
                   void * /*user_ctx*/) {
   switch (event) {
     case RAOP_EVENT_CONNECTED: {
@@ -165,6 +233,19 @@ void handle_event(raop_event_t event, void * /*event_data*/,
                  "nowhere to go",
                  esp_err_to_name(result));
       }
+      // Open the session before any title arrives: the page's own seize
+      // state machine seizes the screen on the first tick session_open is
+      // true, whatever the title is (an explicit was_open flag makes sure
+      // an empty title still seizes) - waiting here for METADATA would just
+      // delay that by however long the sender takes to send it.
+      g_now_playing = app_core::NowPlaying{};
+      g_now_playing.session_open = true;
+      g_now_playing.state = app_core::MediaState::Buffering;
+      // The protocol's own name, not a device name: RAOP exposes no API for
+      // what the sender calls itself. A name invented here would be a claim
+      // nothing backs.
+      g_now_playing.source = "AIRPLAY";
+      publish();
       break;
     }
     case RAOP_EVENT_DISCONNECTED:
@@ -173,6 +254,68 @@ void handle_event(raop_event_t event, void * /*event_data*/,
                static_cast<int>(g_tray_indicator.slot));
       app_core::set_tray_indicator_active(g_tray_indicator, false);
       restore_wifi_power_save();
+      g_now_playing = app_core::NowPlaying{};
+      app_core::clear_media_session(g_media_source);
+      break;
+    case RAOP_EVENT_METADATA: {
+      const auto *meta = static_cast<const raop_metadata_t *>(event_data);
+      if (meta != nullptr) {
+        g_now_playing.title = meta->title != nullptr ? meta->title : "";
+        g_now_playing.subtitle = meta->artist != nullptr ? meta->artist : "";
+        g_now_playing.detail = meta->album != nullptr ? meta->album : "";
+      }
+      // The first panel test showed a live progress bar and no title, which
+      // three different faults produce identically: the sender never sent
+      // metadata, the library parsed it but the event never reached here, or
+      // it arrived with empty strings. raop.c already logs its own "received
+      // metadata" line on the parse, so this line beside it tells the three
+      // apart in one read of the log instead of a guess per attempt.
+      ESP_LOGI(kTag, "metadata event: meta=%s title='%s' artist='%s' album='%s'",
+               meta != nullptr ? "yes" : "NULL", g_now_playing.title.c_str(),
+               g_now_playing.subtitle.c_str(), g_now_playing.detail.c_str());
+      publish();
+      break;
+    }
+    case RAOP_EVENT_PROGRESS: {
+      const auto *progress = static_cast<const raop_progress_t *>(event_data);
+      if (progress != nullptr) {
+        g_now_playing.elapsed_ms = progress->current_ms;
+        g_now_playing.total_ms = progress->total_ms;
+      }
+      publish();
+      break;
+    }
+    case RAOP_EVENT_PLAYING:
+      g_now_playing.state = app_core::MediaState::Playing;
+      publish();
+      break;
+    case RAOP_EVENT_PAUSED:
+      g_now_playing.state = app_core::MediaState::Paused;
+      publish();
+      break;
+    case RAOP_EVENT_BUFFERING:
+      g_now_playing.state = app_core::MediaState::Buffering;
+      publish();
+      break;
+    case RAOP_EVENT_STALLED:
+      g_now_playing.state = app_core::MediaState::Stalled;
+      publish();
+      break;
+    case RAOP_EVENT_STOPPED:
+      g_now_playing.state = app_core::MediaState::Stopped;
+      g_now_playing.elapsed_ms = 0;
+      publish();
+      break;
+    case RAOP_EVENT_VOLUME:
+      // HARDWARE-mode-only (esp_raop_receiver.h) - this module always
+      // configures RAOP_VOLUME_SOFTWARE (see airplay_init() below), so this
+      // never fires. publish() reads raop_get_volume() directly instead;
+      // see its own comment for why.
+      break;
+    case RAOP_EVENT_ARTWORK:
+      // Not this task - see NowPlaying::artwork's own comment
+      // (media_registry.hpp). Left default (null bits) so the page renders
+      // its no-artwork layout.
       break;
     default:
       break;
@@ -229,6 +372,22 @@ void airplay_register_tray() {
 esp_err_t airplay_init() {
   if (g_handle != nullptr) {
     return ESP_ERR_INVALID_STATE;
+  }
+
+  // Claimed here, not from airplay_register_tray(): unlike the tray cell,
+  // whose width is fixed at the next full page rebuild after registration
+  // (see that function's own comment), the now-playing page's availability
+  // is polled fresh every carousel cycle from session_open
+  // (page_registry.cpp's now_playing_available()), so nothing breaks if
+  // this registers later than the tray does. It has no network dependency
+  // either, but it belongs with the session machinery it feeds - claimed
+  // unconditionally, before anything below that can fail, same reasoning
+  // as the tray's own registration.
+  if (!g_media_source.valid()) {
+    g_media_source = app_core::register_media_source();
+    if (!g_media_source.valid()) {
+      ESP_LOGW(kTag, "media source registration failed: already taken");
+    }
   }
 
 #ifndef NDEBUG

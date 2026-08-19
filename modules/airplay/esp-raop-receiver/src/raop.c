@@ -597,6 +597,20 @@ static bool handle_rtsp(raop_ctx_t *ctx, int sock)
 	} else if (!strcmp(method, "SET_PARAMETER")) {
 		char *p;
 
+		// Local diagnostic (see UPSTREAM.md): a panel test with two different
+		// senders showed a live progress bar and no title at all, and the
+		// existing logging could not say why - the DMAP branch below is the
+		// only one that logs on success, and every failure mode reaches this
+		// handler and then falls out of it silently. One line at the entry
+		// naming the Content-Type and whether a body survived tells apart
+		// "the sender never sent it", "it was dropped before we saw it" and
+		// "it arrived and the branch conditions rejected it".
+		{
+			char *ct = kd_lookup(headers, "Content-Type");
+			LOG_INFO("[%p]: SET_PARAMETER content-type='%s' body=%s len=%d", ctx,
+					 ct ? ct : "(none)", body ? "yes" : "NULL", (int) len);
+		}
+
 		if (body && (p = strcasestr(body, "volume")) != NULL) {
 			float volume;
 
@@ -619,7 +633,20 @@ static bool handle_rtsp(raop_ctx_t *ctx, int sock)
 
 			settings.ctx = &metadata;
 			memset(&metadata, 0, sizeof(struct metadata_s));
-			if (!dmap_parse(&settings, body, len)) {
+			// Upstream tested `!dmap_parse(...)`, which is inverted:
+			// dmap_parse() returns 1 on a successful parse and 0 on every
+			// failure path (see dmap_parser.c - `return 1` after
+			// parse_value(), `return 0` for a short buffer, an unknown tag,
+			// or a size that disagrees with the payload). So the metadata
+			// callback fired only when parsing had FAILED, and a correctly
+			// parsed title was dropped on the floor every time.
+			//
+			// This is why an iPhone and an Apple TV both produced a live
+			// progress bar and a permanently empty title: the DMAP body was
+			// arriving intact (logged at this handler's entry as
+			// content-type='application/x-dmap-tagged' body=yes len=128) and
+			// parsing fine. Nothing was missing; the result was discarded.
+			if (dmap_parse(&settings, body, len)) {
                 uint32_t timestamp = 0;
                 if ((p = kd_lookup(headers, "RTP-Info")) != NULL) sscanf(p, "%*[^=]=%lu", (unsigned long*)&timestamp);
 				LOG_INFO("[%p]: received metadata (ts: %d)\n\tartist: %s\n\talbum:  %s\n\ttitle:  %s",
