@@ -519,14 +519,27 @@ bool inside(const ui::Rect& inner, const ui::Rect& outer) {
          inner.right() <= outer.right() && inner.bottom() <= outer.bottom();
 }
 
+// The real content rect for this page, in the same absolute safe_canvas()
+// frame every other page's own layout_fits check already uses (see
+// setup_layout_fits and friends in ui_data.hpp). now_playing_layout() and
+// volume_overlay_layout() both take the content rect they lay out into and
+// return rects positioned relative to it - render_now_playing.cpp passes
+// its own `bounds` straight through with no arithmetic of its own - so this
+// is one legitimate origin to call them with; the renderer's own (zero-
+// offset, page-root-relative) origin is a different one, exercised by
+// now_playing_layout_shape_is_invariant_to_its_origin below.
+ui::Rect now_playing_content() {
+  return ui::content_bounds(ui::safe_canvas(), app_core::PageId::NowPlaying);
+}
+
 }  // namespace
 
 HOST_TEST(now_playing_layout_stays_inside_the_content_area) {
-  const ui::Rect content =
-      ui::content_bounds(ui::safe_canvas(), app_core::PageId::NowPlaying);
+  const ui::Rect content = now_playing_content();
 
   for (const bool has_artwork : {false, true}) {
-    const ui::NowPlayingLayout layout = ui::now_playing_layout(has_artwork);
+    const ui::NowPlayingLayout layout =
+        ui::now_playing_layout(content, has_artwork);
     EXPECT_TRUE(inside(layout.title, content));
     EXPECT_TRUE(inside(layout.subtitle, content));
     EXPECT_TRUE(inside(layout.detail, content));
@@ -538,9 +551,49 @@ HOST_TEST(now_playing_layout_stays_inside_the_content_area) {
   }
 }
 
+// This is the test that would have caught the real bug: an earlier version
+// of this plan (and the code it produced) had now_playing_layout() build
+// every rect from absolute canvas literals with no `content` parameter at
+// all, correct only by coincidence when the caller's own origin happened to
+// be (0, 0). now_playing_layout_stays_inside_the_content_area above cannot
+// see that - it only ever exercises one fixed absolute box, and a
+// double-counted offset still landed inside a content box roomy enough to
+// absorb it. Proving the layout is pure arithmetic on the rect it is
+// handed - shift the origin by an arbitrary amount and check every rect
+// moves by exactly that amount, same size, same position relative to every
+// other rect - is what actually exercises the property the bug broke.
+HOST_TEST(now_playing_layout_shape_is_invariant_to_its_origin) {
+  constexpr int dx = 37;
+  constexpr int dy = -19;
+  const ui::Rect origin_a{0, 0, 388, 300};
+  const ui::Rect origin_b{origin_a.x + dx, origin_a.y + dy, 388, 300};
+
+  for (const bool has_artwork : {false, true}) {
+    const ui::NowPlayingLayout a =
+        ui::now_playing_layout(origin_a, has_artwork);
+    const ui::NowPlayingLayout b =
+        ui::now_playing_layout(origin_b, has_artwork);
+    const ui::Rect* rects_a[] = {&a.artwork, &a.source,  &a.title,
+                                 &a.subtitle, &a.detail, &a.state,
+                                 &a.time,     &a.progress_outline};
+    const ui::Rect* rects_b[] = {&b.artwork, &b.source,  &b.title,
+                                 &b.subtitle, &b.detail, &b.state,
+                                 &b.time,     &b.progress_outline};
+    for (std::size_t i = 0; i < sizeof(rects_a) / sizeof(rects_a[0]); ++i) {
+      EXPECT_EQ(rects_a[i]->width, rects_b[i]->width);
+      EXPECT_EQ(rects_a[i]->height, rects_b[i]->height);
+      // The absent-artwork rect is the zero rect at both origins.
+      if (rects_a[i]->width == 0 && rects_a[i]->height == 0) continue;
+      EXPECT_EQ(rects_a[i]->x + dx, rects_b[i]->x);
+      EXPECT_EQ(rects_a[i]->y + dy, rects_b[i]->y);
+    }
+  }
+}
+
 HOST_TEST(now_playing_layouts_share_an_identical_transport_row) {
-  const ui::NowPlayingLayout with = ui::now_playing_layout(true);
-  const ui::NowPlayingLayout without = ui::now_playing_layout(false);
+  const ui::Rect content = now_playing_content();
+  const ui::NowPlayingLayout with = ui::now_playing_layout(content, true);
+  const ui::NowPlayingLayout without = ui::now_playing_layout(content, false);
   EXPECT_EQ(with.state.y, without.state.y);
   EXPECT_EQ(with.state.x, without.state.x);
   EXPECT_EQ(with.time.y, without.time.y);
@@ -550,14 +603,21 @@ HOST_TEST(now_playing_layouts_share_an_identical_transport_row) {
 }
 
 HOST_TEST(now_playing_artwork_is_square_and_absent_without_one) {
-  const ui::NowPlayingLayout with = ui::now_playing_layout(true);
+  const ui::Rect content = now_playing_content();
+  const ui::NowPlayingLayout with = ui::now_playing_layout(content, true);
   EXPECT_EQ(with.artwork.width, ui::kNowPlayingArtworkSize);
   EXPECT_EQ(with.artwork.height, ui::kNowPlayingArtworkSize);
-  EXPECT_EQ(ui::now_playing_layout(false).artwork.width, 0);
+  EXPECT_EQ(ui::now_playing_layout(content, false).artwork.width, 0);
 }
 
 HOST_TEST(progress_fill_width_covers_its_whole_range) {
-  const int full = ui::now_playing_layout(true).progress_outline.width - 4;
+  // Derived independently, from an actual layout built at a real content
+  // rect, rather than trusting now_playing_progress_fill_width()'s own
+  // internal span - this is what "the fill width still agrees with the
+  // rects" means.
+  const ui::NowPlayingLayout layout =
+      ui::now_playing_layout(now_playing_content(), true);
+  const int full = layout.progress_outline.width - 4;
   EXPECT_EQ(ui::now_playing_progress_fill_width(0, 238'000), 0);
   EXPECT_EQ(ui::now_playing_progress_fill_width(238'000, 238'000), full);
   // A stream that overruns its declared length must not draw past the outline.
@@ -600,15 +660,35 @@ HOST_TEST(media_state_labels_are_printable_ascii_and_distinct) {
 }
 
 HOST_TEST(volume_overlay_fits_the_content_area) {
-  const ui::Rect content =
-      ui::content_bounds(ui::safe_canvas(), app_core::PageId::NowPlaying);
-  const ui::VolumeOverlayLayout layout = ui::volume_overlay_layout();
+  const ui::Rect content = now_playing_content();
+  const ui::VolumeOverlayLayout layout = ui::volume_overlay_layout(content);
   EXPECT_TRUE(inside(layout.label, content));
   EXPECT_TRUE(inside(layout.source, content));
   EXPECT_TRUE(inside(layout.value, content));
   EXPECT_TRUE(inside(layout.bar_outline, content));
   EXPECT_EQ(ui::volume_overlay_fill_width(0.0f), 0);
   EXPECT_EQ(ui::volume_overlay_fill_width(1.0f), layout.bar_outline.width - 6);
+}
+
+// Same bug, same proof, on the overlay: shifting the content rect's origin
+// must shift every overlay rect by exactly the same amount and change
+// nothing else.
+HOST_TEST(volume_overlay_layout_shape_is_invariant_to_its_origin) {
+  constexpr int dx = 37;
+  constexpr int dy = -19;
+  const ui::Rect origin_a{0, 0, 388, 300};
+  const ui::Rect origin_b{origin_a.x + dx, origin_a.y + dy, 388, 300};
+
+  const ui::VolumeOverlayLayout a = ui::volume_overlay_layout(origin_a);
+  const ui::VolumeOverlayLayout b = ui::volume_overlay_layout(origin_b);
+  const ui::Rect* rects_a[] = {&a.label, &a.source, &a.value, &a.bar_outline};
+  const ui::Rect* rects_b[] = {&b.label, &b.source, &b.value, &b.bar_outline};
+  for (std::size_t i = 0; i < sizeof(rects_a) / sizeof(rects_a[0]); ++i) {
+    EXPECT_EQ(rects_a[i]->width, rects_b[i]->width);
+    EXPECT_EQ(rects_a[i]->height, rects_b[i]->height);
+    EXPECT_EQ(rects_a[i]->x + dx, rects_b[i]->x);
+    EXPECT_EQ(rects_a[i]->y + dy, rects_b[i]->y);
+  }
 }
 ```
 
@@ -635,6 +715,14 @@ inline constexpr int kNowPlayingArtworkSize = 176;
 // 6 + 176 + 12 = 194: the artwork's right edge plus a 12px gutter. The
 // remaining 200px is what two lines of 28px type need, which is what fixed
 // the artwork at 176 rather than a rounder number.
+//
+// This is written as an absolute safe-canvas x - the same coordinate space
+// the mockup's own numbers are in, and the one every other literal in
+// now_playing_layout() below uses too - not an offset from some caller's
+// bounds. now_playing_layout() is what translates that fixed coordinate
+// space onto whatever content rect it is actually given; see its own
+// comment for why that translation, not a raw per-literal offset, is what
+// this page needs.
 inline constexpr int kNowPlayingTextColumnX = 194;
 inline constexpr int kNowPlayingTextColumnWidth = 200;
 
@@ -649,29 +737,77 @@ struct NowPlayingLayout {
   Rect progress_outline;
 };
 
-constexpr NowPlayingLayout now_playing_layout(bool has_artwork) {
+// The content rect the spec's literals below (and volume_overlay_layout()'s
+// own) were written against - what content_bounds(safe_canvas(), page)
+// evaluates to for this page. now_playing_layout()/volume_overlay_layout()
+// translate from this fixed baseline onto whatever content rect they are
+// actually given: zero translation when the caller passes this rect (every
+// host test above does), the real correction when render_now_playing.cpp
+// passes the zero-offset local frame render_page() actually builds pages
+// in.
+inline constexpr Rect kNowPlayingSpecContent =
+    content_bounds(safe_canvas(), app_core::PageId::NowPlaying);
+
+// `content` is the content rect this page was handed - the same rect
+// render_page() computes via content_bounds() and passes straight through
+// to render_now_playing() as `bounds`. Every rect below is a spec literal
+// (an absolute safe-canvas coordinate, against kNowPlayingSpecContent above)
+// translated by content's own offset from that baseline (`dx`/`dy`), so the
+// result is correct for whatever content rect the caller passes - the same
+// "pure arithmetic on the caller's own rect" guarantee setup_layout,
+// market_chart_rect and weather_forecast_rect already give their callers,
+// just derived rather than written as small per-literal insets, because
+// these literals are large absolute coordinates meant to be checked against
+// the mockup by eye, not small margins.
+//
+// A first version of this function took no `content` at all and returned
+// these same literals unadjusted - only correct when a caller's own content
+// rect happens to be kNowPlayingSpecContent (dx == dy == 0).
+// render_now_playing.cpp's `bounds` never is that: LVGL positions a page's
+// children relative to the page root, and render_page() has already placed
+// that root at the canvas origin, so it hands renderers the zero-offset
+// local frame, not the absolute safe-canvas one these literals are written
+// in. Passing that local frame through an untranslated function put every
+// rect 6px right and however far down of where it belonged -
+// render_shared.cpp's own local_bounds comment records the identical trap
+// on the page-dots band. Nothing here caught it: a test that asserts each
+// rect against an absolute content box stays true regardless of whether the
+// offset applied is right, wrong, or doubled. The on-device ui_geometry
+// warning log did - "object outside safe canvas... x1=12 ... safe x=6" -
+// which is why now_playing_layout_shape_is_invariant_to_its_origin exists
+// in Step 1 above: it is what actually exercises this function reacting to
+// its origin, rather than one fixed absolute box.
+constexpr NowPlayingLayout now_playing_layout(const Rect content,
+                                              bool has_artwork) {
+  const int dx = content.x - kNowPlayingSpecContent.x;
+  const int dy = content.y - kNowPlayingSpecContent.y;
+
   // The transport row is identical in both layouts, byte for byte, so that
   // gaining or losing artwork mid-session never moves the bottom of the
   // screen.
-  const Rect state_rect{6, 244, 120, 16};
-  const Rect time_rect{254, 244, 140, 16};
-  const Rect progress{6, 266, 388, 10};
+  const Rect state_rect{6 + dx, 244 + dy, 120, 16};
+  const Rect time_rect{254 + dx, 244 + dy, 140, 16};
+  const Rect progress{6 + dx, 266 + dy, 388, 10};
 
   if (!has_artwork) {
     return {{0, 0, 0, 0},
-            {6, 60, 388, 16},
-            {6, 92, 388, 68},
-            {6, 168, 388, 22},
-            {6, 196, 388, 16},
+            {6 + dx, 60 + dy, 388, 16},
+            {6 + dx, 92 + dy, 388, 68},
+            {6 + dx, 168 + dy, 388, 22},
+            {6 + dx, 196 + dy, 388, 16},
             state_rect,
             time_rect,
             progress};
   }
-  return {{6, 46, kNowPlayingArtworkSize, kNowPlayingArtworkSize},
-          {kNowPlayingTextColumnX, 46, kNowPlayingTextColumnWidth, 16},
-          {kNowPlayingTextColumnX, 66, kNowPlayingTextColumnWidth, 68},
-          {kNowPlayingTextColumnX, 140, kNowPlayingTextColumnWidth, 22},
-          {kNowPlayingTextColumnX, 166, kNowPlayingTextColumnWidth, 16},
+  return {{6 + dx, 46 + dy, kNowPlayingArtworkSize, kNowPlayingArtworkSize},
+          {kNowPlayingTextColumnX + dx, 46 + dy, kNowPlayingTextColumnWidth,
+           16},
+          {kNowPlayingTextColumnX + dx, 66 + dy, kNowPlayingTextColumnWidth,
+           68},
+          {kNowPlayingTextColumnX + dx, 140 + dy, kNowPlayingTextColumnWidth,
+           22},
+          {kNowPlayingTextColumnX + dx, 166 + dy, kNowPlayingTextColumnWidth,
+           16},
           state_rect,
           time_rect,
           progress};
@@ -683,11 +819,16 @@ constexpr NowPlayingLayout now_playing_layout(bool has_artwork) {
 // total_ms == 0 means "length unknown" (a live stream), not "zero length": no
 // fraction can be computed, so nothing is drawn. elapsed > total is clamped
 // rather than allowed to overrun - a source that overshoots its own declared
-// length must not paint past the outline it was given.
+// length must not paint past the outline it was given. Called with
+// kNowPlayingSpecContent itself (dx == dy == 0) - the outline's width does
+// not move under translation, only x/y do, so this is just "the spec's own
+// layout".
 constexpr int now_playing_progress_fill_width(uint32_t elapsed_ms,
                                               uint32_t total_ms) {
   if (total_ms == 0) return 0;
-  const int span = now_playing_layout(true).progress_outline.width - 4;
+  const int span =
+      now_playing_layout(kNowPlayingSpecContent, true).progress_outline.width -
+      4;
   if (elapsed_ms >= total_ms) return span;
   return static_cast<int>(static_cast<uint64_t>(elapsed_ms) * span / total_ms);
 }
@@ -699,16 +840,21 @@ struct VolumeOverlayLayout {
   Rect bar_outline;
 };
 
-constexpr VolumeOverlayLayout volume_overlay_layout() {
-  return {{6, 50, 120, 16},
-          {194, 50, 200, 16},
-          {6, 74, 388, 130},
-          {6, 232, 388, 36}};
+// Same convention, translation and past mistake as now_playing_layout()
+// above - see its comment and kNowPlayingSpecContent's.
+constexpr VolumeOverlayLayout volume_overlay_layout(const Rect content) {
+  const int dx = content.x - kNowPlayingSpecContent.x;
+  const int dy = content.y - kNowPlayingSpecContent.y;
+  return {{6 + dx, 50 + dy, 120, 16},
+          {kNowPlayingTextColumnX + dx, 50 + dy, 200, 16},
+          {6 + dx, 74 + dy, 388, 130},
+          {6 + dx, 232 + dy, 388, 36}};
 }
 
 // 3px inset on every edge, matching the thicker bar's heavier outline.
 constexpr int volume_overlay_fill_width(float volume) {
-  const int span = volume_overlay_layout().bar_outline.width - 6;
+  const int span =
+      volume_overlay_layout(kNowPlayingSpecContent).bar_outline.width - 6;
   if (volume <= 0.0f) return 0;
   if (volume >= 1.0f) return span;
   return static_cast<int>(volume * static_cast<float>(span));
@@ -770,7 +916,7 @@ constexpr const char* media_state_label(app_core::MediaState state) {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `cmake --build build-host --parallel && ./build-host/host_tests`
-Expected: the eight new cases print `PASS`, `N cases, 0 failures`.
+Expected: the ten new cases print `PASS`, `N cases, 0 failures`.
 
 - [ ] **Step 5: Commit**
 
@@ -1210,9 +1356,9 @@ void render_transport(lv_obj_t* parent, const NowPlayingLayout& layout,
   }
 }
 
-void render_volume_overlay(lv_obj_t* parent,
+void render_volume_overlay(lv_obj_t* parent, const Rect bounds,
                            const app_core::NowPlaying& media) {
-  const VolumeOverlayLayout layout = volume_overlay_layout();
+  const VolumeOverlayLayout layout = volume_overlay_layout(bounds);
   label(parent, "VOLUME", layout.label, font_small());
   if (!media.source.empty()) {
     label(parent, media.source.c_str(), layout.source, font_small(),
@@ -1256,20 +1402,30 @@ void render_now_playing(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
                         std::size_t page_count, UiContext* context) {
   // Page position lives in the system tray, like every other page.
   (void)snapshot;
-  (void)bounds;
   (void)page_index;
   (void)page_count;
   apply_surface(parent);
 
   const app_core::NowPlaying media = app_core::now_playing();
 
+  // `bounds` (render_page()'s `content`) is threaded straight into the
+  // layout functions below, not discarded. It was `(void)bounds;` here in
+  // an earlier version of this plan, with every rect built from
+  // now_playing_layout()'s own absolute safe-canvas literals unadjusted.
+  // LVGL positions this page's children relative to `parent`, and
+  // render_page() has already placed `parent` at the canvas origin - it
+  // hands renderers the zero-offset local frame, not the absolute
+  // safe-canvas frame those literals are written in. See
+  // now_playing_layout()'s own comment (Task 3) for the full story: what
+  // shipped, what it looked like on the panel, and why the tests did not
+  // catch it.
   if (context != nullptr && context->volume_overlay_visible) {
-    render_volume_overlay(parent, media);
+    render_volume_overlay(parent, bounds, media);
     return;
   }
 
   const bool has_artwork = repack_artwork(media.artwork);
-  const NowPlayingLayout layout = now_playing_layout(has_artwork);
+  const NowPlayingLayout layout = now_playing_layout(bounds, has_artwork);
 
   if (has_artwork) {
     bind_i1_canvas(parent, layout.artwork.x, layout.artwork.y,

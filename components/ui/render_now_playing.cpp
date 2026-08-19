@@ -96,9 +96,9 @@ void render_transport(lv_obj_t* parent, const NowPlayingLayout& layout,
   }
 }
 
-void render_volume_overlay(lv_obj_t* parent,
+void render_volume_overlay(lv_obj_t* parent, const Rect bounds,
                            const app_core::NowPlaying& media) {
-  const VolumeOverlayLayout layout = volume_overlay_layout();
+  const VolumeOverlayLayout layout = volume_overlay_layout(bounds);
   label(parent, "VOLUME", layout.label, font_small());
   if (!media.source.empty()) {
     label(parent, media.source.c_str(), layout.source, font_small(),
@@ -142,20 +142,40 @@ void render_now_playing(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
                         std::size_t page_count, UiContext* context) {
   // Page position lives in the system tray, like every other page.
   (void)snapshot;
-  (void)bounds;
   (void)page_index;
   (void)page_count;
   apply_surface(parent);
 
   const app_core::NowPlaying media = app_core::now_playing();
 
+  // `bounds` (render_page()'s `content`) must be threaded straight into the
+  // layout functions below, not discarded - it was `(void)bounds;` here
+  // once, with every rect built from now_playing_layout()'s own absolute
+  // safe-canvas literals unadjusted. LVGL positions this page's children
+  // relative to `parent`, and render_page() has already placed `parent` at
+  // the canvas origin - it hands renderers the zero-offset *local* frame,
+  // not the absolute safe-canvas frame those literals are written in. An
+  // unadjusted layout function is only correct at the one origin where the
+  // two frames happen to coincide, which this page's `bounds` never is:
+  // the safe canvas itself is inset kSafeMargin (6px) from the raw LVGL
+  // canvas, so every rect landed 6px past where content_bounds() actually
+  // put this page's content, in both x and y, and the right-hand column
+  // clipped off the panel. Nothing in the host tests caught it: they
+  // checked each rect against an absolute content box, which stays true
+  // regardless of whether the renderer applied the right translation, no
+  // translation, or a doubled one. The on-device ui_geometry warning log did -
+  // "object outside safe canvas... x1=12 ... safe x=6" - and
+  // now_playing_layout_shape_is_invariant_to_its_origin
+  // (tests/host/test_now_playing.cpp) is what closes that gap now: it
+  // proves the layout actually reacts to the content rect it is given,
+  // which a fixed absolute-box assertion never could.
   if (context != nullptr && context->volume_overlay_visible) {
-    render_volume_overlay(parent, media);
+    render_volume_overlay(parent, bounds, media);
     return;
   }
 
   const bool has_artwork = repack_artwork(media.artwork);
-  const NowPlayingLayout layout = now_playing_layout(has_artwork);
+  const NowPlayingLayout layout = now_playing_layout(bounds, has_artwork);
 
   if (has_artwork) {
     bind_i1_canvas(parent, layout.artwork.x, layout.artwork.y,

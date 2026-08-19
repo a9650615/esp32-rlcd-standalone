@@ -64,14 +64,25 @@ bool inside(const ui::Rect& inner, const ui::Rect& outer) {
          inner.right() <= outer.right() && inner.bottom() <= outer.bottom();
 }
 
+// The real content rect for this page, in the same absolute safe_canvas()
+// frame every other page's own layout_fits static_assert already checks
+// against (see setup_layout_fits and friends in ui_data.hpp). Passing this
+// straight to now_playing_layout()/volume_overlay_layout() is a legitimate
+// use, not a stand-in for the renderer's actual (zero-offset, relative-to-
+// the-page-root) frame - see now_playing_layout_shape_is_invariant_to_its_
+// origin below for the test that exercises the renderer's own frame.
+ui::Rect now_playing_content() {
+  return ui::content_bounds(ui::safe_canvas(), app_core::PageId::NowPlaying);
+}
+
 }  // namespace
 
 HOST_TEST(now_playing_layout_stays_inside_the_content_area) {
-  const ui::Rect content =
-      ui::content_bounds(ui::safe_canvas(), app_core::PageId::NowPlaying);
+  const ui::Rect content = now_playing_content();
 
   for (const bool has_artwork : {false, true}) {
-    const ui::NowPlayingLayout layout = ui::now_playing_layout(has_artwork);
+    const ui::NowPlayingLayout layout =
+        ui::now_playing_layout(content, has_artwork);
     EXPECT_TRUE(inside(layout.title, content));
     EXPECT_TRUE(inside(layout.subtitle, content));
     EXPECT_TRUE(inside(layout.detail, content));
@@ -83,9 +94,55 @@ HOST_TEST(now_playing_layout_stays_inside_the_content_area) {
   }
 }
 
+// The bug this project actually shipped: now_playing_layout() used to build
+// every rect from absolute canvas literals, so it produced the exact same
+// answer regardless of what origin its caller was working in - correct only
+// by coincidence at content.x == content.y == 0, and silently wrong once
+// render_page() started passing the real (already-offset) content rect.
+// now_playing_layout_stays_inside_the_content_area above could not catch
+// that: it only ever exercised one fixed absolute box, and the
+// double-counted offset it was checking for still landed inside a content
+// box large enough to absorb it, on top of the safe canvas itself hiding
+// six of those eight pixels. This test proves the property the bug actually
+// broke - that the layout is pure arithmetic on the rect it is handed, the
+// same convention setup_layout/market_chart_rect/weather_forecast_rect
+// already follow - by shifting the origin by an arbitrary (nonzero,
+// including negative) amount and checking every rect moves by exactly that
+// amount: same width, same height, same position relative to every other
+// rect in the layout, just translated.
+HOST_TEST(now_playing_layout_shape_is_invariant_to_its_origin) {
+  constexpr int dx = 37;
+  constexpr int dy = -19;
+  const ui::Rect origin_a{0, 0, 388, 300};
+  const ui::Rect origin_b{origin_a.x + dx, origin_a.y + dy, 388, 300};
+
+  for (const bool has_artwork : {false, true}) {
+    const ui::NowPlayingLayout a =
+        ui::now_playing_layout(origin_a, has_artwork);
+    const ui::NowPlayingLayout b =
+        ui::now_playing_layout(origin_b, has_artwork);
+    const ui::Rect* rects_a[] = {&a.artwork, &a.source,  &a.title,
+                                 &a.subtitle, &a.detail, &a.state,
+                                 &a.time,     &a.progress_outline};
+    const ui::Rect* rects_b[] = {&b.artwork, &b.source,  &b.title,
+                                 &b.subtitle, &b.detail, &b.state,
+                                 &b.time,     &b.progress_outline};
+    for (std::size_t i = 0; i < sizeof(rects_a) / sizeof(rects_a[0]); ++i) {
+      EXPECT_EQ(rects_a[i]->width, rects_b[i]->width);
+      EXPECT_EQ(rects_a[i]->height, rects_b[i]->height);
+      // The absent-artwork rect is the zero rect at both origins - nothing
+      // to translate, and 0 + dx would wrongly fail this loop for it.
+      if (rects_a[i]->width == 0 && rects_a[i]->height == 0) continue;
+      EXPECT_EQ(rects_a[i]->x + dx, rects_b[i]->x);
+      EXPECT_EQ(rects_a[i]->y + dy, rects_b[i]->y);
+    }
+  }
+}
+
 HOST_TEST(now_playing_layouts_share_an_identical_transport_row) {
-  const ui::NowPlayingLayout with = ui::now_playing_layout(true);
-  const ui::NowPlayingLayout without = ui::now_playing_layout(false);
+  const ui::Rect content = now_playing_content();
+  const ui::NowPlayingLayout with = ui::now_playing_layout(content, true);
+  const ui::NowPlayingLayout without = ui::now_playing_layout(content, false);
   EXPECT_EQ(with.state.y, without.state.y);
   EXPECT_EQ(with.state.x, without.state.x);
   EXPECT_EQ(with.time.y, without.time.y);
@@ -95,10 +152,11 @@ HOST_TEST(now_playing_layouts_share_an_identical_transport_row) {
 }
 
 HOST_TEST(now_playing_artwork_is_square_and_absent_without_one) {
-  const ui::NowPlayingLayout with = ui::now_playing_layout(true);
+  const ui::Rect content = now_playing_content();
+  const ui::NowPlayingLayout with = ui::now_playing_layout(content, true);
   EXPECT_EQ(with.artwork.width, ui::kNowPlayingArtworkSize);
   EXPECT_EQ(with.artwork.height, ui::kNowPlayingArtworkSize);
-  EXPECT_EQ(ui::now_playing_layout(false).artwork.width, 0);
+  EXPECT_EQ(ui::now_playing_layout(content, false).artwork.width, 0);
 }
 
 HOST_TEST(artwork_fits_slot_accepts_exactly_the_reserved_size) {
@@ -129,7 +187,15 @@ HOST_TEST(artwork_fits_slot_rejects_zero_dimensions) {
 }
 
 HOST_TEST(progress_fill_width_covers_its_whole_range) {
-  const int full = ui::now_playing_layout(true).progress_outline.width - 4;
+  // Derived independently, from an actual layout built at a real content
+  // rect, rather than trusting now_playing_progress_fill_width()'s own
+  // internal span - this is what "still agree with the rects" means: the
+  // outline width the fill is scaled against must match the outline width
+  // now_playing_layout() actually hands the renderer, not just whatever
+  // the fill function happens to compute for itself.
+  const ui::NowPlayingLayout layout =
+      ui::now_playing_layout(now_playing_content(), true);
+  const int full = layout.progress_outline.width - 4;
   EXPECT_EQ(ui::now_playing_progress_fill_width(0, 238'000), 0);
   EXPECT_EQ(ui::now_playing_progress_fill_width(238'000, 238'000), full);
   // A stream that overruns its declared length must not draw past the outline.
@@ -172,15 +238,38 @@ HOST_TEST(media_state_labels_are_printable_ascii_and_distinct) {
 }
 
 HOST_TEST(volume_overlay_fits_the_content_area) {
-  const ui::Rect content =
-      ui::content_bounds(ui::safe_canvas(), app_core::PageId::NowPlaying);
-  const ui::VolumeOverlayLayout layout = ui::volume_overlay_layout();
+  const ui::Rect content = now_playing_content();
+  const ui::VolumeOverlayLayout layout = ui::volume_overlay_layout(content);
   EXPECT_TRUE(inside(layout.label, content));
   EXPECT_TRUE(inside(layout.source, content));
   EXPECT_TRUE(inside(layout.value, content));
   EXPECT_TRUE(inside(layout.bar_outline, content));
   EXPECT_EQ(ui::volume_overlay_fill_width(0.0f), 0);
+  // Agrees with the fill function's own (independently derived) span, the
+  // same cross-check progress_fill_width_covers_its_whole_range does above.
   EXPECT_EQ(ui::volume_overlay_fill_width(1.0f), layout.bar_outline.width - 6);
+}
+
+// Same bug, same proof, on the overlay: shifting the content rect's origin
+// must shift every overlay rect by exactly the same amount and change
+// nothing else. See now_playing_layout_shape_is_invariant_to_its_origin
+// above for why a fixed absolute box cannot catch this.
+HOST_TEST(volume_overlay_layout_shape_is_invariant_to_its_origin) {
+  constexpr int dx = 37;
+  constexpr int dy = -19;
+  const ui::Rect origin_a{0, 0, 388, 300};
+  const ui::Rect origin_b{origin_a.x + dx, origin_a.y + dy, 388, 300};
+
+  const ui::VolumeOverlayLayout a = ui::volume_overlay_layout(origin_a);
+  const ui::VolumeOverlayLayout b = ui::volume_overlay_layout(origin_b);
+  const ui::Rect* rects_a[] = {&a.label, &a.source, &a.value, &a.bar_outline};
+  const ui::Rect* rects_b[] = {&b.label, &b.source, &b.value, &b.bar_outline};
+  for (std::size_t i = 0; i < sizeof(rects_a) / sizeof(rects_a[0]); ++i) {
+    EXPECT_EQ(rects_a[i]->width, rects_b[i]->width);
+    EXPECT_EQ(rects_a[i]->height, rects_b[i]->height);
+    EXPECT_EQ(rects_a[i]->x + dx, rects_b[i]->x);
+    EXPECT_EQ(rects_a[i]->y + dy, rects_b[i]->y);
+  }
 }
 
 HOST_TEST(seize_takes_the_screen_when_a_session_opens) {

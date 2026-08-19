@@ -1467,6 +1467,14 @@ inline constexpr int kNowPlayingArtworkSize = 176;
 // 6 + 176 + 12 = 194: the artwork's right edge plus a 12px gutter. The
 // remaining 200px is what two lines of 28px type need, which is what fixed
 // the artwork at 176 rather than a rounder number.
+//
+// This is written as an absolute safe-canvas x - the same coordinate space
+// the mockup's own numbers are in, and the one every other literal in
+// now_playing_layout() below uses too - not an offset from some caller's
+// bounds. now_playing_layout() is what translates that fixed coordinate
+// space onto whatever content rect it is actually given; see its own
+// comment for why that translation, not a raw per-literal offset, is what
+// this page needs.
 inline constexpr int kNowPlayingTextColumnX = 194;
 inline constexpr int kNowPlayingTextColumnWidth = 200;
 
@@ -1506,29 +1514,85 @@ struct NowPlayingLayout {
   Rect progress_outline;
 };
 
-constexpr NowPlayingLayout now_playing_layout(bool has_artwork) {
+// The content rect the spec's literals below (and volume_overlay_layout()'s
+// own) were written against - what content_bounds(safe_canvas(), page)
+// evaluates to for this page. Every number in now_playing_layout() and
+// volume_overlay_layout() is an absolute safe-canvas coordinate expressed
+// against *this specific rect*, checkable eyeball-against-the-mockup the way
+// this section's own top comment says - not a portable offset from an
+// arbitrary caller's bounds. now_playing_layout()/volume_overlay_layout()
+// below translate from this fixed baseline onto whatever content rect they
+// are actually given: the translation is exactly zero when the caller
+// passes this very rect (which is what every host test below does, and
+// what proves the spec numbers are unchanged), and the real correction when
+// render_now_playing.cpp passes the zero-offset local frame render_page()
+// actually builds pages in.
+inline constexpr Rect kNowPlayingSpecContent =
+    content_bounds(safe_canvas(), app_core::PageId::NowPlaying);
+
+// `content` is the content rect this page was handed - the same rect
+// render_page() computes via content_bounds() and passes straight through
+// to render_now_playing() as `bounds`. Every rect below is a spec literal
+// (an absolute safe-canvas coordinate, against kNowPlayingSpecContent above)
+// translated by content's own offset from that baseline - `dx`/`dy` - so
+// the result is correct for whatever content rect the caller passes, the
+// same "this function is pure arithmetic on the caller's own rect"
+// guarantee setup_layout, market_chart_rect and weather_forecast_rect above
+// already give their callers, just derived (kNowPlayingSpecContent is
+// itself content_bounds(safe_canvas(), ...)) rather than written as small
+// per-literal insets, because these literals are large absolute coordinates
+// meant to be checked against the mockup by eye, not small margins.
+//
+// This function used to take no `content` at all - the rects it returned
+// were exactly these same literals, unadjusted, which only happens to be
+// correct when a caller's own content rect *is* kNowPlayingSpecContent
+// (dx == dy == 0). render_now_playing.cpp's `bounds` never is that: LVGL
+// positions a page's children relative to the page root, and render_page()
+// has already placed that root at the canvas origin, so it hands renderers
+// the zero-offset *local* frame, not the absolute safe-canvas one these
+// literals are written in. Passing that local frame through an
+// untranslated function put every rect 6px right and however far down of
+// where it belonged - render_shared.cpp's own local_bounds comment records
+// the identical trap on the page-dots band, which is what this exact
+// mistake looked like there. Nothing here caught it: the tests asserted
+// each rect against an absolute content box, which stayed true regardless
+// of whether the renderer's own offset was right, wrong, or doubled. The
+// on-device ui_geometry warning log did - "object outside safe canvas...
+// x1=12 ... safe x=6" - and now_playing_layout_shape_is_invariant_to_its_
+// origin in tests/host/test_now_playing.cpp is what closes that gap: it
+// proves this function actually reacts to the content rect it is given,
+// which a fixed absolute-box assertion never could.
+constexpr NowPlayingLayout now_playing_layout(const Rect content,
+                                              bool has_artwork) {
+  const int dx = content.x - kNowPlayingSpecContent.x;
+  const int dy = content.y - kNowPlayingSpecContent.y;
+
   // The transport row is identical in both layouts, byte for byte, so that
   // gaining or losing artwork mid-session never moves the bottom of the
   // screen.
-  const Rect state_rect{6, 244, 120, 16};
-  const Rect time_rect{254, 244, 140, 16};
-  const Rect progress{6, 266, 388, 10};
+  const Rect state_rect{6 + dx, 244 + dy, 120, 16};
+  const Rect time_rect{254 + dx, 244 + dy, 140, 16};
+  const Rect progress{6 + dx, 266 + dy, 388, 10};
 
   if (!has_artwork) {
     return {{0, 0, 0, 0},
-            {6, 60, 388, 16},
-            {6, 92, 388, 68},
-            {6, 168, 388, 22},
-            {6, 196, 388, 16},
+            {6 + dx, 60 + dy, 388, 16},
+            {6 + dx, 92 + dy, 388, 68},
+            {6 + dx, 168 + dy, 388, 22},
+            {6 + dx, 196 + dy, 388, 16},
             state_rect,
             time_rect,
             progress};
   }
-  return {{6, 46, kNowPlayingArtworkSize, kNowPlayingArtworkSize},
-          {kNowPlayingTextColumnX, 46, kNowPlayingTextColumnWidth, 16},
-          {kNowPlayingTextColumnX, 66, kNowPlayingTextColumnWidth, 68},
-          {kNowPlayingTextColumnX, 140, kNowPlayingTextColumnWidth, 22},
-          {kNowPlayingTextColumnX, 166, kNowPlayingTextColumnWidth, 16},
+  return {{6 + dx, 46 + dy, kNowPlayingArtworkSize, kNowPlayingArtworkSize},
+          {kNowPlayingTextColumnX + dx, 46 + dy, kNowPlayingTextColumnWidth,
+           16},
+          {kNowPlayingTextColumnX + dx, 66 + dy, kNowPlayingTextColumnWidth,
+           68},
+          {kNowPlayingTextColumnX + dx, 140 + dy, kNowPlayingTextColumnWidth,
+           22},
+          {kNowPlayingTextColumnX + dx, 166 + dy, kNowPlayingTextColumnWidth,
+           16},
           state_rect,
           time_rect,
           progress};
@@ -1541,10 +1605,18 @@ constexpr NowPlayingLayout now_playing_layout(bool has_artwork) {
 // fraction can be computed, so nothing is drawn. elapsed > total is clamped
 // rather than allowed to overrun - a source that overshoots its own declared
 // length must not paint past the outline it was given.
+// The outline's width does not depend on where it is drawn, only on the
+// layout's fixed proportions - translating by dx/dy (inside
+// now_playing_layout()) never touches width or height, only x/y. Called
+// with kNowPlayingSpecContent itself - a real content rect, not a
+// placeholder - purely so dx == dy == 0 and the call reads as "the spec's
+// own layout", the same thing every host-test call below does.
 constexpr int now_playing_progress_fill_width(uint32_t elapsed_ms,
                                               uint32_t total_ms) {
   if (total_ms == 0) return 0;
-  const int span = now_playing_layout(true).progress_outline.width - 4;
+  const int span =
+      now_playing_layout(kNowPlayingSpecContent, true).progress_outline.width -
+      4;
   if (elapsed_ms >= total_ms) return span;
   return static_cast<int>(static_cast<uint64_t>(elapsed_ms) * span / total_ms);
 }
@@ -1556,16 +1628,24 @@ struct VolumeOverlayLayout {
   Rect bar_outline;
 };
 
-constexpr VolumeOverlayLayout volume_overlay_layout() {
-  return {{6, 50, 120, 16},
-          {194, 50, 200, 16},
-          {6, 74, 388, 130},
-          {6, 232, 388, 36}};
+// Same convention, translation and past mistake as now_playing_layout()
+// above - see its comment and kNowPlayingSpecContent's. `content` is the
+// content rect the overlay is drawn into.
+constexpr VolumeOverlayLayout volume_overlay_layout(const Rect content) {
+  const int dx = content.x - kNowPlayingSpecContent.x;
+  const int dy = content.y - kNowPlayingSpecContent.y;
+  return {{6 + dx, 50 + dy, 120, 16},
+          {kNowPlayingTextColumnX + dx, 50 + dy, 200, 16},
+          {6 + dx, 74 + dy, 388, 130},
+          {6 + dx, 232 + dy, 388, 36}};
 }
 
-// 3px inset on every edge, matching the thicker bar's heavier outline.
+// 3px inset on every edge, matching the thicker bar's heavier outline. As
+// with now_playing_progress_fill_width() above, only the width is used, and
+// width does not move under translation.
 constexpr int volume_overlay_fill_width(float volume) {
-  const int span = volume_overlay_layout().bar_outline.width - 6;
+  const int span =
+      volume_overlay_layout(kNowPlayingSpecContent).bar_outline.width - 6;
   if (volume <= 0.0f) return 0;
   if (volume >= 1.0f) return span;
   return static_cast<int>(volume * static_cast<float>(span));
