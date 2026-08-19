@@ -605,7 +605,20 @@ app_core::HistorySample take_slot() {
   }
 }
 
+// Two cadences from one task. The ADC is read every kBatterySlopePeriodMs
+// because the charging slope's precision is set by its span and it wants a
+// long one cheaply; everything else - smoothing, percent, overvoltage edges,
+// history, and the publish - stays on kBatterySamplePeriodMs.
+//
+// The publish specifically must not speed up. set_battery() republishes the
+// snapshot, which repaints the panel, and a full-screen repaint streams the
+// 240 KB draw buffer through the cache both cores share - the measured cause
+// of AirPlay's audio stalls. Six times the repaints to make a charging icon
+// eleven minutes fresher would be a bad trade.
 constexpr uint32_t kBatterySamplePeriodMs = 30'000;
+constexpr uint32_t kBatterySlopePeriodMs = 5'000;
+constexpr int kBatteryTicksPerPublish =
+    static_cast<int>(kBatterySamplePeriodMs / kBatterySlopePeriodMs);
 
 // Both smoothing (item 3: consecutive 30 s samples moved 4078/4050/4069 mV on
 // real hardware) and the fast charging signal (item 1: a sustained high
@@ -626,8 +639,9 @@ int g_battery_recent_count = 0;
 // of them is wrong.
 //
 // Oldest-first and shifted rather than circular, because a slope needs the
-// order - see app_core::voltage_is_falling(). Shifting 40 ints once every
-// 30 seconds costs nothing worth measuring.
+// order - see app_core::voltage_is_falling(). Shifting 132 ints once every
+// 5 seconds is about 500 bytes of memmove per tick, which is nothing against
+// the ADC read that produced the sample.
 int g_battery_slope_mv[app_core::kChargingSlopeWindow] = {};
 int g_battery_slope_count = 0;
 int g_battery_recent_next = 0;
@@ -638,9 +652,28 @@ int g_battery_recent_next = 0;
   // Edge-triggered so a persisting condition logs once, not every 30 s.
   bool was_warning = false;
   bool was_danger = false;
+  int tick = 0;
   for (;;) {
     app_core::BatteryData battery;
     if (board::battery_read(battery)) {
+      // Every tick: feed the slope window and re-evaluate direction. This is
+      // the only work that happens at kBatterySlopePeriodMs.
+      if (battery.valid) {
+        const int slope_mv = battery.millivolts;
+        if (g_battery_slope_count < app_core::kChargingSlopeWindow) {
+          g_battery_slope_mv[g_battery_slope_count++] = slope_mv;
+        } else {
+          std::memmove(g_battery_slope_mv, g_battery_slope_mv + 1,
+                       sizeof(int) * (app_core::kChargingSlopeWindow - 1));
+          g_battery_slope_mv[app_core::kChargingSlopeWindow - 1] = slope_mv;
+        }
+      }
+
+      if (++tick < kBatteryTicksPerPublish) {
+        vTaskDelay(pdMS_TO_TICKS(kBatterySlopePeriodMs));
+        continue;
+      }
+      tick = 0;
       // The screen shows percent only, but CONFIG_BATTERY_CALIBRATION_PERMILLE
       // is tuned by comparing millivolts against a multimeter, so the raw
       // figure has to be reachable somewhere.
@@ -685,21 +718,13 @@ int g_battery_recent_next = 0;
         g_battery_recent_next = (g_battery_recent_next + 1) % kBatteryRecentWindow;
         if (g_battery_recent_count < kBatteryRecentWindow) ++g_battery_recent_count;
 
-        if (g_battery_slope_count < app_core::kChargingSlopeWindow) {
-          g_battery_slope_mv[g_battery_slope_count++] = raw_mv;
-        } else {
-          std::memmove(g_battery_slope_mv, g_battery_slope_mv + 1,
-                       sizeof(int) * (app_core::kChargingSlopeWindow - 1));
-          g_battery_slope_mv[app_core::kChargingSlopeWindow - 1] = raw_mv;
-        }
-
         // Both conditions, not either. The level rules out a cell that is
         // simply discharged; the direction rules out a full one that was
         // unplugged and still reads high - which is the case that showed a
         // charging icon for an hour after the cable came out.
         const bool falling = app_core::voltage_is_falling(
             g_battery_slope_mv, g_battery_slope_count,
-            static_cast<int>(kBatterySamplePeriodMs / 1000));
+            static_cast<int>(kBatterySlopePeriodMs / 1000));
         const bool level_high = app_core::voltage_suggests_charging(
             g_battery_recent_mv, g_battery_recent_count);
         battery.charging = level_high && !falling;
@@ -723,7 +748,7 @@ int g_battery_recent_next = 0;
     } else {
       ESP_LOGW(kTag, "battery ADC read failed");
     }
-    vTaskDelay(pdMS_TO_TICKS(kBatterySamplePeriodMs));
+    vTaskDelay(pdMS_TO_TICKS(kBatterySlopePeriodMs));
   }
 }
 

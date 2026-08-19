@@ -262,7 +262,10 @@ bool voltage_suggests_charging(const int* recent_millivolts, int count) {
 bool voltage_is_falling(const int* ordered_millivolts, int count,
                        int seconds_per_sample) {
   if (ordered_millivolts == nullptr || seconds_per_sample <= 0) return false;
-  if (count < kChargingSlopeWindow) return false;
+  if (count < 2) return false;
+  if ((count - 1) * seconds_per_sample < kChargingSlopeMinSpanSeconds) {
+    return false;
+  }
 
   // Least squares on millivolts against hours. Time origin is arbitrary for a
   // slope, so index units are used and scaled once at the end - it keeps the

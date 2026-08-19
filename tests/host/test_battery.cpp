@@ -205,45 +205,58 @@ constexpr int kMeasuredCount =
     static_cast<int>(sizeof(kMeasuredDischarge) / sizeof(int));
 
 HOST_TEST(voltage_is_falling_recognises_the_measured_discharge) {
-  // The last kChargingSlopeWindow samples of the real series.
-  const int* window =
-      kMeasuredDischarge + (kMeasuredCount - app_core::kChargingSlopeWindow);
-  EXPECT_TRUE(app_core::voltage_is_falling(
-      window, app_core::kChargingSlopeWindow, 30));
+  // The whole real series: 69 samples 30 s apart is a 34-minute span, well
+  // past kChargingSlopeMinSpanSeconds. This is the case the fix exists for.
+  EXPECT_TRUE(app_core::voltage_is_falling(kMeasuredDischarge, kMeasuredCount, 30));
 
   // And the level alone does not, which is the whole point: every reading in
-  // that window is above the charging threshold.
-  EXPECT_TRUE(app_core::voltage_suggests_charging(
-      window, app_core::kChargingSlopeWindow));
+  // that series is above the charging threshold, so the old signal calls it
+  // charging for the entire 34 minutes.
+  EXPECT_TRUE(
+      app_core::voltage_suggests_charging(kMeasuredDischarge, kMeasuredCount));
 }
 
 HOST_TEST(voltage_is_falling_says_no_to_a_charger_holding_cv) {
   // A charger at its CV setpoint holds the terminal voltage, so the only
-  // movement is ADC noise. Same +/-10 mV seen on hardware, no trend.
+  // movement is ADC noise. Same +/-10 mV seen on hardware, no trend. Sized
+  // and spaced the way the sampler actually feeds it: 132 samples, 5 s apart.
   int held[app_core::kChargingSlopeWindow];
   for (int i = 0; i < app_core::kChargingSlopeWindow; ++i) {
     held[i] = 4205 + ((i % 3) - 1) * 9;
   }
   EXPECT_TRUE(
-      !app_core::voltage_is_falling(held, app_core::kChargingSlopeWindow, 30));
+      !app_core::voltage_is_falling(held, app_core::kChargingSlopeWindow, 5));
 }
 
-HOST_TEST(voltage_is_falling_says_no_before_it_has_a_full_window) {
-  // "Unknown" must not read as "falling" - that would suppress the charging
-  // icon for the first twenty minutes after every boot spent on a charger.
-  EXPECT_TRUE(!app_core::voltage_is_falling(
-      kMeasuredDischarge, app_core::kChargingSlopeWindow - 1, 30));
+HOST_TEST(the_rule_is_span_not_sample_count) {
+  // The same forty real samples, read two ways. Fitted slopes, computed from
+  // this array:
+  //
+  //   40 samples at 30 s -> 1170 s span, -44.7 mV/hour -> falling
+  //   40 samples at  5 s ->  195 s span, six times steeper per hour, refused
+  //
+  // The second is refused by the span guard even though its per-hour slope is
+  // larger, which is the point: a rule written in sample count would have
+  // accepted it. Precision comes from how long you watched, not how often you
+  // looked.
+  const int* window = kMeasuredDischarge + (kMeasuredCount - 40);
+  EXPECT_TRUE(app_core::voltage_is_falling(window, 40, 30));
+  EXPECT_TRUE(!app_core::voltage_is_falling(window, 40, 5));
 }
 
 HOST_TEST(ten_minutes_of_the_real_series_is_not_enough_to_call_it) {
-  // Why the full window is the minimum and not a nicety. The last 20 samples
-  // are ten minutes of the same genuine discharge the test above detects over
-  // twenty - but -0.66 mV/min over ten minutes is 6.6 mV of movement inside
-  // +/-10 mV of noise, so the fit cannot resolve it and correctly declines.
-  // This is the measurement that set kChargingSlopeWindow; if a future change
-  // shortens the window, this is the test that should stop it.
+  // Why eleven minutes is a measurement and not a preference.
+  //
+  // Twenty samples spaced 40 s apart clears the span guard at 760 s, so the
+  // guard is not what answers here - the fit is. Ten minutes of this genuine
+  // discharge fits to -6.4 mV/hour, well inside the -20 boundary, because
+  // -0.66 mV/min over that span is 6.6 mV of movement buried in +/-10 mV of
+  // per-reading noise. The same series over 34 minutes fits to -40.7.
+  //
+  // If a future change shortens kChargingSlopeMinSpanSeconds, this is the test
+  // that should stop it.
   EXPECT_TRUE(!app_core::voltage_is_falling(
-      kMeasuredDischarge + (kMeasuredCount - 20), 20, 30));
+      kMeasuredDischarge + (kMeasuredCount - 20), 20, 40));
 }
 
 HOST_TEST(voltage_is_falling_guards_its_arguments) {

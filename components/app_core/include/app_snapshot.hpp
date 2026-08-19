@@ -308,22 +308,43 @@ bool voltage_suggests_charging(const int* recent_millivolts, int count);
 //
 // It is necessarily slow, and the full window is the minimum rather than a
 // nicety. Single readings carry about +/-10 mV of ADC noise against a
-// 0.66 mV/min signal, so ten minutes of history is 6.6 mV of movement inside
-// +/-10 mV of noise - unresolvable, and a host test over the real measured
-// series confirms the fit declines to call it. Twenty minutes gives a
-// standard error of roughly 16 mV/hour, which is why the decision boundary
-// sits at -20: between a charger's ~0 and a real discharge's -40, and far
-// enough from zero not to be noise.
+// 0.66 mV/min signal, so a short window is movement smaller than its own
+// noise floor - a host test over the real measured series confirms the fit
+// correctly declines to call ten minutes of it.
+//
+// Sizing this is not "more samples is better". The standard error of a
+// least-squares slope goes as sigma * sqrt(dt) / span^1.5, so the *span*
+// dominates and the sample interval barely matters:
+//
+//   40 samples at 30 s = 20 min span -> SE about 16 mV/hour
+//  132 samples at  5 s = 11 min span -> SE about 16 mV/hour
+//
+// Six times the samples buys a span 6^(1/3) = 1.8x shorter, not 6x. The
+// window below takes that trade because eleven minutes of a wrong charging
+// icon is better than twenty, and 528 bytes is cheap - but it is worth
+// writing down that the first estimate of this was "about eight minutes",
+// from assuming sample count drove the precision. It does not.
+//
+// The boundary sits at -20 mV/hour: between a charger's ~0 and a real
+// discharge's measured -40, and far enough from zero not to be noise given
+// the SE above.
 //
 // There is no fast version of this on hardware with no charge-detect line.
 // A slow signal that is right beats the fast one that was wrong for an hour.
 //
 // `ordered_millivolts` must be oldest-first with even spacing - unlike
 // smoothed_battery_millivolts(), which only uses the values, a slope needs
-// the order. Returns false with less than a full window, because "unknown"
-// must not read as "falling": that would suppress the charging icon for the
-// first twenty minutes after every boot spent on a charger.
-inline constexpr int kChargingSlopeWindow = 40;  // 20 min at 30 s sampling
+// the order.
+//
+// The refusal threshold is a minimum *span*, not a minimum count, for the
+// same reason the sizing arithmetic above is about span: forty samples thirty
+// seconds apart and a hundred and thirty-two five seconds apart carry the same
+// information, and a rule written in samples would accept one and reject the
+// other. Returns false below it, because "unknown" must not read as "falling"
+// - that would suppress the charging icon for the first eleven minutes after
+// every boot spent on a charger.
+inline constexpr int kChargingSlopeWindow = 132;          // sampler's buffer
+inline constexpr int kChargingSlopeMinSpanSeconds = 660;  // 11 minutes
 inline constexpr float kDischargeSlopeMillivoltsPerHour = -20.0f;
 bool voltage_is_falling(const int* ordered_millivolts, int count,
                         int seconds_per_sample);
