@@ -1,6 +1,7 @@
 #pragma once
 
 #include "app_snapshot.hpp"
+#include "media_registry.hpp"
 #include "settings_menu.hpp"
 #include "tray_registry.hpp"
 #include "ui_strings.hpp"
@@ -1452,5 +1453,144 @@ static_assert(
     home_layout(content_bounds(safe_canvas(), app_core::PageId::Home))
             .hero.height >= kHomeHeroFontLineHeight,
     "the clock hero box is at least as tall as the hero font's line height");
+
+// ---------------------------------------------------------------------------
+// Now Playing page
+//
+// Every rect below is a literal from the spec's Geometry section
+// (docs/design/specs/2026-08-19-now-playing-page.md), not a derived value, so
+// the numbers here and the numbers in the mockup are checkable against each
+// other by eye. What is derived - and must stay derived - is the progress
+// fill width, which is the only thing on the page that moves.
+
+inline constexpr int kNowPlayingArtworkSize = 176;
+// 6 + 176 + 12 = 194: the artwork's right edge plus a 12px gutter. The
+// remaining 200px is what two lines of 28px type need, which is what fixed
+// the artwork at 176 rather than a rounder number.
+inline constexpr int kNowPlayingTextColumnX = 194;
+inline constexpr int kNowPlayingTextColumnWidth = 200;
+
+struct NowPlayingLayout {
+  Rect artwork;  // zero-width when there is no artwork
+  Rect source;
+  Rect title;
+  Rect subtitle;
+  Rect detail;
+  Rect state;
+  Rect time;
+  Rect progress_outline;
+};
+
+constexpr NowPlayingLayout now_playing_layout(bool has_artwork) {
+  // The transport row is identical in both layouts, byte for byte, so that
+  // gaining or losing artwork mid-session never moves the bottom of the
+  // screen.
+  const Rect state_rect{6, 244, 120, 16};
+  const Rect time_rect{254, 244, 140, 16};
+  const Rect progress{6, 266, 388, 10};
+
+  if (!has_artwork) {
+    return {{0, 0, 0, 0},
+            {6, 60, 388, 16},
+            {6, 92, 388, 68},
+            {6, 168, 388, 22},
+            {6, 196, 388, 16},
+            state_rect,
+            time_rect,
+            progress};
+  }
+  return {{6, 46, kNowPlayingArtworkSize, kNowPlayingArtworkSize},
+          {kNowPlayingTextColumnX, 46, kNowPlayingTextColumnWidth, 16},
+          {kNowPlayingTextColumnX, 66, kNowPlayingTextColumnWidth, 68},
+          {kNowPlayingTextColumnX, 140, kNowPlayingTextColumnWidth, 22},
+          {kNowPlayingTextColumnX, 166, kNowPlayingTextColumnWidth, 16},
+          state_rect,
+          time_rect,
+          progress};
+}
+
+// The fill sits 2px inside the 1px outline on every edge, so its full width is
+// the outline's width less 4.
+//
+// total_ms == 0 means "length unknown" (a live stream), not "zero length": no
+// fraction can be computed, so nothing is drawn. elapsed > total is clamped
+// rather than allowed to overrun - a source that overshoots its own declared
+// length must not paint past the outline it was given.
+constexpr int now_playing_progress_fill_width(uint32_t elapsed_ms,
+                                              uint32_t total_ms) {
+  if (total_ms == 0) return 0;
+  const int span = now_playing_layout(true).progress_outline.width - 4;
+  if (elapsed_ms >= total_ms) return span;
+  return static_cast<int>(static_cast<uint64_t>(elapsed_ms) * span / total_ms);
+}
+
+struct VolumeOverlayLayout {
+  Rect label;
+  Rect source;
+  Rect value;
+  Rect bar_outline;
+};
+
+constexpr VolumeOverlayLayout volume_overlay_layout() {
+  return {{6, 50, 120, 16},
+          {194, 50, 200, 16},
+          {6, 74, 388, 130},
+          {6, 232, 388, 36}};
+}
+
+// 3px inset on every edge, matching the thicker bar's heavier outline.
+constexpr int volume_overlay_fill_width(float volume) {
+  const int span = volume_overlay_layout().bar_outline.width - 6;
+  if (volume <= 0.0f) return 0;
+  if (volume >= 1.0f) return span;
+  return static_cast<int>(volume * static_cast<float>(span));
+}
+
+// m:ss, or mm:ss past ten minutes, counting minutes rather than rolling over
+// into hours - an hour-long track shows 61:01, which is unambiguous and needs
+// no third field. Truncates: 1:59.9 is still 1:59, because a clock that
+// reaches 2:00 before the track does reads as broken.
+inline std::string format_track_time(uint32_t milliseconds) {
+  const uint32_t total_seconds = milliseconds / 1000;
+  char buffer[16];
+  std::snprintf(buffer, sizeof(buffer), "%u:%02u", total_seconds / 60,
+                total_seconds % 60);
+  return buffer;
+}
+
+// The digits only - the '%' is drawn separately, because the 128px face is
+// rlcd_digits_128.c and has no glyph for it.
+//
+// Three distinct returns, deliberately: "MUTE" for a real muted source
+// (AirPlay's -144 dB), "0" for a source turned all the way down but not
+// muted, and an empty string for a source that has not reported a level at
+// all. The overlay does not open on the empty case.
+inline std::string volume_percent_text(float volume, bool muted) {
+  if (volume < 0.0f) return {};
+  if (muted) return "MUTE";
+  const int percent = static_cast<int>(volume * 100.0f + 0.5f);
+  char buffer[8];
+  std::snprintf(buffer, sizeof(buffer), "%d", percent < 0 ? 0
+                                              : percent > 100 ? 100 : percent);
+  return buffer;
+}
+
+// ASCII only, and not routed through ui_strings.hpp, for the same reason
+// app_core::ota_phase_label() is not: these are five fixed transport words
+// that read identically in both interface languages, and the arrow glyphs
+// come from the interface font rather than the CJK one.
+constexpr const char* media_state_label(app_core::MediaState state) {
+  switch (state) {
+    case app_core::MediaState::Playing: return "> PLAY";
+    case app_core::MediaState::Paused: return "|| PAUSE";
+    case app_core::MediaState::Buffering: return "... BUFFER";
+    case app_core::MediaState::Stalled: return "! STALL";
+    case app_core::MediaState::Stopped: return "# STOP";
+    // Never reaches the page: Idle only occurs alongside session_open ==
+    // false, and then the page is not in rotation at all.
+    case app_core::MediaState::Idle: return "";
+  }
+  return "";
+}
 
 }  // namespace ui
