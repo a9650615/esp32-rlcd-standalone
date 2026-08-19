@@ -22,11 +22,18 @@ uint8_t g_artwork_storage[/* 4.3 KB at 176x176 */
 
 // Repacks a tight-packed, row-major MSB-first module bitmap (exactly what
 // app_core::MediaArtwork documents) into LVGL's padded stride, after the
-// palette bytes. Same transformation repack_i1_bits() does for tray icons;
-// not shared with it because that one is sized for tray-scale bitmaps and
-// owns its own per-slot storage.
+// palette bytes, by calling repack_i1_bits() (ui_theme.hpp) - the same shared
+// building block tray_indicator_icon() uses for its own bitmaps. It is
+// genuinely shared, not merely similar: every dimension is a parameter, it
+// owns no storage of its own, and it already does this exact row copy plus
+// its own bounds checks. repack_i1_bits() returns void and silently does
+// nothing if its arguments do not fit (see its own comment), so the fit
+// decision - is there a bitmap at all, does it fit the reserved artwork slot,
+// does it fit this file's own backing buffer - has to be made here, before
+// the call, not inferred from what the call did.
 bool repack_artwork(const app_core::MediaArtwork& artwork) {
-  if (artwork.bits == nullptr || artwork.width == 0 || artwork.height == 0) {
+  if (artwork.bits == nullptr ||
+      !now_playing_artwork_fits_slot(artwork.width, artwork.height)) {
     return false;
   }
   const std::size_t needed =
@@ -34,13 +41,10 @@ bool repack_artwork(const app_core::MediaArtwork& artwork) {
   if (needed > sizeof(g_artwork_storage)) return false;
 
   const int stride = i1_canvas_stride(artwork.width);
-  const int source_stride = (artwork.width + 7) / 8;
   std::memset(g_artwork_storage, 0, needed);
-  uint8_t* pixels = g_artwork_storage + i1_canvas_pixel_offset();
-  for (int row = 0; row < artwork.height; ++row) {
-    std::memcpy(pixels + row * stride, artwork.bits + row * source_stride,
-                source_stride);
-  }
+  repack_i1_bits(artwork.bits, g_artwork_storage, sizeof(g_artwork_storage),
+                 artwork.width, artwork.height, stride,
+                 i1_canvas_pixel_offset());
   return true;
 }
 
@@ -143,9 +147,14 @@ void render_now_playing(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
 
   const lv_text_align_t align =
       has_artwork ? LV_TEXT_ALIGN_LEFT : LV_TEXT_ALIGN_CENTER;
-  if (!media.source.empty()) {
-    label(parent, media.source.c_str(), layout.source, font_small(), align);
-  }
+  // source/title/subtitle/detail are all drawn unconditionally, empty or
+  // not: an empty string paints nothing on this reflective panel (no glyphs,
+  // not a visible blank rectangle), so a guard here would only skip one
+  // label() call, never change what is on screen. Four fields that behave
+  // identically should read as four fields that behave identically, rather
+  // than three unconditional calls and a fourth one dressed up as a special
+  // case it is not.
+  label(parent, media.source.c_str(), layout.source, font_small(), align);
   // Wrapped, not clipped, so a long title uses its second line before it
   // ellipsises. The box is exactly two lines tall, so LVGL truncates at the
   // right place on its own.

@@ -1470,6 +1470,31 @@ inline constexpr int kNowPlayingArtworkSize = 176;
 inline constexpr int kNowPlayingTextColumnX = 194;
 inline constexpr int kNowPlayingTextColumnWidth = 200;
 
+// True when a publisher's reported artwork dimensions fit inside the
+// kNowPlayingArtworkSize x kNowPlayingArtworkSize slot the layout above
+// reserves for it. Up to and including exactly that size, not only exactly
+// that size: a smaller image still sits entirely inside its slot and is
+// worth drawing, not discarded for being modest. Zero in either dimension is
+// rejected the same as oversized - there is nothing to draw either way.
+//
+// Nothing in app_core::MediaArtwork contracts that a publisher sends exactly
+// 176x176 (see its own comment - width/height are just whatever the source
+// reported), and bind_i1_canvas() draws at whatever size it is given with no
+// clamp of its own. An oversized report would paint straight over the text
+// column at kNowPlayingTextColumnX, and assert_tree_in_safe_canvas() would
+// not catch it - that check only proves objects stay inside the whole
+// canvas, not that siblings do not overlap each other. This is the actual
+// gate: render_now_playing.cpp falls through to the no-artwork layout
+// whenever this returns false, rather than trusting the publisher's size.
+//
+// A pure constexpr function rather than inline logic in the renderer so this
+// rule is checkable from tests/host, which the renderer itself never can be
+// (it is LVGL-bound).
+constexpr bool now_playing_artwork_fits_slot(int width, int height) {
+  return width > 0 && height > 0 && width <= kNowPlayingArtworkSize &&
+         height <= kNowPlayingArtworkSize;
+}
+
 struct NowPlayingLayout {
   Rect artwork;  // zero-width when there is no artwork
   Rect source;

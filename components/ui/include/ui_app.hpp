@@ -170,7 +170,7 @@ void render_settings(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
 // media_registry.hpp for why that state is not a snapshot field.
 void render_now_playing(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
                         Rect bounds, std::size_t page_index,
-                        std::size_t page_count, UiContext* context);
+                        std::size_t page_count, UiContext* context = nullptr);
 
 // The caller owns the LVGL lock. A detached replacement is built completely
 // before the previous context-owned page root is deleted and the replacement

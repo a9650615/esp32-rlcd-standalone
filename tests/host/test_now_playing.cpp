@@ -101,6 +101,33 @@ HOST_TEST(now_playing_artwork_is_square_and_absent_without_one) {
   EXPECT_EQ(ui::now_playing_layout(false).artwork.width, 0);
 }
 
+HOST_TEST(artwork_fits_slot_accepts_exactly_the_reserved_size) {
+  EXPECT_TRUE(ui::now_playing_artwork_fits_slot(ui::kNowPlayingArtworkSize,
+                                                ui::kNowPlayingArtworkSize));
+}
+
+HOST_TEST(artwork_fits_slot_accepts_smaller_than_the_reserved_size) {
+  EXPECT_TRUE(ui::now_playing_artwork_fits_slot(1, 1));
+  EXPECT_TRUE(ui::now_playing_artwork_fits_slot(
+      ui::kNowPlayingArtworkSize - 1, ui::kNowPlayingArtworkSize - 1));
+}
+
+HOST_TEST(artwork_fits_slot_rejects_wider_than_the_reserved_size) {
+  EXPECT_TRUE(!ui::now_playing_artwork_fits_slot(
+      ui::kNowPlayingArtworkSize + 1, ui::kNowPlayingArtworkSize));
+}
+
+HOST_TEST(artwork_fits_slot_rejects_taller_than_the_reserved_size) {
+  EXPECT_TRUE(!ui::now_playing_artwork_fits_slot(
+      ui::kNowPlayingArtworkSize, ui::kNowPlayingArtworkSize + 1));
+}
+
+HOST_TEST(artwork_fits_slot_rejects_zero_dimensions) {
+  EXPECT_TRUE(!ui::now_playing_artwork_fits_slot(0, ui::kNowPlayingArtworkSize));
+  EXPECT_TRUE(!ui::now_playing_artwork_fits_slot(ui::kNowPlayingArtworkSize, 0));
+  EXPECT_TRUE(!ui::now_playing_artwork_fits_slot(0, 0));
+}
+
 HOST_TEST(progress_fill_width_covers_its_whole_range) {
   const int full = ui::now_playing_layout(true).progress_outline.width - 4;
   EXPECT_EQ(ui::now_playing_progress_fill_width(0, 238'000), 0);

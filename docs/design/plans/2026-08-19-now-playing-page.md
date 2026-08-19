@@ -1098,7 +1098,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 - Modify: `components/ui/CMakeLists.txt`
 
 **Interfaces:**
-- Consumes: `ui::now_playing_layout()`, `ui::volume_overlay_layout()`, `ui::now_playing_progress_fill_width()`, `ui::volume_overlay_fill_width()`, `ui::format_track_time()`, `ui::volume_percent_text()`, `ui::media_state_label()` (Task 3); `app_core::now_playing()` (Task 1); `ui::label()`, `ui::label_wrapped()`, `ui::line_segment()`, `ui::apply_surface()`, `ui::bind_i1_canvas()`, `ui::i1_canvas_storage_bytes()`, `ui::i1_canvas_stride()`, `ui::i1_canvas_pixel_offset()`, `ui::font_small/medium/large/hero()` (existing).
+- Consumes: `ui::now_playing_layout()`, `ui::volume_overlay_layout()`, `ui::now_playing_progress_fill_width()`, `ui::volume_overlay_fill_width()`, `ui::now_playing_artwork_fits_slot()`, `ui::format_track_time()`, `ui::volume_percent_text()`, `ui::media_state_label()` (Task 3); `app_core::now_playing()` (Task 1); `ui::label()`, `ui::label_wrapped()`, `ui::line_segment()`, `ui::apply_surface()`, `ui::bind_i1_canvas()`, `ui::repack_i1_bits()`, `ui::i1_canvas_storage_bytes()`, `ui::i1_canvas_stride()`, `ui::i1_canvas_pixel_offset()`, `ui::font_small/medium/large/hero()` (existing).
 
 **`font_hero()` has a rule attached.** Its declaration in `ui_fonts.hpp` says
 "Only the clock may use it": it is a 128px subset of the ten digits and a
@@ -1108,9 +1108,9 @@ second legitimate caller because `volume_percent_text()` returns digits or
 nothing, and its one non-digit return, `MUTE`, is drawn in `font_large()`
 instead. Step 3 below widens that comment to say so; do not use this face
 without reading it.
-- Produces: `ui::render_now_playing(lv_obj_t*, const app_core::AppSnapshot&, Rect, std::size_t, std::size_t, UiContext*)`.
+- Produces: `ui::render_now_playing(lv_obj_t*, const app_core::AppSnapshot&, Rect, std::size_t, std::size_t, UiContext* = nullptr)`, `ui::now_playing_artwork_fits_slot(int, int)` (Task 3's file, ui_data.hpp - pure and host-tested, since the renderer that uses it never can be).
 
-No host test — this file is LVGL and host tests do not compile it. Its geometry is already covered by Task 3; what is left is verified on the panel in Step 5.
+No host test for the renderer itself — this file is LVGL and host tests do not compile it. Its geometry is already covered by Task 3; what is left is verified on the panel in Step 5. The one piece of new logic that is not pure geometry - whether a publisher's reported artwork size fits the reserved slot - lives as `ui::now_playing_artwork_fits_slot()` in `ui_data.hpp` instead of inline here for exactly that reason: that file is LVGL-free and host-tested, so the rule is checkable even though the renderer calling it never can be. Add `HOST_TEST` cases to `tests/host/test_now_playing.cpp` covering exactly-176x176 (accepted), smaller (accepted), wider (rejected), taller (rejected), and zero dimensions (rejected).
 
 - [ ] **Step 1: Declare it**
 
@@ -1123,7 +1123,7 @@ In `components/ui/include/ui_app.hpp`, after the `render_settings` declaration, 
 // media_registry.hpp for why that state is not a snapshot field.
 void render_now_playing(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
                         Rect bounds, std::size_t page_index,
-                        std::size_t page_count, UiContext* context);
+                        std::size_t page_count, UiContext* context = nullptr);
 ```
 
 - [ ] **Step 2: Write the renderer**
@@ -1155,11 +1155,18 @@ uint8_t g_artwork_storage[/* 4.3 KB at 176x176 */
 
 // Repacks a tight-packed, row-major MSB-first module bitmap (exactly what
 // app_core::MediaArtwork documents) into LVGL's padded stride, after the
-// palette bytes. Same transformation repack_i1_bits() does for tray icons;
-// not shared with it because that one is sized for tray-scale bitmaps and
-// owns its own per-slot storage.
+// palette bytes, by calling repack_i1_bits() (ui_theme.hpp) - the same shared
+// building block tray_indicator_icon() uses for its own bitmaps. It is
+// genuinely shared, not merely similar: every dimension is a parameter, it
+// owns no storage of its own, and it already does this exact row copy plus
+// its own bounds checks. repack_i1_bits() returns void and silently does
+// nothing if its arguments do not fit (see its own comment), so the fit
+// decision - is there a bitmap at all, does it fit the reserved artwork slot,
+// does it fit this file's own backing buffer - has to be made here, before
+// the call, not inferred from what the call did.
 bool repack_artwork(const app_core::MediaArtwork& artwork) {
-  if (artwork.bits == nullptr || artwork.width == 0 || artwork.height == 0) {
+  if (artwork.bits == nullptr ||
+      !now_playing_artwork_fits_slot(artwork.width, artwork.height)) {
     return false;
   }
   const std::size_t needed =
@@ -1167,13 +1174,10 @@ bool repack_artwork(const app_core::MediaArtwork& artwork) {
   if (needed > sizeof(g_artwork_storage)) return false;
 
   const int stride = i1_canvas_stride(artwork.width);
-  const int source_stride = (artwork.width + 7) / 8;
   std::memset(g_artwork_storage, 0, needed);
-  uint8_t* pixels = g_artwork_storage + i1_canvas_pixel_offset();
-  for (int row = 0; row < artwork.height; ++row) {
-    std::memcpy(pixels + row * stride, artwork.bits + row * source_stride,
-                source_stride);
-  }
+  repack_i1_bits(artwork.bits, g_artwork_storage, sizeof(g_artwork_storage),
+                 artwork.width, artwork.height, stride,
+                 i1_canvas_pixel_offset());
   return true;
 }
 
@@ -1276,9 +1280,14 @@ void render_now_playing(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
 
   const lv_text_align_t align =
       has_artwork ? LV_TEXT_ALIGN_LEFT : LV_TEXT_ALIGN_CENTER;
-  if (!media.source.empty()) {
-    label(parent, media.source.c_str(), layout.source, font_small(), align);
-  }
+  // source/title/subtitle/detail are all drawn unconditionally, empty or
+  // not: an empty string paints nothing on this reflective panel (no glyphs,
+  // not a visible blank rectangle), so a guard here would only skip one
+  // label() call, never change what is on screen. Four fields that behave
+  // identically should read as four fields that behave identically, rather
+  // than three unconditional calls and a fourth one dressed up as a special
+  // case it is not.
+  label(parent, media.source.c_str(), layout.source, font_small(), align);
   // Wrapped, not clipped, so a long title uses its second line before it
   // ellipsises. The box is exactly two lines tall, so LVGL truncates at the
   // right place on its own.

@@ -140,3 +140,66 @@ This is the important list, since there is no host coverage for this file:
 Per the brief, Step 6 ("check it on the panel") and full pixel
 verification are deferred until the end of Task 7, the first point real
 data reaches this page.
+
+## Fix pass
+
+Four review findings fixed against `components/ui/render_now_playing.cpp` (commit `f0682d0`), plus the matching reference code in `docs/design/plans/2026-08-19-now-playing-page.md` Task 5.
+
+### 1. IMPORTANT — `repack_artwork()` reimplemented `repack_i1_bits()`
+
+Confirmed `ui::repack_i1_bits()` (`components/ui/include/ui_theme.hpp`) is genuinely the shared building block its own comment says it is: every dimension is a caller-supplied parameter, it owns no storage, and it already performs the same row-by-row copy from a tight `(width+7)/8`-packed source into an LVGL-padded-stride destination, plus its own bounds checks. The old comment on `repack_artwork()` claiming it was "not shared with it because that one is sized for tray-scale bitmaps and owns its own per-slot storage" was false — `repack_i1_bits()` has no size assumption and owns no storage at all.
+
+Fix: `repack_artwork()` now calls `repack_i1_bits(artwork.bits, g_artwork_storage, sizeof(g_artwork_storage), artwork.width, artwork.height, stride, i1_canvas_pixel_offset())` and the hand-rolled `memcpy` loop is deleted. Because `repack_i1_bits()` returns `void` and silently no-ops when its arguments don't fit, `repack_artwork()` still computes `needed = i1_canvas_storage_bytes(...)` itself and checks it against `sizeof(g_artwork_storage)` *before* calling, so the `bool` it returns is still an honest "did this actually get repacked" answer, not a guess. Comment rewritten to state plainly why the call is safe to share (no storage, all dimensions parameterized) rather than the false claim it replaced.
+
+### 2. IMPORTANT — artwork not clamped to the reserved 176x176 slot
+
+Added `ui::now_playing_artwork_fits_slot(int width, int height)` as a pure `constexpr` function in `components/ui/include/ui_data.hpp` (next to `kNowPlayingArtworkSize`/`kNowPlayingTextColumnWidth`), accepting `0 < width <= 176` and `0 < height <= 176` — up to and including exactly 176x176, not only exactly that size, since a smaller image still sits inside its slot. `repack_artwork()` now calls it as the first gate (alongside the `bits != nullptr` check) and returns `false` on a miss, which makes `render_now_playing()` fall through to the existing no-artwork layout (`now_playing_layout(false)`) — a first-class layout, not a degraded one. This closes the gap where a publisher reporting artwork wider/taller than the reserved slot would draw straight over the text column at `kNowPlayingTextColumnX` (194), which `assert_tree_in_safe_canvas()` cannot catch since it only proves objects stay inside the whole 400x300 canvas, not that siblings don't overlap.
+
+Placed in `ui_data.hpp` (not inline in the renderer) specifically because that header is compiled LVGL-free for host tests, so this rule — unlike the renderer itself — is testable.
+
+### 3. MINOR — missing `UiContext* context = nullptr` default
+
+`components/ui/include/ui_app.hpp`'s `render_now_playing()` declaration now reads `..., UiContext* context = nullptr);`, matching every sibling renderer declaration in the same file. Harmless previously (the one call site in `render_shared.cpp` always passes `&context`), purely a consistency fix.
+
+### 4. MINOR — inconsistent emptiness guarding
+
+`if (!media.source.empty())` around the `source` label was removed; `source` is now drawn unconditionally like `title`/`subtitle`/`detail`, with a comment explaining why unconditional is the right call: an empty string paints nothing on this panel (no glyphs drawn, not a visible blank rectangle), so the guard only ever skipped one `label()` call and never changed what appeared on screen — four fields that behave identically now read as four fields that behave identically. (`render_volume_overlay()`'s own, separate `source` guard was left untouched — the finding named the four fields in the main body specifically.)
+
+### New tests
+
+Added five `HOST_TEST` cases to `tests/host/test_now_playing.cpp`, immediately before `progress_fill_width_covers_its_whole_range`:
+- `artwork_fits_slot_accepts_exactly_the_reserved_size` — 176x176 accepted
+- `artwork_fits_slot_accepts_smaller_than_the_reserved_size` — 1x1 and 175x175 accepted
+- `artwork_fits_slot_rejects_wider_than_the_reserved_size` — 177x176 rejected
+- `artwork_fits_slot_rejects_taller_than_the_reserved_size` — 176x177 rejected
+- `artwork_fits_slot_rejects_zero_dimensions` — (0,176), (176,0), (0,0) all rejected
+
+### Verification
+
+`cmake --build build-host --parallel && ./build-host/host_tests`:
+```
+...
+PASS drain_ms_for_rate_is_shorter_at_the_streaming_rate
+PASS drain_ms_for_rate_rounds_up_rather_than_truncating
+291 cases, 0 failures
+```
+Exit code 0. 291 = 286 baseline + 5 new artwork-fit cases.
+
+`./scripts/idf.sh build`:
+```
+...
+[13/26] Building CXX object esp-idf/ui/CMakeFiles/__idf_ui.dir/render_now_playing.cpp.obj
+...
+layout_carousel.bin binary size 0x187a90 bytes. Smallest app partition is 0x300000 bytes. 0x178570 bytes (49%) free.
+
+Project build complete. To flash, run:
+...
+```
+(One pre-existing, unrelated warning in `components/wifi_provision/portal.cpp`/`dns_server.h` about a missing designated-initializer field — untouched by this change, present before it too.)
+
+### Files touched
+- `components/ui/render_now_playing.cpp`
+- `components/ui/include/ui_app.hpp`
+- `components/ui/include/ui_data.hpp`
+- `tests/host/test_now_playing.cpp`
+- `docs/design/plans/2026-08-19-now-playing-page.md`
