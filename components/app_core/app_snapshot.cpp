@@ -259,6 +259,32 @@ bool voltage_suggests_charging(const int* recent_millivolts, int count) {
   return true;
 }
 
+bool voltage_is_falling(const int* ordered_millivolts, int count,
+                       int seconds_per_sample) {
+  if (ordered_millivolts == nullptr || seconds_per_sample <= 0) return false;
+  if (count < kChargingSlopeWindow) return false;
+
+  // Least squares on millivolts against hours. Time origin is arbitrary for a
+  // slope, so index units are used and scaled once at the end - it keeps the
+  // sums small and avoids a per-sample multiply.
+  double sum_i = 0.0, sum_v = 0.0, sum_iv = 0.0, sum_ii = 0.0;
+  for (int i = 0; i < count; ++i) {
+    const double v = static_cast<double>(ordered_millivolts[i]);
+    sum_i += i;
+    sum_v += v;
+    sum_iv += i * v;
+    sum_ii += static_cast<double>(i) * i;
+  }
+  const double n = static_cast<double>(count);
+  const double denominator = n * sum_ii - sum_i * sum_i;
+  if (denominator == 0.0) return false;
+
+  const double per_sample = (n * sum_iv - sum_i * sum_v) / denominator;
+  const double samples_per_hour = 3600.0 / seconds_per_sample;
+  const double per_hour = per_sample * samples_per_hour;
+  return per_hour < kDischargeSlopeMillivoltsPerHour;
+}
+
 bool battery_overvoltage_warning(int millivolts) {
   return millivolts >= kBatteryOvervoltageWarningMillivolts;
 }

@@ -189,3 +189,64 @@ HOST_TEST(publishing_a_battery_reading_does_not_erase_a_runtime_estimate) {
   EXPECT_EQ(static_cast<int>(snapshot.battery_runtime.minutes_remaining), 483);
   EXPECT_EQ(static_cast<int>(snapshot.battery_runtime.samples_used), 129);
 }
+
+// The 69 readings measured on hardware over 34.5 minutes with the USB cable
+// out, oldest first, 30 s apart. Slope is -0.66 mV/min = -40 mV/hour, and the
+// whole series sits above kChargingVoltageThresholdMillivolts - which is
+// exactly the case that showed a charging icon for an hour after unplugging.
+constexpr int kMeasuredDischarge[] = {
+    4214, 4211, 4208, 4199, 4205, 4208, 4199, 4202, 4193, 4202, 4205, 4217,
+    4205, 4211, 4208, 4208, 4214, 4202, 4205, 4211, 4208, 4199, 4211, 4205,
+    4205, 4208, 4214, 4205, 4193, 4193, 4202, 4214, 4211, 4205, 4196, 4205,
+    4193, 4196, 4196, 4193, 4190, 4196, 4193, 4202, 4196, 4190, 4183, 4196,
+    4193, 4196, 4193, 4186, 4193, 4180, 4199, 4183, 4193, 4190, 4183, 4199,
+    4190, 4186, 4196, 4180, 4190, 4186, 4193, 4186, 4196};
+constexpr int kMeasuredCount =
+    static_cast<int>(sizeof(kMeasuredDischarge) / sizeof(int));
+
+HOST_TEST(voltage_is_falling_recognises_the_measured_discharge) {
+  // The last kChargingSlopeWindow samples of the real series.
+  const int* window =
+      kMeasuredDischarge + (kMeasuredCount - app_core::kChargingSlopeWindow);
+  EXPECT_TRUE(app_core::voltage_is_falling(
+      window, app_core::kChargingSlopeWindow, 30));
+
+  // And the level alone does not, which is the whole point: every reading in
+  // that window is above the charging threshold.
+  EXPECT_TRUE(app_core::voltage_suggests_charging(
+      window, app_core::kChargingSlopeWindow));
+}
+
+HOST_TEST(voltage_is_falling_says_no_to_a_charger_holding_cv) {
+  // A charger at its CV setpoint holds the terminal voltage, so the only
+  // movement is ADC noise. Same +/-10 mV seen on hardware, no trend.
+  int held[app_core::kChargingSlopeWindow];
+  for (int i = 0; i < app_core::kChargingSlopeWindow; ++i) {
+    held[i] = 4205 + ((i % 3) - 1) * 9;
+  }
+  EXPECT_TRUE(
+      !app_core::voltage_is_falling(held, app_core::kChargingSlopeWindow, 30));
+}
+
+HOST_TEST(voltage_is_falling_says_no_before_it_has_a_full_window) {
+  // "Unknown" must not read as "falling" - that would suppress the charging
+  // icon for the first twenty minutes after every boot spent on a charger.
+  EXPECT_TRUE(!app_core::voltage_is_falling(
+      kMeasuredDischarge, app_core::kChargingSlopeWindow - 1, 30));
+}
+
+HOST_TEST(ten_minutes_of_the_real_series_is_not_enough_to_call_it) {
+  // Why the full window is the minimum and not a nicety. The last 20 samples
+  // are ten minutes of the same genuine discharge the test above detects over
+  // twenty - but -0.66 mV/min over ten minutes is 6.6 mV of movement inside
+  // +/-10 mV of noise, so the fit cannot resolve it and correctly declines.
+  // This is the measurement that set kChargingSlopeWindow; if a future change
+  // shortens the window, this is the test that should stop it.
+  EXPECT_TRUE(!app_core::voltage_is_falling(
+      kMeasuredDischarge + (kMeasuredCount - 20), 20, 30));
+}
+
+HOST_TEST(voltage_is_falling_guards_its_arguments) {
+  EXPECT_TRUE(!app_core::voltage_is_falling(nullptr, 40, 30));
+  EXPECT_TRUE(!app_core::voltage_is_falling(kMeasuredDischarge, 40, 0));
+}

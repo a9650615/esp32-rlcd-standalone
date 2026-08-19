@@ -290,6 +290,44 @@ int smoothed_battery_millivolts(const int* recent_millivolts, int count);
 inline constexpr int kChargingVoltageThresholdMillivolts = 4150;
 bool voltage_suggests_charging(const int* recent_millivolts, int count);
 
+// The other half of the charging signal, and the half that was missing.
+//
+// voltage_suggests_charging() above cannot tell a charger at its CV setpoint
+// from a full cell that was unplugged, because at one instant they read the
+// same. Its own comment predicted the resulting false positive would clear
+// "typically a couple of minutes". Measured on this board, 69 samples over
+// 34.5 minutes with the cable out: 4214 mV -> 4196 mV, a slope of
+// -0.66 mV/min = -40 mV/hour. From a full 4210 mV that is an hour before the
+// reading crosses back under 4150 mV - not a couple of minutes, and long
+// enough that the panel shows a charging icon for an hour after unplugging.
+//
+// Direction is the discriminator. A charger holds the terminal voltage at CV
+// (slope ~0, or positive on a cell that is not yet full); nothing makes an
+// unplugged cell gain voltage. So charging is "high AND not falling", and
+// this is the "not falling" part.
+//
+// It is necessarily slow, and the full window is the minimum rather than a
+// nicety. Single readings carry about +/-10 mV of ADC noise against a
+// 0.66 mV/min signal, so ten minutes of history is 6.6 mV of movement inside
+// +/-10 mV of noise - unresolvable, and a host test over the real measured
+// series confirms the fit declines to call it. Twenty minutes gives a
+// standard error of roughly 16 mV/hour, which is why the decision boundary
+// sits at -20: between a charger's ~0 and a real discharge's -40, and far
+// enough from zero not to be noise.
+//
+// There is no fast version of this on hardware with no charge-detect line.
+// A slow signal that is right beats the fast one that was wrong for an hour.
+//
+// `ordered_millivolts` must be oldest-first with even spacing - unlike
+// smoothed_battery_millivolts(), which only uses the values, a slope needs
+// the order. Returns false with less than a full window, because "unknown"
+// must not read as "falling": that would suppress the charging icon for the
+// first twenty minutes after every boot spent on a charger.
+inline constexpr int kChargingSlopeWindow = 40;  // 20 min at 30 s sampling
+inline constexpr float kDischargeSlopeMillivoltsPerHour = -20.0f;
+bool voltage_is_falling(const int* ordered_millivolts, int count,
+                        int seconds_per_sample);
+
 // Overvoltage thresholds for a single-cell Li-ion pack, above a normal
 // 4200 mV CC/CV termination plus typical charger/ADC tolerance. These are
 // meaningless before CONFIG_BATTERY_CALIBRATION_PERMILLE has been tuned per

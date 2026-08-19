@@ -618,6 +618,18 @@ constexpr uint32_t kBatterySamplePeriodMs = 30'000;
 constexpr int kBatteryRecentWindow = 4;
 int g_battery_recent_mv[kBatteryRecentWindow] = {};
 int g_battery_recent_count = 0;
+
+// A second, longer window, kept separately rather than by enlarging the one
+// above. The two want opposite things: smoothing wants a short window so the
+// displayed percent tracks reality, and the charging slope wants a long one so
+// a 0.66 mV/min trend clears +/-10 mV of ADC noise. Sharing a buffer means one
+// of them is wrong.
+//
+// Oldest-first and shifted rather than circular, because a slope needs the
+// order - see app_core::voltage_is_falling(). Shifting 40 ints once every
+// 30 seconds costs nothing worth measuring.
+int g_battery_slope_mv[app_core::kChargingSlopeWindow] = {};
+int g_battery_slope_count = 0;
 int g_battery_recent_next = 0;
 
 // Samples the battery divider roughly every 30 s and publishes it through
@@ -673,8 +685,34 @@ int g_battery_recent_next = 0;
         g_battery_recent_next = (g_battery_recent_next + 1) % kBatteryRecentWindow;
         if (g_battery_recent_count < kBatteryRecentWindow) ++g_battery_recent_count;
 
-        battery.charging = app_core::voltage_suggests_charging(
+        if (g_battery_slope_count < app_core::kChargingSlopeWindow) {
+          g_battery_slope_mv[g_battery_slope_count++] = raw_mv;
+        } else {
+          std::memmove(g_battery_slope_mv, g_battery_slope_mv + 1,
+                       sizeof(int) * (app_core::kChargingSlopeWindow - 1));
+          g_battery_slope_mv[app_core::kChargingSlopeWindow - 1] = raw_mv;
+        }
+
+        // Both conditions, not either. The level rules out a cell that is
+        // simply discharged; the direction rules out a full one that was
+        // unplugged and still reads high - which is the case that showed a
+        // charging icon for an hour after the cable came out.
+        const bool falling = app_core::voltage_is_falling(
+            g_battery_slope_mv, g_battery_slope_count,
+            static_cast<int>(kBatterySamplePeriodMs / 1000));
+        const bool level_high = app_core::voltage_suggests_charging(
             g_battery_recent_mv, g_battery_recent_count);
+        battery.charging = level_high && !falling;
+        // Logged here rather than beside the raw reading above, because that
+        // log runs before this assignment - a first attempt printed the
+        // default-constructed false for every sample and read as "the fix
+        // works". Both inputs, not just the result: "high but falling" and
+        // "not high" are different states that produce the same icon.
+        ESP_LOGI(kTag, "battery charging=%d (level_high=%d falling=%d, %d of %d "
+                       "slope samples)",
+                 static_cast<int>(battery.charging), static_cast<int>(level_high),
+                 static_cast<int>(falling), g_battery_slope_count,
+                 app_core::kChargingSlopeWindow);
         const int smoothed_mv = app_core::smoothed_battery_millivolts(
             g_battery_recent_mv, g_battery_recent_count);
         battery.millivolts = smoothed_mv;
