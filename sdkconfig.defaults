@@ -94,3 +94,11 @@ CONFIG_NET_LOG_RING_BYTES=131072
 # Set per board. It matters most for the overvoltage warning - a reading 3% low
 # turns a real 4300 mV into 4170 and the threshold never fires.
 CONFIG_BATTERY_CALIBRATION_PERMILLE=1030
+
+# AirPlay sends 125 audio packets a second, one every 8 ms. The default of 6
+# is 48 ms of slack before lwIP starts dropping them, and this board stalls
+# for longer than that - a display flush was measured starving the audio path
+# for 60 ms. The packets arrived; nothing was there to take them. 64 packets
+# is half a second, which is longer than any stall seen here, and costs one
+# pointer each.
+CONFIG_LWIP_UDP_RECVMBOX_SIZE=64

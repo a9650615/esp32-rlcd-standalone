@@ -72,16 +72,34 @@ void shadow_set_pixel(int x, int y, bool black) {
 void flush_display(lv_display_t* display_handle, const lv_area_t* area,
                    uint8_t* color_p) {
   Display& display = board::display();
+  // Timing, because the cost of a refresh has never been measured and the
+  // audio drops out at roughly the rate one would expect if this blocked for
+  // tens of milliseconds. Split convert/transfer: an earlier experiment
+  // throttled only the transfer and concluded the display was innocent,
+  // which it could not have shown - the conversion below runs either way.
+  const int64_t convert_start_us = esp_timer_get_time();
   const uint16_t* pixels = reinterpret_cast<const uint16_t*>(color_p);
-  for (int y = area->y1; y <= area->y2; ++y) {
-    for (int x = area->x1; x <= area->x2; ++x) {
-      const bool black = *pixels++ < 0x7fff;
-      display.set_pixel(x, y, black ? Color::Black : Color::White);
-#ifndef NDEBUG
-      shadow_set_pixel(x, y, black);
-#endif
-    }
+  // Converted in horizontal bands with a yield between them, rather than in
+  // one pass.
+  //
+  // The pass reads the whole RGB565 draw buffer - 240 KB - out of PSRAM. That
+  // is far larger than the cache the two cores share, so a single sweep
+  // evicts everything the other core was using, and the audio output task
+  // stalls for as long as the sweep takes. Measured: with the flush running,
+  // 74 of 5,632 codec writes were more than 20 ms apart against an 8 ms
+  // chunk; with the flush skipped entirely, 1 of 1,152. Same total traffic
+  // either way - what matters is that it stops arriving as one 26 ms block
+  // the audio path cannot be scheduled inside of.
+  const int band = 64;  // rows; ~4 bands for a full frame
+  const int width = area->x2 - area->x1 + 1;
+  for (int y = area->y1; y <= area->y2; y += band) {
+    const int y_end = (y + band - 1 < area->y2) ? (y + band - 1) : area->y2;
+    display.write_rgb565_area(
+        pixels + static_cast<size_t>(y - area->y1) * width, area->x1, y,
+        area->x2, y_end);
+    if (y_end < area->y2) vTaskDelay(1);
   }
+
   // The result used to be dropped here, which is why a panel failing every
   // single refresh was only ever visible as esp_lcd's own one-line complaint
   // with no error code and no context. esp_lcd_panel_io_tx_color() forwards
@@ -90,7 +108,26 @@ void flush_display(lv_display_t* display_handle, const lv_area_t* area,
   // the diagnosis. The heap figures are here because the framebuffer lives in
   // PSRAM while SPI DMA descriptors come from internal RAM, and this failure
   // has so far appeared and vanished with nothing in the firmware changing.
+  const int64_t transfer_start_us = esp_timer_get_time();
   const esp_err_t flush_result = display.refresh();
+  {
+    const int64_t done_us = esp_timer_get_time();
+    static int64_t worst_convert_us = 0, worst_transfer_us = 0;
+    static uint32_t flushes = 0;
+    const int64_t convert_us = transfer_start_us - convert_start_us;
+    const int64_t transfer_us = done_us - transfer_start_us;
+    if (convert_us > worst_convert_us) worst_convert_us = convert_us;
+    if (transfer_us > worst_transfer_us) worst_transfer_us = transfer_us;
+    if ((++flushes % 16) == 0) {
+      ESP_LOGW(kTag,
+               "flush #%u: convert %lld us (worst %lld), transfer %lld us "
+               "(worst %lld), area %dx%d",
+               static_cast<unsigned>(flushes), convert_us, worst_convert_us,
+               transfer_us, worst_transfer_us,
+               static_cast<int>(area->x2 - area->x1 + 1),
+               static_cast<int>(area->y2 - area->y1 + 1));
+    }
+  }
   if (flush_result != ESP_OK) {
     // Rate limited hard: this fires once per refresh when it fires at all,
     // and 1,392 of 1,455 captured log lines were the unrated version.
@@ -266,12 +303,9 @@ uint32_t lvgl_frame_count() {
 }
 
 bool framebuffer_snapshot(uint8_t* out, size_t length) {
-  if (shadow_buffer == nullptr || out == nullptr ||
-      length < kFramebufferSnapshotBytes) {
-    return false;
-  }
-  std::memcpy(out, shadow_buffer, kFramebufferSnapshotBytes);
-  return true;
+  // Derived from the panel buffer when asked, rather than shadowed on every
+  // flush - see Display::read_row_major().
+  return board::display().read_row_major(out, length);
 }
 #endif
 
