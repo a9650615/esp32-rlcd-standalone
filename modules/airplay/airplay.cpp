@@ -6,12 +6,15 @@
 
 #include "audio.hpp"
 #include "media_registry.hpp"
+#include "now_playing_controller.hpp"
 #include "tray_registry.hpp"
 
 #include <algorithm>
+#include <mutex>
 
 #include <esp_heap_caps.h>
 #include <esp_log.h>
+#include <esp_timer.h>
 #include <esp_wifi.h>
 
 namespace airplay {
@@ -47,7 +50,66 @@ app_core::TrayIndicatorHandle g_tray_indicator;
 app_core::MediaSourceHandle g_media_source;
 app_core::NowPlaying g_now_playing;
 
-void publish() {
+// Derives NowPlaying::elapsed_ms between the sender's own (rare) progress
+// reports - see now_playing_controller.hpp's own comment on ElapsedTracker
+// for the capture that proved this was needed. Reset alongside g_now_playing
+// at RAOP_EVENT_CONNECTED and RAOP_EVENT_DISCONNECTED; every other event
+// below feeds it through elapsed_on_report()/_on_freeze()/_on_resume().
+app_core::ElapsedTracker g_elapsed;
+
+// Guards g_now_playing and g_elapsed. Before the periodic republish added
+// below, only the RTSP thread (esp-raop-receiver's raop.c rtsp_thread(),
+// which is what actually calls handle_event() for every RAOP_EVENT_*) ever
+// touched this state, so nothing protected it. feed_audio()'s heartbeat
+// (below) now also calls into publish(), from the audio output task
+// (esp-raop-receiver's audio_buffer.c) - a second task, reading and, via
+// publish()'s own volume/elapsed refresh, also *writing* g_now_playing. An
+// unguarded interleaving could read one of its std::string fields
+// (title/subtitle/detail/source) mid-assignment, which is a crash, not just
+// a stale value - the exact hazard media_registry.cpp's own g_mutex exists
+// for, one layer further out. Every touch of g_now_playing or g_elapsed
+// happens with this held; see publish() vs. publish_locked() below for how
+// callers that are already mutating the state avoid taking it twice.
+std::mutex g_state_mutex;
+
+// The sender's chosen name, if raop.c's mDNS search has found one yet (it
+// resolves asynchronously, a few seconds after CONNECTED - see
+// raop_get_remote_hostname()'s own comment) - otherwise the protocol's own
+// name, same fallback the CONNECTED handler below used unconditionally
+// before this existed.
+//
+// mDNS hostnames are already ASCII-normalised with spaces turned into
+// hyphens (observed on hardware: "yuu-matosho-iPhone-16-ha" for a phone
+// actually named with spaces) - turning them back is a cheap, good-enough
+// undo, not an exact inverse (a name with a genuine hyphen in it loses that
+// hyphen too), and it was the option chosen over the alternatives: parsing
+// the DACP TXT record's CtlN field is not guaranteed present on every
+// sender, and a full mDNS TXT parser for one display string was judged more
+// machinery than this is worth.
+std::string source_name_from_hostname(const char *hostname) {
+  if (hostname == nullptr || hostname[0] == '\0') return "AIRPLAY";
+  std::string name(hostname);
+  std::replace(name.begin(), name.end(), '-', ' ');
+  return name;
+}
+
+// The same monotonic millisecond clock ui_app.cpp's own carousel runs on
+// (esp_timer_get_time() is microseconds since boot, steady across light
+// sleep) - not the sender's clock, which this device cannot read
+// continuously, only sample at whatever moments the sender chooses to
+// report. Used everywhere below that needs "now" for the elapsed-time
+// derivation, so every caller's idea of "now" comes from the same call
+// site's rounding rather than drifting apart by a microsecond or two.
+uint64_t now_ms() { return static_cast<uint64_t>(esp_timer_get_time() / 1000); }
+
+// The actual work of publish() below, split out so a caller that is already
+// holding g_state_mutex (every RAOP_EVENT_* case in handle_event(), which
+// mutates g_now_playing/g_elapsed and then must publish the result
+// atomically with that mutation - see g_state_mutex's own comment) can call
+// straight in without taking a non-recursive mutex a second time on the same
+// thread. publish() below is the version anyone else (feed_audio()'s
+// heartbeat, which has nothing of its own to mutate first) should call.
+void publish_locked() {
   // Volume is read at publish time rather than tracked: raop_get_volume()
   // returns the current level in SOFTWARE mode too (RAOP_EVENT_VOLUME is
   // HARDWARE-only), so there is nothing to subscribe to and nothing to keep
@@ -90,6 +152,26 @@ void publish() {
       }
     }
   }
+  if (g_now_playing.session_open) {
+    // Elapsed time is derived, not stored: RAOP_EVENT_PROGRESS only updates
+    // g_elapsed (elapsed_on_report(), below), never g_now_playing.elapsed_ms
+    // directly, so every publish - whether triggered by a real RAOP event or
+    // by feed_audio()'s periodic heartbeat - recomputes it fresh from
+    // whatever local time has passed since the sender last actually said
+    // something. See now_playing_controller.hpp's ElapsedTracker comment for
+    // why this exists at all.
+    g_now_playing.elapsed_ms = app_core::elapsed_now(g_elapsed, now_ms());
+    g_now_playing.total_ms = g_elapsed.total_ms;
+    // Same reasoning as elapsed above: the hostname search
+    // (esp-raop-receiver/src/raop.c's search_remote()) resolves
+    // asynchronously, well after RAOP_EVENT_CONNECTED already published the
+    // "AIRPLAY" fallback, so this is re-checked on every publish rather than
+    // only once at connect time - the first publish after the name resolves
+    // is what actually gets it onto the page. Cheap and idempotent once it
+    // has resolved (same string in, same string out), so there is no reason
+    // to special-case "already upgraded, skip it".
+    g_now_playing.source = source_name_from_hostname(raop_get_remote_hostname());
+  }
   // A session ran with the tray icon lit, audio playing, and the page never
   // appearing - which means this call and the UI's own read of the registry
   // disagree, and nothing in either logs enough to say which side is wrong.
@@ -97,12 +179,26 @@ void publish() {
   // publish_now_playing() (it logs, but only under its own tag), and
   // session_open because that single bool is what the page's availability
   // and its seize both hang off.
-  ESP_LOGI(kTag, "publish: slot=%d open=%d state=%d title='%s' vol=%.2f",
+  ESP_LOGI(kTag,
+           "publish: slot=%d open=%d state=%d title='%s' vol=%.2f "
+           "elapsed=%lu/%lu source='%s'",
            static_cast<int>(g_media_source.slot),
            g_now_playing.session_open ? 1 : 0,
            static_cast<int>(g_now_playing.state), g_now_playing.title.c_str(),
-           g_now_playing.volume);
+           g_now_playing.volume,
+           static_cast<unsigned long>(g_now_playing.elapsed_ms),
+           static_cast<unsigned long>(g_now_playing.total_ms),
+           g_now_playing.source.c_str());
   app_core::publish_now_playing(g_media_source, g_now_playing);
+}
+
+// Takes g_state_mutex itself - the version to call from anywhere that is not
+// already holding it (feed_audio()'s heartbeat below is the only such
+// caller today). See publish_locked()'s own comment for why the two exist
+// separately.
+void publish() {
+  std::lock_guard<std::mutex> lock(g_state_mutex);
+  publish_locked();
 }
 
 void set_icon_pixel(int x, int y) {
@@ -192,10 +288,54 @@ void restore_wifi_power_save() {
 // worth that log line existing on its own account, not worth this module
 // duplicating the open/closed state to guard against a case its one
 // caller (raop_core.c) is not supposed to produce.
+//
+// Also this module's periodic republish heartbeat - the tick source that
+// keeps the now-playing page's derived elapsed time and volume current
+// between RAOP events (see ElapsedTracker's comment, now_playing_
+// controller.hpp, and publish_locked()'s volume comment above). Picked over
+// a dedicated esp_timer for one reason: it needs no new task, no new
+// lifecycle to start at CONNECTED and stop at DISCONNECTED (or leave
+// running and no-op the rest of the time) - it reuses a callback that is
+// already invoked continuously for exactly the case that mattered in the
+// bug report (audio playing, nothing else touching the page for the rest of
+// the track). The tradeoff, and why the common-case cost is a single
+// integer comparison: this function runs on the audio output task
+// (esp-raop-receiver/src/audio_buffer.c's audio_output_task()), and
+// anything slow or blocking here shows up as an audible dropout, not a
+// missed log line. The mutex taken once a second inside publish() is the
+// one exception - unavoidable once two tasks touch g_now_playing at all
+// (see g_state_mutex's own comment) - and bounded: its only other holder is
+// the RTSP thread's own brief mutate-then-publish sections below, never a
+// long hold.
+//
+// One real gap this leaves: while paused (or buffering, or stopped), audio
+// stops flowing, so this heartbeat stops firing along with it. A volume
+// change that arrives *during* a pause will not reach the page until
+// playback resumes and this starts running again - accepted, because the
+// value that matters most while frozen (elapsed time) is not supposed to
+// move anyway, and every state *transition* (PAUSED, BUFFERING, STOPPED,
+// PLAYING again) still publishes immediately from handle_event() below, on
+// the RTSP thread, independent of this heartbeat.
 void feed_audio(const uint8_t *data, size_t len, void * /*user_ctx*/) {
   const esp_err_t result = audio::audio_stream_write(data, len);
   if (result != ESP_OK) {
     ESP_LOGW(kTag, "audio_stream_write failed: %s", esp_err_to_name(result));
+  }
+
+  // About once a second, not "on every buffer": PCM arrives many times a
+  // second (a handful of ms of audio per callback), and re-publishing at
+  // that rate would turn "a cheap timestamp comparison in the common case"
+  // into a mutex-and-string-copy storm on the audio path - the exact thing
+  // this design was picked to avoid. A plain static microsecond timestamp,
+  // not app state, so it survives independent of any session (harmless: the
+  // gate below still only calls publish() while g_handle exists, i.e. a
+  // session is open).
+  static int64_t s_last_publish_us = 0;
+  constexpr int64_t kRepublishIntervalUs = 1'000'000;
+  const int64_t now_us = esp_timer_get_time();
+  if (g_handle != nullptr && now_us - s_last_publish_us >= kRepublishIntervalUs) {
+    s_last_publish_us = now_us;
+    publish();
   }
 }
 
@@ -238,14 +378,23 @@ void handle_event(raop_event_t event, void *event_data,
       // true, whatever the title is (an explicit was_open flag makes sure
       // an empty title still seizes) - waiting here for METADATA would just
       // delay that by however long the sender takes to send it.
-      g_now_playing = app_core::NowPlaying{};
-      g_now_playing.session_open = true;
-      g_now_playing.state = app_core::MediaState::Buffering;
-      // The protocol's own name, not a device name: RAOP exposes no API for
-      // what the sender calls itself. A name invented here would be a claim
-      // nothing backs.
-      g_now_playing.source = "AIRPLAY";
-      publish();
+      {
+        std::lock_guard<std::mutex> lock(g_state_mutex);
+        g_now_playing = app_core::NowPlaying{};
+        g_now_playing.session_open = true;
+        g_now_playing.state = app_core::MediaState::Buffering;
+        // The protocol's own name, not a device name: RAOP exposes no API
+        // for what the sender calls itself, and raop.c's mDNS search for
+        // one has not had time to resolve yet at this point in the session
+        // - publish_locked() re-checks it on every later publish and
+        // upgrades this once it has (see that function's own comment).
+        g_now_playing.source = "AIRPLAY";
+        // Fresh tracker for a fresh session - g_elapsed{} defaults to
+        // reported_ms=0, advancing=false, exactly matching the Buffering
+        // state just set above.
+        g_elapsed = app_core::ElapsedTracker{};
+        publish_locked();
+      }
       break;
     }
     case RAOP_EVENT_DISCONNECTED:
@@ -254,57 +403,102 @@ void handle_event(raop_event_t event, void *event_data,
                static_cast<int>(g_tray_indicator.slot));
       app_core::set_tray_indicator_active(g_tray_indicator, false);
       restore_wifi_power_save();
-      g_now_playing = app_core::NowPlaying{};
+      {
+        std::lock_guard<std::mutex> lock(g_state_mutex);
+        g_now_playing = app_core::NowPlaying{};
+        g_elapsed = app_core::ElapsedTracker{};
+      }
       app_core::clear_media_session(g_media_source);
       break;
     case RAOP_EVENT_METADATA: {
       const auto *meta = static_cast<const raop_metadata_t *>(event_data);
-      if (meta != nullptr) {
-        g_now_playing.title = meta->title != nullptr ? meta->title : "";
-        g_now_playing.subtitle = meta->artist != nullptr ? meta->artist : "";
-        g_now_playing.detail = meta->album != nullptr ? meta->album : "";
+      {
+        std::lock_guard<std::mutex> lock(g_state_mutex);
+        if (meta != nullptr) {
+          g_now_playing.title = meta->title != nullptr ? meta->title : "";
+          g_now_playing.subtitle =
+              meta->artist != nullptr ? meta->artist : "";
+          g_now_playing.detail = meta->album != nullptr ? meta->album : "";
+        }
+        // The first panel test showed a live progress bar and no title,
+        // which three different faults produce identically: the sender
+        // never sent metadata, the library parsed it but the event never
+        // reached here, or it arrived with empty strings. raop.c already
+        // logs its own "received metadata" line on the parse, so this line
+        // beside it tells the three apart in one read of the log instead of
+        // a guess per attempt.
+        ESP_LOGI(kTag,
+                 "metadata event: meta=%s title='%s' artist='%s' album='%s'",
+                 meta != nullptr ? "yes" : "NULL", g_now_playing.title.c_str(),
+                 g_now_playing.subtitle.c_str(), g_now_playing.detail.c_str());
+        publish_locked();
       }
-      // The first panel test showed a live progress bar and no title, which
-      // three different faults produce identically: the sender never sent
-      // metadata, the library parsed it but the event never reached here, or
-      // it arrived with empty strings. raop.c already logs its own "received
-      // metadata" line on the parse, so this line beside it tells the three
-      // apart in one read of the log instead of a guess per attempt.
-      ESP_LOGI(kTag, "metadata event: meta=%s title='%s' artist='%s' album='%s'",
-               meta != nullptr ? "yes" : "NULL", g_now_playing.title.c_str(),
-               g_now_playing.subtitle.c_str(), g_now_playing.detail.c_str());
-      publish();
       break;
     }
     case RAOP_EVENT_PROGRESS: {
       const auto *progress = static_cast<const raop_progress_t *>(event_data);
-      if (progress != nullptr) {
-        g_now_playing.elapsed_ms = progress->current_ms;
-        g_now_playing.total_ms = progress->total_ms;
+      {
+        std::lock_guard<std::mutex> lock(g_state_mutex);
+        if (progress != nullptr) {
+          // Re-anchors the derivation at what the sender actually said -
+          // see elapsed_on_report()'s own comment (now_playing_
+          // controller.hpp). g_now_playing.elapsed_ms/total_ms are not
+          // touched directly here; publish_locked() derives them fresh from
+          // g_elapsed every time, including this one.
+          g_elapsed = app_core::elapsed_on_report(
+              g_elapsed, progress->current_ms, progress->total_ms, now_ms());
+        }
+        publish_locked();
       }
-      publish();
       break;
     }
     case RAOP_EVENT_PLAYING:
-      g_now_playing.state = app_core::MediaState::Playing;
-      publish();
+      {
+        std::lock_guard<std::mutex> lock(g_state_mutex);
+        g_now_playing.state = app_core::MediaState::Playing;
+        // Re-anchors at *now*, continuing from wherever elapsed_on_freeze()
+        // last parked reported_ms (0 for a session that was never paused) -
+        // see that function's own comment for why this matters for a resume
+        // after a real pause.
+        g_elapsed = app_core::elapsed_on_resume(g_elapsed, now_ms());
+        publish_locked();
+      }
       break;
     case RAOP_EVENT_PAUSED:
-      g_now_playing.state = app_core::MediaState::Paused;
-      publish();
+      {
+        std::lock_guard<std::mutex> lock(g_state_mutex);
+        g_now_playing.state = app_core::MediaState::Paused;
+        g_elapsed = app_core::elapsed_on_freeze(g_elapsed, now_ms());
+        publish_locked();
+      }
       break;
     case RAOP_EVENT_BUFFERING:
-      g_now_playing.state = app_core::MediaState::Buffering;
-      publish();
+      {
+        std::lock_guard<std::mutex> lock(g_state_mutex);
+        g_now_playing.state = app_core::MediaState::Buffering;
+        g_elapsed = app_core::elapsed_on_freeze(g_elapsed, now_ms());
+        publish_locked();
+      }
       break;
     case RAOP_EVENT_STALLED:
-      g_now_playing.state = app_core::MediaState::Stalled;
-      publish();
+      {
+        std::lock_guard<std::mutex> lock(g_state_mutex);
+        g_now_playing.state = app_core::MediaState::Stalled;
+        g_elapsed = app_core::elapsed_on_freeze(g_elapsed, now_ms());
+        publish_locked();
+      }
       break;
     case RAOP_EVENT_STOPPED:
-      g_now_playing.state = app_core::MediaState::Stopped;
-      g_now_playing.elapsed_ms = 0;
-      publish();
+      {
+        std::lock_guard<std::mutex> lock(g_state_mutex);
+        g_now_playing.state = app_core::MediaState::Stopped;
+        // A stopped track has no position worth resuming from, unlike a
+        // pause - back to a fresh tracker entirely, not just a freeze, so a
+        // later PLAYING for a new track does not inherit a stale reported_ms
+        // from whatever the old track's position happened to be.
+        g_elapsed = app_core::ElapsedTracker{};
+        publish_locked();
+      }
       break;
     case RAOP_EVENT_VOLUME:
       // HARDWARE-mode-only (esp_raop_receiver.h) - this module always

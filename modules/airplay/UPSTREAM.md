@@ -329,3 +329,24 @@ a guaranteed failure on every session.
   above: with that corrected the callback finally fired, and reported
   `meta=yes title='' artist='' album=''` - the event arriving with every
   field empty is what pointed here.
+
+- **`src/raop.c` / `include/esp_raop_receiver.h`: added `raop_get_remote_
+  hostname()`.** A real session showed the progress bar and volume overlay
+  frozen for the whole 35 s a track played after the first few packets - an
+  AirPlay 1 sender only pushes progress at track start and on a seek, so
+  `airplay.cpp` needed a periodic republish to derive elapsed time and pick
+  up volume changes on its own clock, and while making that publish path
+  periodic anyway it also picks up the sender's mDNS hostname
+  (`search_remote()`'s existing `LOG_INFO("found remote ...")`, already
+  logging it) for the now-playing page's source line, in place of the
+  literal `"AIRPLAY"`. New module-level `g_remote_hostname[64]` in `raop.c`,
+  written once per session by `search_remote()` when it resolves a remote,
+  and the new getter declared in the public header. Implemented in `raop.c`
+  rather than `raop_core.c` (which implements every sibling getter there)
+  deliberately: `raop_core.c` was out of scope for this change, and
+  `struct raop_handle_s`'s fields are private to that file, so there was no
+  way to plumb a per-handle value through it without editing it anyway - a
+  parameterless getter backed by a plain global sidesteps that entirely,
+  consistent with `raop_core.c`'s own single-connected-receiver assumption
+  (`s_handle`). No behaviour change to anything upstream already did; this
+  only adds a new symbol.

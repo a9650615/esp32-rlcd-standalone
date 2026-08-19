@@ -415,3 +415,107 @@ HOST_TEST(volume_overlay_closes_on_timeout_even_while_volume_is_unknown) {
                                         2'000 + app_core::kVolumeOverlayMs);
   EXPECT_TRUE(!state.visible);
 }
+
+// --- ElapsedTracker: the derivation that stands in for AirPlay 1's absent
+// continuous progress updates (see that struct's own comment,
+// now_playing_controller.hpp, for the real capture that proved the sender
+// only reports at track start and on a seek). airplay.cpp is not itself
+// host-tested - it only compiles under CONFIG_AIRPLAY_ENABLE/ESP_PLATFORM -
+// but every bit of arithmetic worth getting wrong here lives in these four
+// pure functions, which is exactly why they were pulled out into
+// now_playing_controller.hpp rather than left inline in airplay.cpp's
+// handle_event().
+
+HOST_TEST(elapsed_stays_at_the_report_while_not_advancing) {
+  // A fresh session (or one that is buffering/paused) must not move at all,
+  // however much wall-clock time passes - ElapsedTracker{} defaults to
+  // advancing == false.
+  const app_core::ElapsedTracker state;
+  EXPECT_EQ(app_core::elapsed_now(state, 0), 0u);
+  EXPECT_EQ(app_core::elapsed_now(state, 60'000), 0u);
+}
+
+HOST_TEST(elapsed_counts_up_on_the_local_clock_while_playing) {
+  app_core::ElapsedTracker state;
+  state = app_core::elapsed_on_report(state, 10'000, 238'000, 1'000);
+  state = app_core::elapsed_on_resume(state, 1'000);
+  EXPECT_EQ(app_core::elapsed_now(state, 1'000), 10'000u);
+  // Five real seconds pass with no new report from the sender - exactly the
+  // gap AirPlay 1 leaves for the rest of a track.
+  EXPECT_EQ(app_core::elapsed_now(state, 6'000), 15'000u);
+}
+
+HOST_TEST(elapsed_reanchors_on_a_real_report_discarding_the_derived_value) {
+  // The sender is authoritative any time it actually speaks - a seek
+  // backward (or forward) must win over whatever had been derived since the
+  // last report, not be averaged or ignored.
+  app_core::ElapsedTracker state;
+  state = app_core::elapsed_on_report(state, 10'000, 238'000, 1'000);
+  state = app_core::elapsed_on_resume(state, 1'000);
+
+  // A seek lands at 90 s, reported 6 s (local time) after the first report.
+  state = app_core::elapsed_on_report(state, 90'000, 238'000, 6'000);
+  EXPECT_EQ(app_core::elapsed_now(state, 6'000), 90'000u);
+  EXPECT_EQ(app_core::elapsed_now(state, 9'000), 93'000u);
+}
+
+HOST_TEST(elapsed_freezes_on_pause_at_the_derived_position_not_the_last_report) {
+  // The bug this guards against: freezing at reported_ms (still 0, from
+  // track start) instead of at the position actually reached by the time
+  // the pause happened.
+  app_core::ElapsedTracker state;
+  state = app_core::elapsed_on_report(state, 0, 238'000, 1'000);
+  state = app_core::elapsed_on_resume(state, 1'000);
+  // 50 s of playback, then paused.
+  state = app_core::elapsed_on_freeze(state, 51'000);
+  EXPECT_EQ(app_core::elapsed_now(state, 51'000), 50'000u);
+  // Frozen: further wall-clock time must not move it.
+  EXPECT_EQ(app_core::elapsed_now(state, 500'000), 50'000u);
+}
+
+HOST_TEST(elapsed_resumes_from_the_frozen_position_not_ahead_by_the_pause) {
+  // A pause held for 5 real minutes must not be added to the displayed
+  // position on resume - elapsed_on_resume() anchors at *now*, not at
+  // received_at_ms + how long the pause lasted.
+  app_core::ElapsedTracker state;
+  state = app_core::elapsed_on_report(state, 0, 238'000, 1'000);
+  state = app_core::elapsed_on_resume(state, 1'000);
+  state = app_core::elapsed_on_freeze(state, 51'000);  // paused at 50 s
+  EXPECT_EQ(app_core::elapsed_now(state, 51'000), 50'000u);
+
+  const uint64_t resumed_at_ms = 51'000 + 5 * 60'000;  // 5 minutes later
+  state = app_core::elapsed_on_resume(state, resumed_at_ms);
+  EXPECT_EQ(app_core::elapsed_now(state, resumed_at_ms), 50'000u);
+  EXPECT_EQ(app_core::elapsed_now(state, resumed_at_ms + 2'000), 52'000u);
+}
+
+HOST_TEST(elapsed_never_exceeds_a_known_total) {
+  // A stream that overruns its declared length (the exact case
+  // now_playing_progress_fill_width() already guards, above) must not push
+  // the derived clock past total_ms either.
+  app_core::ElapsedTracker state;
+  state = app_core::elapsed_on_report(state, 230'000, 238'000, 1'000);
+  state = app_core::elapsed_on_resume(state, 1'000);
+  EXPECT_EQ(app_core::elapsed_now(state, 1'000 + 20'000), 238'000u);
+}
+
+HOST_TEST(elapsed_is_never_clamped_when_the_length_is_unknown) {
+  // total_ms == 0 means a live stream, not a zero-length track - see
+  // NowPlaying::total_ms's own comment. The derived clock must keep
+  // counting up past any particular number, not get pinned at 0.
+  app_core::ElapsedTracker state;
+  state = app_core::elapsed_on_report(state, 5'000, 0, 1'000);
+  state = app_core::elapsed_on_resume(state, 1'000);
+  EXPECT_EQ(app_core::elapsed_now(state, 1'000 + 600'000), 605'000u);
+}
+
+HOST_TEST(elapsed_ignores_a_clock_that_moves_backward) {
+  // Same guard seize_tick()/volume_overlay_tick() already carry, for the
+  // same underflow reason: an unguarded now_ms - received_at_ms would wrap
+  // to a number in the billions of milliseconds and the progress bar would
+  // jump to full (or past total_ms, if not for the separate clamp above).
+  app_core::ElapsedTracker state;
+  state = app_core::elapsed_on_report(state, 10'000, 238'000, 10'000);
+  state = app_core::elapsed_on_resume(state, 10'000);
+  EXPECT_EQ(app_core::elapsed_now(state, 1'000), 10'000u);
+}
