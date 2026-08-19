@@ -310,6 +310,43 @@ Never build or flash while an agent or editor may be mid-edit on `partitions.csv
 
 A feature that can fail at runtime and fall back silently needs a log line saying which branch it took. The same session lost a cycle to a QR that was compiled out and to a battery reading that was sampled correctly but never printed, so the documented multimeter calibration procedure had no number to compare against.
 
+## Four ways the log will lie to you
+
+Every one of these produced a confident wrong conclusion in a single session,
+and three of them produced numbers that looked like evidence.
+
+**`grep` treats net_log captures as binary.** They contain a byte that makes
+BSD grep print nothing at all and exit non-zero, which reads exactly like
+"zero occurrences". Three rounds of counts were reported as 0 before this was
+noticed. Always `grep -a`, and count with `grep -a ... | wc -l` rather than
+`grep -c`, whose non-zero exit on no-match can also abort a command chain in
+this shell.
+
+**Port 3334 replays its whole ring buffer on connect.** A fresh capture is
+full of old lines from earlier boots and earlier sessions. Five test-sender
+sessions were once read back out of the ring and reported as a successful
+phone test; the giveaway was that all five amplifier-on times were exactly
+the tool's `--duration`. Record a marker before doing anything:
+
+    nc <ip> 3334 > mark.log & sleep 6; kill %1
+    MARK=$(grep -a -oE '^[A-Z] \([0-9]+\)' mark.log | tail -1 | tr -dc '0-9')
+
+then read only lines whose `I (nnnnn)` timestamp exceeds `$MARK`. Run the
+thing under test first and pull the ring afterwards - a live capture opened
+before a session sometimes stops delivering partway through.
+
+**Some log lines are `static`-gated and print once per boot, not once per
+session.** `playback gate: first frame released` is one. Their absence in the
+second session of a boot is not evidence of anything. Prefer markers that
+re-arm every session, like the GPIO46 amplifier lines.
+
+**A measurement placed before the stage that breaks things measures nothing.**
+An instrument in `audio_buffer.c` reported `rms=11000` for a stream nobody
+could hear, because it sat before the software volume that was scaling the
+audio down. It was a true statement about the decoder and a useless one about
+the speaker. Put the probe at the last point before the data leaves, and log
+the parameters the stage applied, not just the samples.
+
 ## Never burn eFuses
 
 **Do not run `espefuse` in write mode, and do not enable Secure Boot or Flash
