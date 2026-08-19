@@ -80,6 +80,10 @@ struct UiContext {
   // change repaints every row - does not lose the cursor.
   std::size_t settings_focus = 0;
   std::string settings_status;
+  // Set by the LVGL tick from app_core::volume_overlay_tick() before it asks
+  // for a rebuild, read by render_now_playing(). Held here rather than passed
+  // as a parameter so the renderer keeps the signature every other page has.
+  bool volume_overlay_visible = false;
 
   lv_obj_t* clock_label = nullptr;
   // The tray indicators are shapes now, not labels, so what the cheap update
@@ -160,6 +164,13 @@ void render_ota(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
 void render_settings(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
                      Rect bounds, std::size_t page_index,
                      std::size_t page_count, UiContext* context = nullptr);
+// Draws whatever app_core's media registry currently holds - core never
+// learns which module published it (modules/README.md rule 4). Reads the
+// registry directly rather than taking it through AppSnapshot; see
+// media_registry.hpp for why that state is not a snapshot field.
+void render_now_playing(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
+                        Rect bounds, std::size_t page_index,
+                        std::size_t page_count, UiContext* context);
 
 // The caller owns the LVGL lock. A detached replacement is built completely
 // before the previous context-owned page root is deleted and the replacement

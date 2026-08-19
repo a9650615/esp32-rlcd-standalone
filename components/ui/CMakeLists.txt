@@ -10,6 +10,7 @@ idf_component_register(
         "render_setup.cpp"
         "render_ota.cpp"
         "render_settings.cpp"
+        "render_now_playing.cpp"
         "render_dither_card.cpp"
         "ui_strings.cpp"
         "settings_menu.cpp"
