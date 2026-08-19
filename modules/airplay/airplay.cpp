@@ -65,14 +65,29 @@ void publish() {
   // sender has overwritten handle->volume with -144.0, so the last known
   // level is the best available answer to "where the level was".
   if (g_handle != nullptr) {
-    const float vol_db = raop_get_volume(g_handle);
-    if (vol_db <= -144.0f) {
-      g_now_playing.muted = true;
-    } else {
-      constexpr float kMinDb = -30.0f;
+    // Asked before the level is read, not inferred from the level itself.
+    // Between SETUP and the sender's first SET_PARAMETER the library holds a
+    // placeholder, and that placeholder is a perfectly ordinary dB value - it
+    // was -20.0 when this was written, which this file's own conversion below
+    // would have turned into a confident, wrong "33%" on the panel before any
+    // sender had chosen anything. Testing the placeholder's value would also
+    // make a sender that genuinely picks it read as unset. This flag is the
+    // only thing that separates the two, and it re-arms on every SETUP.
+    if (!raop_volume_is_known(g_handle)) {
+      // Negative is NowPlaying::volume's own "nothing reported yet", which
+      // the overlay already declines to open on.
+      g_now_playing.volume = -1.0f;
       g_now_playing.muted = false;
-      g_now_playing.volume =
-          (std::clamp(vol_db, kMinDb, 0.0f) - kMinDb) / -kMinDb;
+    } else {
+      const float vol_db = raop_get_volume(g_handle);
+      if (vol_db <= -144.0f) {
+        g_now_playing.muted = true;
+      } else {
+        constexpr float kMinDb = -30.0f;
+        g_now_playing.muted = false;
+        g_now_playing.volume =
+            (std::clamp(vol_db, kMinDb, 0.0f) - kMinDb) / -kMinDb;
+      }
     }
   }
   app_core::publish_now_playing(g_media_source, g_now_playing);
