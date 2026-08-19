@@ -155,6 +155,8 @@ const char* page_name(app_core::PageId page) {
       return "Settings";
     case app_core::PageId::Ota:
       return "Ota";
+    case app_core::PageId::NowPlaying:
+      return "NowPlaying";
   }
   return "Unknown";
 }

@@ -718,11 +718,16 @@ constexpr int volume_overlay_fill_width(float volume) {
 // into hours - an hour-long track shows 61:01, which is unambiguous and needs
 // no third field. Truncates: 1:59.9 is still 1:59, because a clock that
 // reaches 2:00 before the track does reads as broken.
+//
+// The casts are load-bearing, not decoration: uint32_t is `unsigned int` on
+// the host and `unsigned long` on xtensa, so a bare %u compiles clean under
+// the host tests and fails the firmware build outright under -Werror=format.
 inline std::string format_track_time(uint32_t milliseconds) {
   const uint32_t total_seconds = milliseconds / 1000;
   char buffer[16];
-  std::snprintf(buffer, sizeof(buffer), "%u:%02u", total_seconds / 60,
-                total_seconds % 60);
+  std::snprintf(buffer, sizeof(buffer), "%u:%02u",
+                static_cast<unsigned>(total_seconds / 60),
+                static_cast<unsigned>(total_seconds % 60));
   return buffer;
 }
 
