@@ -404,6 +404,9 @@ static void apple_challenge(raop_ctx_t *ctx, int sock, key_data_t *req_headers, 
 	hex_dump[64] = '\0';
 	int n;
 	char *rsa_result = rsa_apply((unsigned char*) data, 32, &n, RSA_MODE_AUTH);
+	// Kept separately because the padding-strip loop below reuses `n` as a
+	// string index, so by the time the log line runs `n` is no longer a length.
+	const int sig_len = n;
 
 	char *data_b64 = NULL;
 	base64_encode(rsa_result, n, &data_b64);
@@ -412,6 +415,18 @@ static void apple_challenge(raop_ctx_t *ctx, int sock, key_data_t *req_headers, 
 	for (n = strlen(data_b64) - 1; n > 0 && data_b64[n] == '='; data_b64[n--] = '\0');
 
 	kd_add(resp_headers, "Apple-Response", data_b64);
+
+	// Logged because the failure mode this sits in front of is otherwise
+	// completely silent. The sender verifies this signature against the
+	// AirPort Express PUBLIC key that ships inside iOS. Signing with any
+	// other private key succeeds here - mbedtls has no idea which key it is
+	// supposed to be - and is then rejected by the sender, which retries
+	// OPTIONS a few times and disconnects without ever sending ANNOUNCE.
+	// Nothing on this device errors, so "the sender connects but will not
+	// play" is all you get. If you see this line, then several more OPTIONS,
+	// then a disconnect and no ANNOUNCE, the key at
+	// modules/airplay/secrets/raop_private_key.pem is not Apple's.
+	LOG_INFO("[%p]: answered Apple-Challenge with a %d-byte signature", ctx, sig_len);
 
 	if (rsa_result) free(rsa_result);
 	if (buf_pad) free(buf_pad);

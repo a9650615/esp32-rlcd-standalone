@@ -77,6 +77,46 @@ directly. Neither `audio` nor `app_core` includes anything from this module
 `components/app_core/tray_registry.*` or anywhere else in `components/`,
 which is the acceptance test that registry design was built to pass.
 
+## What a self-generated key does, and how to recognise it
+
+Measured on hardware, with a self-generated 2048-bit RSA key in place of
+Apple's: an iPhone finds the receiver, opens the RTSP connection, sends
+`OPTIONS` **four times**, and disconnects without ever sending `ANNOUNCE`.
+No error appears anywhere on the device.
+
+That silence is the important part. `rsa_apply(RSA_MODE_AUTH)` signs with
+whatever key it was given and reports success - `mbedtls` has no way to know
+which key it was supposed to be. The rejection happens on the sender, which
+verifies `Apple-Response` against the AirPort Express *public* key baked into
+iOS. So the device log shows a clean, successful handshake attempt and the
+user sees "it connects but will not play".
+
+`raop.c`'s `apple_challenge()` now logs
+
+```
+answered Apple-Challenge with a 256-byte signature
+```
+
+so the sequence is legible: that line, then several more `received OPTIONS`,
+then `disconnected on the other end` and no `ANNOUNCE`, means the key is not
+Apple's. There is no firmware change that fixes this - see the section below
+for why the key is structurally part of AirPlay 1.
+
+Two things this does NOT indicate, both of which were suspected first and
+ruled out by measurement:
+
+- It is not the AES stream decryption (`RSA_MODE_KEY`, `rsaaeskey`). That
+  path is never reached, because `ANNOUNCE` never arrives.
+- It is not the audio pipeline. `scripts/raop-test-sender.py` drives the same
+  receiver through RTSP, RTP, ALAC decode, buffering and the codec, and plays
+  5 of 5 consecutive sessions with zero discarded frames. The test sender
+  omits `Apple-Challenge` by default, which is exactly why it passes.
+
+`--challenge` on the test sender checks that a 256-byte `Apple-Response` came
+back. It cannot check that the signature is *correct*, because verifying it
+needs Apple's public key. A passing `--challenge` run therefore says nothing
+about whether an iPhone will accept the same response.
+
 ## The RSA key situation
 
 AirPlay 1's authentication handshake requires a specific RSA private key -
