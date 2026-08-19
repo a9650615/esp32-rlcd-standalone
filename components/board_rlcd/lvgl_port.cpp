@@ -79,7 +79,26 @@ void flush_display(lv_display_t* display_handle, const lv_area_t* area,
   // which it could not have shown - the conversion below runs either way.
   const int64_t convert_start_us = esp_timer_get_time();
   const uint16_t* pixels = reinterpret_cast<const uint16_t*>(color_p);
-  display.write_rgb565_area(pixels, area->x1, area->y1, area->x2, area->y2);
+  // Converted in horizontal bands with a yield between them, rather than in
+  // one pass.
+  //
+  // The pass reads the whole RGB565 draw buffer - 240 KB - out of PSRAM. That
+  // is far larger than the cache the two cores share, so a single sweep
+  // evicts everything the other core was using, and the audio output task
+  // stalls for as long as the sweep takes. Measured: with the flush running,
+  // 74 of 5,632 codec writes were more than 20 ms apart against an 8 ms
+  // chunk; with the flush skipped entirely, 1 of 1,152. Same total traffic
+  // either way - what matters is that it stops arriving as one 26 ms block
+  // the audio path cannot be scheduled inside of.
+  const int band = 64;  // rows; ~4 bands for a full frame
+  const int width = area->x2 - area->x1 + 1;
+  for (int y = area->y1; y <= area->y2; y += band) {
+    const int y_end = (y + band - 1 < area->y2) ? (y + band - 1) : area->y2;
+    display.write_rgb565_area(
+        pixels + static_cast<size_t>(y - area->y1) * width, area->x1, y,
+        area->x2, y_end);
+    if (y_end < area->y2) vTaskDelay(1);
+  }
 
   // The result used to be dropped here, which is why a panel failing every
   // single refresh was only ever visible as esp_lcd's own one-line complaint

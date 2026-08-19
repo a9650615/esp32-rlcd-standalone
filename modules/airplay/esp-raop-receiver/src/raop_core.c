@@ -107,12 +107,38 @@ static bool internal_cmd_cb(raop_internal_event_t event, ...) {
             uint32_t local_head_time = now + buffer_duration_ms;
             int32_t error = (int32_t)(head_playtime - local_head_time);
 
+            // Logged because this correction is not free: skipping drops
+            // decoded audio and pausing inserts silence, both of which the
+            // listener hears. Firing occasionally is drift being absorbed;
+            // firing on most sync packets is a periodic click, and until now
+            // nothing distinguished the two from outside.
+            static uint32_t corrections = 0, evaluations = 0;
+            static int32_t worst_error = 0;
+            evaluations++;
+            if (error < -worst_error || error > worst_error) {
+                worst_error = error < 0 ? -error : error;
+            }
             if (error < -50) {
                 uint32_t skip = (-error * 44100) / (352 * 1000);
+                corrections++;
+                ESP_LOGW(TAG, "drift: error=%d ms, skipping %u frames "
+                              "(%u corrections in %u evaluations, worst |error| %d ms)",
+                         (int) error, (unsigned) skip, (unsigned) corrections,
+                         (unsigned) evaluations, (int) worst_error);
                 audio_buffer_skip_frames(skip);
             } else if (error > 50) {
                 uint32_t pause = (error * 44100) / (352 * 1000);
+                corrections++;
+                ESP_LOGW(TAG, "drift: error=+%d ms, inserting %u silent frames "
+                              "(%u corrections in %u evaluations, worst |error| %d ms)",
+                         (int) error, (unsigned) pause, (unsigned) corrections,
+                         (unsigned) evaluations, (int) worst_error);
                 audio_buffer_pause_frames(pause);
+            } else if ((evaluations % 16) == 0) {
+                ESP_LOGI(TAG, "drift: error=%d ms, within tolerance "
+                              "(%u corrections in %u evaluations, worst |error| %d ms)",
+                         (int) error, (unsigned) corrections,
+                         (unsigned) evaluations, (int) worst_error);
             }
             break;
         }

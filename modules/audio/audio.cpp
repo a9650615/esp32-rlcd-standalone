@@ -1043,6 +1043,34 @@ esp_err_t audio_stream_write(const void* data, size_t length_bytes) {
   }
   arm_stream_watchdog();
 
+  // Gap between writes, because a stutter the listener hears and a stutter
+  // the RTP layer sees are different faults with the same symptom. rtp.c's
+  // inserted silence frames show up in audio_buffer's content check; an I2S
+  // underrun - the codec running dry because nothing fed it in time - shows
+  // up nowhere at all. This is the missing half.
+  //
+  // A chunk here is 352 frames, 8 ms of audio. A gap materially longer than
+  // that means the codec had nothing to play and the listener heard it.
+  {
+    static int64_t last_write_us = 0;
+    static int64_t worst_gap_us = 0;
+    static uint32_t late_writes = 0, total_writes = 0;
+    const int64_t now_us = esp_timer_get_time();
+    if (last_write_us != 0) {
+      const int64_t gap_us = now_us - last_write_us;
+      if (gap_us > worst_gap_us) worst_gap_us = gap_us;
+      if (gap_us > 20000) late_writes++;
+      if ((++total_writes % 128) == 0) {
+        ESP_LOGW(kTag,
+                 "stream write gap: worst %lld us, %u of %u writes over 20 ms",
+                 worst_gap_us, static_cast<unsigned>(late_writes),
+                 static_cast<unsigned>(total_writes));
+        worst_gap_us = 0;
+      }
+    }
+    last_write_us = now_us;
+  }
+
   if (!g_stream_amp_active) {
     std::vector<int16_t> lead = make_silence(kSilenceLeadMs, g_stream_sample_rate);
     esp_codec_dev_write(g_codec_dev, lead.data(),
