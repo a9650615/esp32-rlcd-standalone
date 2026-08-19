@@ -237,6 +237,15 @@ void handle_event(raop_event_t event, void *event_data,
         g_now_playing.subtitle = meta->artist != nullptr ? meta->artist : "";
         g_now_playing.detail = meta->album != nullptr ? meta->album : "";
       }
+      // The first panel test showed a live progress bar and no title, which
+      // three different faults produce identically: the sender never sent
+      // metadata, the library parsed it but the event never reached here, or
+      // it arrived with empty strings. raop.c already logs its own "received
+      // metadata" line on the parse, so this line beside it tells the three
+      // apart in one read of the log instead of a guess per attempt.
+      ESP_LOGI(kTag, "metadata event: meta=%s title='%s' artist='%s' album='%s'",
+               meta != nullptr ? "yes" : "NULL", g_now_playing.title.c_str(),
+               g_now_playing.subtitle.c_str(), g_now_playing.detail.c_str());
       publish();
       break;
     }

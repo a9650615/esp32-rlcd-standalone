@@ -597,6 +597,20 @@ static bool handle_rtsp(raop_ctx_t *ctx, int sock)
 	} else if (!strcmp(method, "SET_PARAMETER")) {
 		char *p;
 
+		// Local diagnostic (see UPSTREAM.md): a panel test with two different
+		// senders showed a live progress bar and no title at all, and the
+		// existing logging could not say why - the DMAP branch below is the
+		// only one that logs on success, and every failure mode reaches this
+		// handler and then falls out of it silently. One line at the entry
+		// naming the Content-Type and whether a body survived tells apart
+		// "the sender never sent it", "it was dropped before we saw it" and
+		// "it arrived and the branch conditions rejected it".
+		{
+			char *ct = kd_lookup(headers, "Content-Type");
+			LOG_INFO("[%p]: SET_PARAMETER content-type='%s' body=%s len=%d", ctx,
+					 ct ? ct : "(none)", body ? "yes" : "NULL", (int) len);
+		}
+
 		if (body && (p = strcasestr(body, "volume")) != NULL) {
 			float volume;
 

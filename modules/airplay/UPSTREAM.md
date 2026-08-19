@@ -295,3 +295,13 @@ a guaranteed failure on every session.
   undefined on this chip, but its `#else` branch (taken when undefined) is
   the little-endian-correct byte ordering already, so no fix was needed
   there.
+
+- **`src/raop.c`: one diagnostic log line at the `SET_PARAMETER` entry.**
+  A panel test with two different senders (an iPhone and an Apple TV) showed
+  a live progress bar and no track title at all. The upstream code logs only
+  on a *successful* DMAP parse, so every other outcome - the sender not
+  sending metadata, the body being dropped by `util.c`'s 8192-byte ceiling
+  before the handler sees it, or the branch conditions rejecting a body that
+  did arrive - is indistinguishable from the log. The added line names the
+  `Content-Type` and whether a body survived, which separates those cases in
+  one read. No behaviour changes; it is `LOG_INFO` beside the existing ones.
