@@ -46,7 +46,11 @@ struct NowPlaying {
   // Negative means the source has no volume to report yet, which is distinct
   // from silence: the overlay does not open on it. 0.0-1.0 otherwise.
   float volume = -1.0f;
-  // Mute is its own state, not volume 0.0 - AirPlay signals it as -144 dB.
+  // Its own flag rather than volume 0.0, because a source that signals mute
+  // separately from level is telling us two different things: turned all the
+  // way down, and silenced with the level left where it was. The page says
+  // MUTE for one and 0% for the other. How a given protocol encodes that is
+  // the publishing module's problem, not this file's.
   bool muted = false;
   MediaArtwork artwork;
 };
