@@ -51,6 +51,10 @@ constexpr int kChannels = 2;
 // cheap way to do that without a rebuild.
 constexpr int kOutputVolumePercent = 50;
 
+// Streams open the codec here instead, at unity - see audio_stream_open()
+// for why attenuating a remote-controlled stream locally is wrong.
+constexpr int kStreamVolumePercent = 100;
+
 // 50% of int16 full scale - the same ceiling /beep-sweep's diagnostic
 // staircase is capped at. A full-scale square wave into a coin-sized
 // MX1.25 speaker is both the loudest and harshest thing this chain can
@@ -973,10 +977,21 @@ esp_err_t audio_stream_open(int sample_rate) {
     xSemaphoreGive(g_playback_busy);
     return ESP_FAIL;
   }
-  // Re-applied on every open, same as audio_play_tone(): nothing here
-  // assumes the codec remembers a volume from a previous, since-closed
-  // session.
-  esp_codec_dev_set_out_vol(g_codec_dev, g_volume_percent);
+  // Unity, not g_volume_percent - a stream's volume belongs to whoever is
+  // sending it.
+  //
+  // AirPlay senders carry their own volume control and apply it before the
+  // samples ever get here (RAOP SET_PARAMETER -> the software scaling in
+  // audio_buffer.c). Opening the codec at the local 50% then attenuated a
+  // second time, so a phone sitting at a perfectly ordinary -12.5 dB
+  // measured rms=1400 out of 32767 at the sink - roughly 40 dB below the
+  // /beep tone, which is to say inaudible across a room - and the phone's
+  // slider at maximum still could not reach full output, because half of it
+  // had already been spent locally.
+  //
+  // Tones and the diagnostic sweep keep g_volume_percent: those are the
+  // device's own sounds, with no remote to ask.
+  esp_codec_dev_set_out_vol(g_codec_dev, kStreamVolumePercent);
   g_stream_sample_rate = static_cast<uint32_t>(sample_rate);
   g_stream_amp_active = false;
   g_stream_open = true;

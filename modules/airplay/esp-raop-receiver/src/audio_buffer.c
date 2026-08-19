@@ -227,41 +227,6 @@ static void audio_output_task(void *arg) {
                 memcpy(data, frame->data, frame->len);
                 size_t len = frame->len;
 
-                // Content check on the decoded stream, reported once per
-                // ~1 s of audio while a stream is running.
-                //
-                // Every "it plays" result before this one was GPIO46 going
-                // high, which proves bytes reached the codec and nothing
-                // about what those bytes were. AES decrypting with a wrong
-                // key, or an ALAC frame decoded from ciphertext, can still
-                // produce samples that light exactly the same evidence. RMS
-                // and zero-crossing rate separate a tone from noise without
-                // needing ears or a scope: a 440 Hz sine at 44.1 kHz crosses
-                // zero 880 times a second, and noise crosses tens of
-                // thousands of times.
-                {
-                    static uint64_t sumsq = 0;
-                    static uint32_t nsamp = 0, crossings = 0;
-                    static int16_t  prev = 0;
-                    const int16_t *pcm = (const int16_t *) data;
-                    // Left channel only: interleaved stereo, and the test
-                    // tone is identical in both.
-                    for (size_t i = 0; i + 3 < len; i += 4) {
-                        int16_t v = pcm[i / 2];
-                        sumsq += (uint64_t) ((int32_t) v * v);
-                        if ((prev < 0) != (v < 0)) crossings++;
-                        prev = v;
-                        nsamp++;
-                    }
-                    if (nsamp >= 44100) {  // one second of audio
-                        ESP_LOGI(TAG, "decoded audio: rms=%u zero-crossings/s=%u "
-                                      "(440 Hz sine is ~880; noise is tens of thousands)",
-                                 (unsigned) sqrt((double) (sumsq / nsamp)),
-                                 (unsigned) crossings);
-                        sumsq = 0; nsamp = 0; crossings = 0;
-                    }
-                }
-
                 // Apply software volume at read time
                 if (audio_buf.volume_ptr) {
                     float vol_db = *audio_buf.volume_ptr;
@@ -279,6 +244,48 @@ static void audio_output_task(void *arg) {
                         }
                     }
                     // vol_db == 0.0f: full volume, no scaling needed
+                }
+
+                // Content check on what is actually handed to the sink,
+                // reported once per ~1 s of audio while a stream runs.
+                //
+                // Deliberately AFTER the volume block. It first sat before
+                // it and reported rms=11000 for a phone stream nobody could
+                // hear - a true statement about the decoded audio and a
+                // useless one about the audio that reached the speaker,
+                // because everything that could still silence it happens in
+                // between. Measuring the input to a stage cannot tell you
+                // what came out of it.
+                //
+                // GPIO46 going high proves bytes reached the codec and
+                // nothing about what those bytes were. RMS and zero-crossing
+                // rate separate a tone from noise from silence without ears
+                // or a scope: a 440 Hz sine crosses zero 880 times a second
+                // at 44.1 kHz, noise crosses tens of thousands of times, and
+                // silence reads rms=0.
+                {
+                    static uint64_t sumsq = 0;
+                    static uint32_t nsamp = 0, crossings = 0;
+                    static int16_t  prev = 0;
+                    const int16_t *pcm = (const int16_t *) data;
+                    // Left channel only: interleaved stereo, and the test
+                    // tone is identical in both.
+                    for (size_t i = 0; i + 3 < len; i += 4) {
+                        int16_t v = pcm[i / 2];
+                        sumsq += (uint64_t) ((int32_t) v * v);
+                        if ((prev < 0) != (v < 0)) crossings++;
+                        prev = v;
+                        nsamp++;
+                    }
+                    if (nsamp >= 44100) {  // one second of audio
+                        ESP_LOGI(TAG, "decoded audio: rms=%u zero-crossings/s=%u vol=%.1f dB "
+                                      "(440 Hz sine is ~880; noise is tens of thousands; "
+                                      "rms=0 is silence)",
+                                 (unsigned) sqrt((double) (sumsq / nsamp)),
+                                 (unsigned) crossings,
+                                 audio_buf.volume_ptr ? *audio_buf.volume_ptr : 0.0f);
+                        sumsq = 0; nsamp = 0; crossings = 0;
+                    }
                 }
 
                 frame->ready = false;
