@@ -82,7 +82,30 @@ void flush_display(lv_display_t* display_handle, const lv_area_t* area,
 #endif
     }
   }
-  display.refresh();
+  // The result used to be dropped here, which is why a panel failing every
+  // single refresh was only ever visible as esp_lcd's own one-line complaint
+  // with no error code and no context. esp_lcd_panel_io_tx_color() forwards
+  // whatever spi_device_queue_trans() returned, and since that call uses
+  // portMAX_DELAY it cannot be reporting a full queue - so the code itself is
+  // the diagnosis. The heap figures are here because the framebuffer lives in
+  // PSRAM while SPI DMA descriptors come from internal RAM, and this failure
+  // has so far appeared and vanished with nothing in the firmware changing.
+  const esp_err_t flush_result = display.refresh();
+  if (flush_result != ESP_OK) {
+    // Rate limited hard: this fires once per refresh when it fires at all,
+    // and 1,392 of 1,455 captured log lines were the unrated version.
+    static uint32_t failures = 0;
+    if ((failures++ % 64) == 0) {
+      ESP_LOGE(kTag,
+               "display refresh failed: %s (failure #%u) internal free=%u "
+               "largest=%u, dma largest=%u, psram free=%u",
+               esp_err_to_name(flush_result), static_cast<unsigned>(failures),
+               static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+               static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)),
+               static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_DMA)),
+               static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
+    }
+  }
 #ifndef NDEBUG
   if (area->x2 >= kWidth - 1 && area->y2 >= kHeight - 1) {
     frames_flushed.fetch_add(1, std::memory_order_relaxed);
