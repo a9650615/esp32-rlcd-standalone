@@ -14,6 +14,8 @@ static const char *TAG = "audio_buffer";
 #define BUFFER_FRAMES RAOP_BUFFER_FRAMES
 #define MAX_FRAME_SIZE 2048
 #define TIMING_THRESHOLD_MS 50  // Max drift before correction
+// Bytes, not words: StackType_t is uint8_t on Xtensa. See audio_buffer_start().
+#define AUDIO_OUTPUT_STACK_BYTES 8192
 #define TAP_LOOKAHEAD_MS    150  // Fire PCM tap this many ms before playtime
 
 typedef struct {
@@ -373,30 +375,45 @@ void audio_buffer_start(void) {
         // window costs nothing and rides out exactly that kind of transient
         // contention rather than condemning every future session over one
         // bad moment.
-        BaseType_t created = pdFAIL;
-        for (int attempt = 0; attempt < 5; attempt++) {
-            created = xTaskCreatePinnedToCore(
-                audio_output_task,
-                "audio_output",
-                8192,
-                NULL,
-                3,
-                &audio_buf.task,
-                1
-            );
-            if (created == pdPASS) break;
-            audio_buf.task = NULL;
-            vTaskDelay(pdMS_TO_TICKS(20));
-        }
-        // This return value used to go unchecked, which is how the bug this
-        // task fixes stayed invisible: creation failing left audio_buf.task
-        // NULL with nothing logged, so the buffer just filled up and every
-        // frame after it got discarded in rtp.c with no clue why. Now it is
-        // one task, created once, so a failure here is a real startup
-        // problem rather than something that can happen mid-stream.
-        if (created != pdPASS) {
-            ESP_LOGE(TAG, "Failed to create audio_output task after retries (result=%d)", (int) created);
-            audio_buf.task = NULL;
+        // The stack is a static array, not a heap allocation.
+        //
+        // It used to be xTaskCreatePinnedToCore(), which allocates 8 KiB of
+        // internal RAM as one contiguous block. That block is genuinely hard
+        // to find on this board once wifi, TLS and LVGL have run, and the
+        // failure is fragmentation-dependent, so it passed five consecutive
+        // sessions on one boot and then failed five consecutive sessions on
+        // the next with identical firmware. Measured on the failing boot:
+        // every attempt returned -1 (errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY),
+        // all five retries, in all five sessions. A retry loop cannot help
+        // when the heap is fragmented rather than momentarily busy.
+        //
+        // This task is created once and lives for the rest of the process
+        // (see audio_output_task()), so a static stack costs exactly the
+        // same 8 KiB it always cost - it just moves it to .bss, where it is
+        // reserved at link time and cannot fail at runtime. raop.c's and
+        // rtp.c's tasks already use static stacks for the same reason.
+        // StackType_t is uint8_t on Xtensa, so this array is 8192 bytes and
+        // the depth argument below is in bytes, not words.
+        static StackType_t output_stack[AUDIO_OUTPUT_STACK_BYTES];
+        static StaticTask_t output_tcb;
+
+        audio_buf.task = xTaskCreateStaticPinnedToCore(
+            audio_output_task,
+            "audio_output",
+            AUDIO_OUTPUT_STACK_BYTES,
+            NULL,
+            3,
+            output_stack,
+            &output_tcb,
+            1
+        );
+        // Cannot fail for want of memory any more, but a bad argument would
+        // still return NULL, and this task going missing is precisely the
+        // failure that used to be silent: nothing drains the ring, every
+        // frame is dropped in rtp.c, and the sink's watchdog closes a stream
+        // that never received one sample.
+        if (!audio_buf.task) {
+            ESP_LOGE(TAG, "Failed to create audio_output task");
             vSemaphoreDelete(audio_buf.idle_sem);
             audio_buf.idle_sem = NULL;
             audio_buf.running = false;

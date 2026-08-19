@@ -284,7 +284,43 @@ rtp_resp_t rtp_init(struct in_addr host, int latency, char *aeskey, char *aesiv,
 	ctx->rtp_sockets[CONTROL].rport = pCtrlPort;
 	ctx->rtp_sockets[TIMING].rport = pTimingPort;
 
+	// A sender that sent one of these sent both: an SDP carries "rsaaeskey"
+	// and "aesiv" together or neither. Seeing exactly one means the RSA
+	// decrypt of the session key failed (raop.c's rsa_apply(RSA_MODE_KEY)
+	// returns NULL and logs why), and upstream's `aesiv && aeskey` then
+	// quietly left ctx->decrypt false - so the receiver fed AES ciphertext
+	// straight into the ALAC decoder and produced noise or a decoder abort,
+	// with nothing anywhere saying the stream was still encrypted. Refuse the
+	// session instead; the caller already reports a zero-port return as
+	// "cannot start session".
+	if ((aesiv != NULL) != (aeskey != NULL)) {
+		LOG_ERROR("[%p]: sender asked for an encrypted stream and the session "
+				  "key is unusable (aeskey %s, aesiv %s) - refusing rather than "
+				  "playing ciphertext as audio",
+				  ctx, aeskey ? "ok" : "MISSING", aesiv ? "ok" : "MISSING");
+		free(ctx->xStack);
+		free(ctx);
+		return resp;
+	}
+
 	if (aesiv && aeskey) {
+		// Allocated before the context is marked decrypting. Upstream set
+		// ctx->decrypt = true first and never checked this malloc, so an
+		// out-of-memory here left every packet running mbedtls_aes_crypt_cbc()
+		// into a NULL output pointer. Internal RAM is the scarcest memory on
+		// this board and this is a per-session allocation, which is exactly
+		// the shape of the two allocation failures already found in this file.
+		ctx->decrypt_buf = malloc(MAX_PACKET);
+		if (!ctx->decrypt_buf) {
+			LOG_ERROR("[%p]: could not allocate %d bytes for the decrypt "
+					  "buffer (free %u) - refusing the session",
+					  ctx, MAX_PACKET,
+					  (unsigned) heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+			free(ctx->xStack);
+			free(ctx);
+			return resp;
+		}
+
 		memcpy(ctx->aesiv, aesiv, 16);
 #ifdef WIN32
 		AES_set_decrypt_key((unsigned char*) aeskey, 128, &ctx->aes);
@@ -293,7 +329,6 @@ rtp_resp_t rtp_init(struct in_addr host, int latency, char *aeskey, char *aesiv,
 		mbedtls_aes_setkey_dec(&ctx->aes, (unsigned char*) aeskey, 128);
 #endif
 		ctx->decrypt = true;
-		ctx->decrypt_buf = malloc(MAX_PACKET);
 	}
 
 	memset(fmtp, 0, sizeof(fmtp));
