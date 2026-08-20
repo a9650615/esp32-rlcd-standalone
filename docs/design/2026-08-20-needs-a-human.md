@@ -104,7 +104,49 @@ display flush, item 5 in `2026-08-20-open-items.md`.
 
 ---
 
-## 4. The battery divider has never been calibrated
+## 4. Cover art tone has to be judged by eye
+
+**Built, host-tested, and measured. The thing it is for is not measurable.**
+
+The decode was wrong and shipped anyway - `JD_FORMAT 2` selected a branch LVGL
+had deleted from the vendored tjpgd, so the decoder returned `JDR_OK` and handed
+back IDCT scratch. It rendered as an image with faintly recognisable shapes and
+no usable tone, and nothing on the board said so. A person looking at the panel
+did.
+
+`tests/host/test_artwork.cpp` now asserts the property that person was checking:
+ink density falls as the source brightens, across three flat bands of a real
+JPEG, and every row of the mid-grey band is mixed rather than uniform. Confirmed
+to fail with the old setting.
+
+**What that still does not establish** is whether it *looks* like the album
+cover. A reflective panel has no backlight and a limited contrast ratio, so a
+tonally faithful rendering can still read as too dark, and the test would pass
+either way - it checks the ordering of three flat greys, not whether a
+photograph is legible.
+
+**To check:** play a track with a cover you know well and look at the panel.
+
+**Pass:** you can tell what the picture is. **Fail:** shapes visible but muddy,
+or the whole thing crushed to near-black - that is a tone-curve problem, not a
+decode problem, and the fix is a gamma lift before the dither in
+`artwork.cpp`'s `diffuse_to_bits()`, not another pipeline change.
+
+Two figures worth having eyes on at the same time:
+
+- **The cover is now 190px, up from 176.** That is the geometric ceiling for
+  this page (the transport row at y=244 is the wall) and cost the text column
+  14px, so a long CJK title ellipsises about one glyph per line sooner. If that
+  reads worse than the bigger cover reads better, the trade is wrong.
+- **The decode is 579 ms, synchronous on the RTSP task.** Doing it inline was
+  deliberate - building a worker before knowing the number would be machinery
+  justified by an assumption. The number is now known. If a track change causes
+  an audible gap or a stutter, that is what to move, and
+  `2026-08-20-open-items.md` is where it goes.
+
+---
+
+## 5. The battery divider has never been calibrated
 
 **Not built. Needs a multimeter, and nothing here can substitute for one.**
 
