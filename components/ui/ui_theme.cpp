@@ -15,6 +15,61 @@ namespace {
 
 lv_color_t ink(bool inverse) { return inverse ? lv_color_white() : lv_color_black(); }
 
+// Every LVGL style setter invalidates unconditionally.
+// lv_obj_set_local_style_prop() ends in lv_obj_refresh_style(), which calls
+// lv_obj_invalidate() with no old-versus-new comparison anywhere in the path
+// (managed_components/lvgl__lvgl/src/core/lv_obj_style.c, twice in fact).
+//
+// That is free on a backlit panel already redrawing 60 times a second, and
+// ruinous here: lvgl_port.cpp configures LV_DISPLAY_RENDER_MODE_FULL, so one
+// invalidated object means the entire 400x300 framebuffer is re-rendered and
+// the whole panel rewritten - ~28 ms reading the draw buffer out of PSRAM plus
+// 10-50 ms of SPI. Writing an object the value it already holds is not a no-op
+// on this board; it is a full repaint.
+//
+// So the setters that run on the ~100 ms UI tick compare first, through these.
+// Measured before they existed: 4.4 full-panel rewrites per second against
+// 0.87 publishes per second, continuously, because update_tray_indicators()
+// rewrites every slot's opacity on every tick by design - the tray registry
+// has no change event, so polling is correct and it is the write that has to
+// be conditional. Visible on the panel as the dither pattern of a cover
+// crawling, which is what a fine 1-bit pattern looks like when it is being
+// rewritten four times a second.
+//
+// LV_OBJ_FLAG_HIDDEN would not have avoided it either: lv_obj_area_is_visible()
+// tests that flag and not opacity, so an icon parked at LV_OPA_TRANSP is
+// invalidated exactly like a visible one.
+//
+// Named `_if_changed` after set_label_text_if_changed() and
+// set_setup_status_if_changed(), which this file already had for the same
+// reason applied to text.
+void set_style_opa_if_changed(lv_obj_t* obj, lv_opa_t opa) {
+  if (obj == nullptr) return;
+  if (lv_obj_get_style_opa(obj, LV_PART_MAIN) == opa) return;
+  lv_obj_set_style_opa(obj, opa, 0);
+}
+
+void set_style_bg_opa_if_changed(lv_obj_t* obj, lv_opa_t opa) {
+  if (obj == nullptr) return;
+  if (lv_obj_get_style_bg_opa(obj, LV_PART_MAIN) == opa) return;
+  lv_obj_set_style_bg_opa(obj, opa, 0);
+}
+
+void set_style_border_opa_if_changed(lv_obj_t* obj, lv_opa_t opa) {
+  if (obj == nullptr) return;
+  if (lv_obj_get_style_border_opa(obj, LV_PART_MAIN) == opa) return;
+  lv_obj_set_style_border_opa(obj, opa, 0);
+}
+
+// The style width rather than lv_obj_get_width(): the latter reports the laid
+// out width, which is 0 until LVGL's first layout pass has run, so comparing
+// against it would skip the very first write.
+void set_width_if_changed(lv_obj_t* obj, int32_t width) {
+  if (obj == nullptr) return;
+  if (lv_obj_get_style_width(obj, LV_PART_MAIN) == width) return;
+  lv_obj_set_width(obj, width);
+}
+
 }  // namespace
 
 void apply_setup_status_style(lv_obj_t* label_obj, bool is_error) {
@@ -323,9 +378,8 @@ void set_wifi_icon_state(const WifiIconParts& parts, bool connected) {
   // Hidden rather than hollowed: these are already outlines, so there is no
   // emptier version to fall back to. The dot alone means no link.
   for (lv_obj_t* ring : parts.bars) {
-    if (ring == nullptr) continue;
-    lv_obj_set_style_border_opa(ring, connected ? LV_OPA_COVER : LV_OPA_TRANSP,
-                                0);
+    set_style_border_opa_if_changed(
+        ring, connected ? LV_OPA_COVER : LV_OPA_TRANSP);
   }
 }
 
@@ -496,26 +550,22 @@ void set_battery_icon_level(const BatteryIconParts& parts, uint8_t percent,
                             bool valid, bool charging) {
   if (parts.fill == nullptr) return;
   if (!valid) {
-    lv_obj_set_style_bg_opa(parts.fill, LV_OPA_TRANSP, 0);
-    if (parts.charging_bolt != nullptr) {
-      lv_obj_set_style_opa(parts.charging_bolt, LV_OPA_TRANSP, 0);
-    }
+    set_style_bg_opa_if_changed(parts.fill, LV_OPA_TRANSP);
+    set_style_opa_if_changed(parts.charging_bolt, LV_OPA_TRANSP);
     return;
   }
-  lv_obj_set_style_bg_opa(parts.fill, LV_OPA_COVER, 0);
+  set_style_bg_opa_if_changed(parts.fill, LV_OPA_COVER);
   const int usable = parts.body_width - 4;
   const int filled = usable * (percent > 100 ? 100 : percent) / 100;
   const int fill_width = filled < 1 ? 1 : filled;
-  lv_obj_set_width(parts.fill, fill_width);
+  set_width_if_changed(parts.fill, fill_width);
 
   // The overlay's own content never changes (built once, in battery_icon())
   // - charging only ever toggles whether it is shown, the same one-line
   // pattern set_tray_indicator_icon_visible() already uses for a static
   // bitmap that also never changes after construction.
-  if (parts.charging_bolt != nullptr) {
-    lv_obj_set_style_opa(parts.charging_bolt,
-                         charging ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
-  }
+  set_style_opa_if_changed(parts.charging_bolt,
+                           charging ? LV_OPA_COVER : LV_OPA_TRANSP);
 }
 
 // One LV_COLOR_FORMAT_I1 canvas, backed directly by the module's own bytes
@@ -593,8 +643,11 @@ TrayIndicatorIcon tray_indicator_icon(lv_obj_t* parent, Rect bounds, int slot,
 }
 
 void set_tray_indicator_icon_visible(const TrayIndicatorIcon& icon, bool visible) {
-  if (icon.canvas == nullptr) return;
-  lv_obj_set_style_opa(icon.canvas, visible ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+  // This is the one that mattered: update_tray_indicators() calls it for every
+  // slot on every ~100 ms tick, so before the guard it repainted the whole
+  // panel ten times a second regardless of whether any indicator had moved.
+  set_style_opa_if_changed(icon.canvas,
+                           visible ? LV_OPA_COVER : LV_OPA_TRANSP);
 }
 
 void button_hints(lv_obj_t* parent, Rect bounds, InputHints hints) {
