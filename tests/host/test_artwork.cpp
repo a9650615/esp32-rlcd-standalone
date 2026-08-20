@@ -18,7 +18,12 @@
 // while still passing for a JPEG decoded into noise - the exact wrong way
 // round.
 
+// The same guard every other geometry test in this suite uses: ui_data.hpp
+// reaches ui_theme.hpp, which needs real LVGL without it, and this file wants
+// only kNowPlayingArtworkSize and now_playing_artwork_fits_slot().
+#define UI_THEME_GEOMETRY_ONLY
 #include "artwork.hpp"
+#include "ui_data.hpp"
 
 #include <cstring>
 
@@ -283,7 +288,7 @@ const unsigned char kBandsJpeg[] = {
     0x8a, 0x28, 0xa0, 0x0f, 0xff, 0xd9,};
 
 constexpr int kSourceEdge = 384;
-constexpr int kExpectedEdge = 176;  // ui_data.hpp's kNowPlayingArtworkSize
+constexpr int kExpectedEdge = ui::kNowPlayingArtworkSize;
 
 // Fraction of set bits - ink - in rows [y0, y1) of a tight-packed 1-bit image.
 double ink_density(const app_core::MediaArtwork& art, int y0, int y1) {
@@ -393,6 +398,19 @@ HOST_TEST(artwork_clear_forgets_the_previous_cover) {
   app_core::MediaArtwork again;
   EXPECT_TRUE(airplay::decode_artwork(kBandsJpeg, sizeof(kBandsJpeg), again));
   EXPECT_EQ(static_cast<int>(again.width), kExpectedEdge);
+}
+
+HOST_TEST(artwork_target_edge_matches_the_page_slot) {
+  // artwork.cpp duplicates kNowPlayingArtworkSize as its own kTargetEdge
+  // rather than including a rendering header (see its comment). This is the
+  // check that keeps them honest, and it is not cosmetic: the renderer's
+  // now_playing_artwork_fits_slot() gate rejects anything larger than the slot
+  // and then draws no cover at all, so a decoder one pixel too generous makes
+  // the artwork silently disappear rather than look wrong.
+  app_core::MediaArtwork art;
+  EXPECT_TRUE(airplay::decode_artwork(kBandsJpeg, sizeof(kBandsJpeg), art));
+  EXPECT_TRUE(ui::now_playing_artwork_fits_slot(art.width, art.height));
+  EXPECT_EQ(static_cast<int>(art.width), ui::kNowPlayingArtworkSize);
 }
 
 HOST_TEST(artwork_source_is_the_size_the_downsample_path_needs) {

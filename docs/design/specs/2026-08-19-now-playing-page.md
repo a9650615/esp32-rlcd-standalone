@@ -117,18 +117,30 @@ default.
 
 | Element | Rect | Font | Notes |
 | --- | --- | --- | --- |
-| Artwork | `{6, 46, 176, 176}` | — | 1-bit, see below |
-| Source | `{194, 46, 200, 16}` | 14 | dropped if unavailable |
-| Title | `{194, 66, 200, 68}` | 28 | 2 lines, then ellipsis |
-| Artist | `{194, 140, 200, 22}` | 20 | 1 line, then ellipsis |
-| Album | `{194, 166, 200, 16}` | 14 | 1 line, then ellipsis |
+| Artwork | `{6, 46, 190, 190}` | — | 1-bit, see below |
+| Source | `{208, 46, 186, 16}` | 14 | dropped if unavailable |
+| Title | `{208, 66, 186, 68}` | 28 | 2 lines, then ellipsis |
+| Artist | `{208, 140, 186, 22}` | 20 | 1 line, then ellipsis |
+| Album | `{208, 166, 186, 16}` | 14 | 1 line, then ellipsis |
 | Transport state | `{6, 244, 120, 16}` | 14 | left of the bar |
 | Time | right-aligned at x 394, y 244 | 14 | `1:42 / 3:58` |
 | Progress outline | `{6, 266, 388, 10}` | — | 1px |
 | Progress fill | `{8, 268, w, 6}` | — | `w = 384 × elapsed/total` |
 
-176 rather than a larger square is not a memory decision: the right column
-needs 200px to fit two lines of 28px type, and 176 + 12 + 200 = 388 exactly.
+190 is the ceiling, and the wall is vertical rather than horizontal. The
+artwork starts at y 46 and the transport row is pinned at y 244, so a square
+cover cannot exceed 198 however much of the right column it is given; 190
+leaves an 8px gap above the transport. 6 + 190 + 12 + 186 = 394, the right edge
+of the safe canvas.
+
+It was 176 with a 200px right column, on the reasoning that 200 is what two
+lines of 28px type need. That was true and not the binding constraint - it left
+22px of vertical gap unspent. At 186 the same two lines still fit, with roughly
+one CJK glyph per line less before the label ellipsises.
+
+Going past 190 means moving the transport row or letting the cover overlap it.
+That is a different page, not a bigger number, and this spec does not describe
+it.
 
 ### Layout B — no artwork
 
@@ -282,17 +294,33 @@ registry does.
 **The module does all of it.** Core is handed finished 1-bit pixels and never
 learns what JPEG is. Four steps, each with a known output size:
 
-1. `RAOP_EVENT_ARTWORK` hands over a JPEG buffer. **Its size is unmeasured.**
-2. Decode to 8-bit greyscale at 176 × 176 — 30.3 KB, PSRAM.
-3. Dither to 1-bit with the existing `ui::dither_bayer4x4_dark(x, y, level)`.
-   It is already per-pixel and already takes a 0–16 level, so nothing new is
-   written: convert luminance to that scale and call it. 176 is far above
-   `kMinDitherDimensionPx` (16), so the pattern is in its measured range.
-   Including `ui/dither.hpp` from the module is the allowed direction
-   (module → core); it is a header of pure inline functions with no LVGL in
-   it.
-4. Publish the packed buffer as `MediaArtwork` — 176 × 22 bytes/row = 3.9 KB,
+1. `RAOP_EVENT_ARTWORK` hands over a JPEG buffer. **Measured since:** an
+   iPhone sends 180,224 bytes for a 512 × 512 cover. `util.c` had to grow a
+   PSRAM path for bodies over 8 KB before any of this could arrive at all.
+2. Decode with tjpgd at the smallest power-of-two scale that still
+   **overshoots** the slot — 1/2 for a 512 × 512 cover — into an 8-bit
+   greyscale intermediate in PSRAM. Overshoot deliberately, because step 3
+   depends on it.
+3. Box-average down to exactly 190 × 190. This is the step that manufactures
+   tone: four source pixels becoming one produce intermediate greys that did
+   not exist in the decoded image.
+4. **Floyd-Steinberg error diffusion** to 1-bit, not
+   `ui::dither_bayer4x4_dark()`. This reverses what this spec originally said,
+   on evidence: the Bayer matrix is an ordered dither built for flat UI fills,
+   and on a photograph it posterises to 17 levels and lays a visible
+   cross-hatch over the image. Error diffusion carries each pixel's
+   quantisation error into its neighbours, so local average brightness
+   survives and brighter regions simply receive fewer ink pixels.
+
+   The cost of the change is the greyscale intermediate in step 2, which an
+   ordered dither would not have needed - error diffusion needs raster order
+   and whole rows, and tjpgd delivers MCU blocks. 30 KB of PSRAM for the length
+   of one decode.
+5. Publish the packed buffer as `MediaArtwork` — 190 × 24 bytes/row = 4.5 KB,
    the same tightly-packed layout the tray indicator bitmaps already use.
+
+**Measured:** 579 ms for a 512 × 512 cover, synchronous on the RTSP task, once
+per track change. It stays there until that number says otherwise.
 
 Exactly one decoded artwork is held at a time, owned by the module. A new one
 replaces it; there is no cache. Any failure — decoder error, allocation

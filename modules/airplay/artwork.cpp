@@ -45,9 +45,19 @@ namespace {
 
 constexpr char kTag[] = "airplay_art";
 
-// The page reserves a 176 px square (ui_data.hpp's kNowPlayingArtworkSize).
-// Filling it exactly is the whole point of the box downsample below.
-constexpr int kTargetEdge = 176;
+// The page reserves a square this many pixels on a side - ui_data.hpp's
+// kNowPlayingArtworkSize. Filling it exactly is the whole point of the box
+// downsample below.
+//
+// Duplicated rather than included: this module publishes an
+// app_core::MediaArtwork and does not otherwise know components/ui exists, and
+// including a rendering header here to read one integer would invert that.
+// The duplication is not left on trust - now_playing_artwork_fits_slot()
+// rejects anything larger than the slot and render_now_playing.cpp then draws
+// no cover at all, so the two drifting apart makes the artwork silently
+// vanish. artwork_target_edge_matches_the_page_slot in
+// tests/host/test_artwork.cpp includes both headers and fails if they differ.
+constexpr int kTargetEdge = 190;
 
 // Ceiling on the decoded intermediate. 400x400 of 8-bit grayscale is 160 KB of
 // PSRAM held for the length of one decode. Past this the extra source detail

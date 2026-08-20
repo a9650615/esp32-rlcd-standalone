@@ -1463,10 +1463,17 @@ static_assert(
 // other by eye. What is derived - and must stay derived - is the progress
 // fill width, which is the only thing on the page that moves.
 
-inline constexpr int kNowPlayingArtworkSize = 176;
-// 6 + 176 + 12 = 194: the artwork's right edge plus a 12px gutter. The
-// remaining 200px is what two lines of 28px type need, which is what fixed
-// the artwork at 176 rather than a rounder number.
+inline constexpr int kNowPlayingArtworkSize = 190;
+// 190 is the ceiling, not a preference. The wall is vertical, not horizontal:
+// the artwork starts at y=46 and the transport row is pinned at y=244, so a
+// square cover cannot exceed 198 however much of the text column it is given,
+// and 190 leaves an 8px gap above the transport. Widening past this means
+// moving the transport row or letting the cover overlap it - a different page,
+// not a bigger constant. It was 176, which spent 22px of that gap on nothing.
+//
+// 6 + 190 + 12 = 208: the artwork's right edge plus a 12px gutter. That leaves
+// 186px for the text column, down from 200 - two lines of 28px type still fit,
+// with roughly one CJK glyph per line less before the label ellipsises.
 //
 // This is written as an absolute safe-canvas x - the same coordinate space
 // the mockup's own numbers are in, and the one every other literal in
@@ -1475,8 +1482,8 @@ inline constexpr int kNowPlayingArtworkSize = 176;
 // space onto whatever content rect it is actually given; see its own
 // comment for why that translation, not a raw per-literal offset, is what
 // this page needs.
-inline constexpr int kNowPlayingTextColumnX = 194;
-inline constexpr int kNowPlayingTextColumnWidth = 200;
+inline constexpr int kNowPlayingTextColumnX = 208;
+inline constexpr int kNowPlayingTextColumnWidth = 186;
 
 // True when a publisher's reported artwork dimensions fit inside the
 // kNowPlayingArtworkSize x kNowPlayingArtworkSize slot the layout above
@@ -1634,8 +1641,13 @@ struct VolumeOverlayLayout {
 constexpr VolumeOverlayLayout volume_overlay_layout(const Rect content) {
   const int dx = content.x - kNowPlayingSpecContent.x;
   const int dy = content.y - kNowPlayingSpecContent.y;
+  // kNowPlayingTextColumnWidth, not a literal 200. It was 200, which happened
+  // to equal the column width and stopped being right the moment the artwork
+  // slot grew - x + 200 then ran 14px past the safe canvas. The label is
+  // aligned to the page's own text column by intent, so it should track it.
   return {{6 + dx, 50 + dy, 120, 16},
-          {kNowPlayingTextColumnX + dx, 50 + dy, 200, 16},
+          {kNowPlayingTextColumnX + dx, 50 + dy, kNowPlayingTextColumnWidth,
+           16},
           {6 + dx, 74 + dy, 388, 130},
           {6 + dx, 232 + dy, 388, 36}};
 }
