@@ -26,6 +26,7 @@ add_executable(host_tests
     test_market.cpp
     test_net_log.cpp
     test_ota.cpp
+    test_ota_quiesce.cpp
     test_settings_menu.cpp
     test_history.cpp
     test_audio_drain.cpp
@@ -42,6 +43,7 @@ add_executable(host_tests
     ../../components/market/market_schedule.cpp
     ../../components/net_log/net_log_ring.cpp
     ../../components/ota/ota_image.cpp
+    ../../components/ota/ota_quiesce.cpp
     ../../components/ota/ota_prefix.cpp
     ../../components/ota/ota_version.cpp
     ../../components/ui/ui_strings.cpp

@@ -26,6 +26,11 @@ idf_component_register(
         esp_driver_i2s
         board_rlcd
         espressif__esp_codec_dev
+        # For ota::register_quiesce_hook() (ota_quiesce.hpp) - audio has to
+        # drop GPIO46 before a firmware write erases the slot, or the
+        # amplifier sits enabled with an undriven input. Private: only
+        # audio.cpp registers, audio.hpp's API says nothing about OTA.
+        ota
         # For app_core::register_tray_indicator()/set_tray_indicator_active()
         # (tray_registry.hpp) - private, since only audio.cpp uses it, not
         # audio.hpp's public API. app_core has no dependents that would make

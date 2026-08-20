@@ -1,5 +1,7 @@
 #include "audio.hpp"
 
+#include "ota_quiesce.hpp"
+
 #ifdef ESP_PLATFORM
 
 #include <algorithm>
@@ -495,6 +497,36 @@ bool write_tone_step(int frequency_hz, int duration_ms,
 
 }  // namespace
 
+// Registered with components/ota and called on the writer's task immediately
+// before esp_ota_begin(). See ota_quiesce.hpp for the contract and
+// docs/design/2026-08-20-quiescing-modules-before-an-ota-write.md for the
+// incident: a push sent during playback produced loud noise from the speaker
+// and then failed, because the amplifier was left enabled with an undriven
+// input.
+//
+// It calls audio_stream_close() and nothing else on purpose. That function
+// already sequences the teardown the right way round - trailing silence, one
+// I2S drain wait, GPIO46 low, tray indicator cleared, codec closed - and the
+// order is the entire mechanism. A hook that merely stopped feeding the codec
+// would leave the amplifier live and reproduce the fault it exists to prevent.
+//
+// Idle and repeat calls are both fine: audio_stream_close() is a no-op when no
+// stream is open, and a retried push runs every hook again.
+// Unconditional rather than gated on whether a stream is open. audio_stream_close()
+// is already total - it returns immediately when the mutex was never created,
+// and close_stream_locked() checks for an open stream - and reading the state
+// here would mean either moving this below the stream globals or forward
+// declaring them, for a log line.
+//
+// It does take g_stream_mutex with portMAX_DELAY, so in principle this waits
+// for whoever holds it. In practice that is one audio_stream_write() call,
+// which is a codec write and returns in single-digit milliseconds; the whole
+// quiesce budget is 500.
+void quiesce_for_ota() {
+  ESP_LOGW(kTag, "OTA quiesce: closing any open stream before the write");
+  audio_stream_close();
+}
+
 esp_err_t audio_init() {
   if (g_codec_dev != nullptr) return ESP_OK;
 
@@ -514,6 +546,14 @@ esp_err_t audio_init() {
     if (!g_tray_indicator.valid()) {
       ESP_LOGW(kTag, "tray indicator registration failed: registry full");
     }
+  }
+
+  // Registered here rather than at first use, so the hook exists even if no
+  // stream is ever opened - an OTA write during silence must still be allowed
+  // to find it. Logged on failure for the same reason register_tray_indicator
+  // is: a module whose quiesce never runs is the state this prevents.
+  if (!ota::register_quiesce_hook(&quiesce_for_ota)) {
+    ESP_LOGW(kTag, "OTA quiesce hook registration failed: registry full");
   }
 
   // GPIO46 goes to a known-low output before anything else touches it - if
