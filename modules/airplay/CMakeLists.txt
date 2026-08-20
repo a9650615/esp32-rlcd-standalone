@@ -16,6 +16,11 @@ set(airplay_srcs "")
 if(CONFIG_AIRPLAY_ENABLE)
     list(APPEND airplay_srcs
         "airplay.cpp"
+        # Cover-art decode: JPEG -> 1-bit via a private TJpgDec copy. The
+        # config that copy needs (grayscale output, descaling on) cannot be
+        # shared with LVGL's bundled one - see UPSTREAM.md.
+        "artwork.cpp"
+        "tjpgd/tjpgd.c"
         # esp-raop-receiver (RAOP/AirPlay 1 protocol, RTP, RTSP, DMAP
         # metadata) - see UPSTREAM.md for provenance. lib/libalac.a and
         # main/ were not vendored; the RSA key was stripped out of raop.c
@@ -44,11 +49,18 @@ idf_component_register(
     SRCS ${airplay_srcs}
     INCLUDE_DIRS "include"
     PRIV_INCLUDE_DIRS
+        # artwork.cpp includes "tjpgd/tjpgd.h" relative to here.
+        "."
         "esp-raop-receiver/include"
         "esp-raop-receiver/private_include"
         "esp-raop-receiver/src"
         "alac/codec"
     PRIV_REQUIRES
+        # For ui::dither_pixel_dark() (dither.hpp) - a decoded cover dithers
+        # with the same Bayer matrix as every other piece of 1-bit art on this
+        # panel, rather than inventing its own texture. Private: only
+        # artwork.cpp uses it, airplay.hpp says nothing about it.
+        ui
         esp_netif
         mdns
         mbedtls

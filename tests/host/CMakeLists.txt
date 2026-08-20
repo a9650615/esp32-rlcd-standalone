@@ -30,6 +30,7 @@ add_executable(host_tests
     test_settings_menu.cpp
     test_history.cpp
     test_audio_drain.cpp
+    test_artwork.cpp
     ../../components/app_core/app_snapshot.cpp
     ../../components/app_core/history.cpp
     ../../components/app_core/page_registry.cpp
@@ -48,6 +49,8 @@ add_executable(host_tests
     ../../components/ota/ota_version.cpp
     ../../components/ui/ui_strings.cpp
     ../../components/ui/settings_menu.cpp
+    ../../modules/airplay/artwork.cpp
+    ../../modules/airplay/tjpgd/tjpgd.c
     ../../.tools/esp-idf/components/json/cJSON/cJSON.c
 )
 target_include_directories(host_tests PRIVATE
@@ -61,6 +64,11 @@ target_include_directories(host_tests PRIVATE
     ../../components/net_log/include
     ../../components/ota/include
     ../../modules/audio/include
+    ../../modules/airplay
+    ../../modules/airplay/tjpgd
+    # ESP-IDF headers artwork.cpp includes unconditionally, stubbed for host.
+    # See tests/host/esp_stubs/esp_heap_caps.h for why a shim and not an #ifdef.
+    esp_stubs
     ../../.tools/esp-idf/components/json/cJSON
 )
 if(HOST_DEMO_MISSING_PAGE)

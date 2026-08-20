@@ -350,3 +350,52 @@ a guaranteed failure on every session.
   consistent with `raop_core.c`'s own single-connected-receiver assumption
   (`s_handle`). No behaviour change to anything upstream already did; this
   only adds a new symbol.
+
+## tjpgd (JPEG decoder for cover art)
+
+- Upstream: TJpgDec R0.03, <http://elm-chan.org/fsw/tjpgd/>
+- Vendored from: `managed_components/lvgl__lvgl/src/libs/tjpgd/` in this
+  repository - that is, LVGL's copy of it, not ChaN's original.
+- Licence: `LICENSE.txt`, as copied. A one-clause BSD-style permissive licence,
+  compatible with this repository's GPL-3.0.
+- Vendored path: `modules/airplay/tjpgd/`.
+
+Copied rather than reused in place because LVGL's is a managed component: its
+contents are replaced on dependency update, so a configuration change there
+does not survive, and LVGL's image decoder needs the settings it has. The
+setting this module needs and cannot get there is `JD_USE_SCALE`, which LVGL
+switches off - it is what lets a 512x512 cover be decoded at 1/2 during decode
+rather than materialised full-size and shrunk afterwards.
+
+### Intentional changes
+
+- **`tjpgd.h`: LVGL's `#include "../../lv_conf_internal.h"` replaced with a
+  plain `#define LV_USE_TJPGD 1`.** LVGL wraps the whole header and source in
+  `#if LV_USE_TJPGD` and gets that symbol from its own config; outside LVGL's
+  tree that include does not resolve. Defining the symbol directly keeps the
+  upstream guard structure intact rather than deleting the guards, so a future
+  re-vendor is a diff of two lines and not a merge.
+- **`tjpgdcnf.h` is this module's own**, not LVGL's. See its comments for each
+  setting.
+
+### What LVGL removed, and why it matters here
+
+LVGL's copy is not ChaN's source with different settings - it has code
+**deleted**. `jd_mcu_output()` guards its pixel-building loop with
+`if (JD_FORMAT != 2)` and upstream's matching `else` branch, the one that copies
+the Y component into `workbuf` for grayscale output, is simply not in the file.
+LVGL only ever builds RGB888, so for them it was dead code.
+
+The consequence is that `JD_FORMAT 2` does not select grayscale output in this
+source; it selects **no output at all**, and `outfunc` receives `jd->workbuf`
+still holding `block_idct()` scratch. That is not a crash and not an error
+return - `jd_decomp()` reports `JDR_OK`. It renders as an image whose shapes are
+faintly recognisable, because IDCT scratch correlates with the image it came
+from, and whose tone is noise. It shipped, logged clean, and was caught by a
+person looking at the panel.
+
+So `tjpgdcnf.h` sets `JD_FORMAT 0` and `artwork.cpp`'s `write_gray()` computes
+luminance from the BGR bytes itself. That keeps this copy byte-identical to
+LVGL's apart from the two-line header change above, which is what makes
+re-vendoring a plain overwrite. `tests/host/test_artwork.cpp` fails if anyone
+sets it back to 2.

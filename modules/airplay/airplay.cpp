@@ -1,5 +1,7 @@
 #include "airplay.hpp"
 
+#include "artwork.hpp"
+
 #ifdef CONFIG_AIRPLAY_ENABLE
 
 #include "esp_raop_receiver.h"
@@ -506,11 +508,38 @@ void handle_event(raop_event_t event, void *event_data,
       // never fires. publish() reads raop_get_volume() directly instead;
       // see its own comment for why.
       break;
-    case RAOP_EVENT_ARTWORK:
-      // Not this task - see NowPlaying::artwork's own comment
-      // (media_registry.hpp). Left default (null bits) so the page renders
-      // its no-artwork layout.
+    case RAOP_EVENT_ARTWORK: {
+      const raop_artwork_t* art = static_cast<const raop_artwork_t*>(event_data);
+      // Decoded on this task, and timed, because that decision needs a
+      // measurement rather than a guess. A cover is 176 KB of JPEG (measured
+      // from an iPhone) and the decode reads it out of PSRAM, which is the same
+      // resource whose cache traffic makes a display flush starve the audio
+      // path. If this turns out to cost tens of milliseconds it can stay here;
+      // if it costs hundreds it has to move to a worker task, which also means
+      // copying the JPEG because raop.c frees the body when this returns.
+      //
+      // Doing it inline first is deliberate: building the worker before knowing
+      // the number would be machinery justified by an assumption.
+      const int64_t started_us = esp_timer_get_time();
+      app_core::MediaArtwork decoded;
+      bool ok = false;
+      if (art != nullptr && art->data != nullptr && art->len > 0) {
+        ok = decode_artwork(art->data, art->len, decoded);
+      } else {
+        // image/none: the sender is saying this track has no art. Clearing is
+        // the point - without it the panel keeps the previous track's cover.
+        clear_artwork();
+      }
+      {
+        std::lock_guard<std::mutex> lock(g_state_mutex);
+        g_now_playing.artwork = ok ? decoded : app_core::MediaArtwork{};
+        publish_locked();
+      }
+      ESP_LOGI(kTag, "artwork event: %s in %lld ms",
+               ok ? "decoded" : (art && art->len ? "decode failed" : "cleared"),
+               (esp_timer_get_time() - started_us) / 1000);
       break;
+    }
     default:
       break;
   }
