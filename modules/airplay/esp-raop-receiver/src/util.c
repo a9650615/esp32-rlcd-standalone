@@ -13,6 +13,8 @@
 #include <ctype.h>
 #include <stdarg.h>
 #include "pthread.h"
+#include <esp_heap_caps.h>
+
 #include "util.h"
 #include "log_util.h"
 
@@ -36,6 +38,18 @@ static int read_line(int fd, char *line, int maxlen, int timeout);
 /*----------------------------------------------------------------------------*/
 
 /*---------------------------------------------------------------------------*/
+// AirPlay artwork is the only body that is ever large. Everything else - DMAP
+// metadata, progress, volume - is a few hundred bytes, so the split is between
+// "a message" and "an image" rather than an arbitrary size.
+//
+// kMaxBodyBytes is 512 KB because nobody has yet measured what an artwork body
+// actually is: util.c used to zero the length before reporting it, so the size
+// has never appeared in a log. The LOG_INFO above prints it now, and this
+// number should be revisited once there is a real figure rather than left at a
+// guess that happens to work.
+#define kSmallBodyBytes  8192
+#define kMaxBodyBytes    (512 * 1024)
+
 #define MAX_INTERFACES 256
 #define DEFAULT_INTERFACE 1
 #define INVALID_SOCKET (-1)
@@ -257,24 +271,57 @@ bool http_parse(int sock, char *method, key_data_t *rkd, char **body, int *len)
 	if (*len) {
     int size = 0;
 
-    if (*len > 8192) {
-        // Body too large to buffer - read and discard in chunks
-        char discard[256];
-        int remaining = *len;
-        while (remaining > 0) {
-            int to_read = remaining < sizeof(discard) ? remaining : sizeof(discard);
-            int bytes = recv(sock, discard, to_read, 0);
-            if (bytes <= 0) break;
-            remaining -= bytes;
+    // Large bodies come from PSRAM, small ones keep the plain malloc.
+    //
+    // The ceiling used to be 8192 bytes, and anything over it was read into a
+    // discard buffer and reported as `*len = 0` - which destroyed the size on
+    // the same line that was about to report it, so raop.c logged
+    // "JPEG image discarded (too large: 0 bytes)" and nobody could tell a
+    // dropped 200 KB image from a zero-byte one. AirPlay artwork is the only
+    // body that ever exceeds 8192, so the effect was that RAOP_INT_ARTWORK had
+    // never fired once.
+    //
+    // PSRAM specifically, and not by raising the malloc ceiling: malloc() here
+    // is internal RAM, which measured 29,807 bytes free with a 5,120-byte
+    // largest block during the TLS fetches at startup. A JPEG-sized contiguous
+    // internal request there fails intermittently rather than cleanly, which is
+    // the failure mode behind five separate defects in this codebase. Small
+    // bodies - every DMAP and progress message - stay on the internal path
+    // where their allocation is trivially satisfiable and the extra hop is not
+    // worth it.
+    if (*len > kSmallBodyBytes) {
+        // Logged before anything else touches *len, because the old code's one
+        // real failure was reporting a size it had already zeroed.
+        LOG_INFO("body of %d bytes exceeds the %d-byte small-body path; "
+                 "buffering from PSRAM", *len, kSmallBodyBytes);
+        if (*len > kMaxBodyBytes) {
+            // Still a ceiling, just a useful one. Without any bound a sender -
+            // or a corrupted Content-Length - could ask for an arbitrary
+            // allocation, and PSRAM is also where the display buffers and the
+            // RTP ring live.
+            LOG_ERROR("body of %d bytes exceeds the %d-byte maximum; discarding",
+                      *len, kMaxBodyBytes);
+            char discard[256];
+            int remaining = *len;
+            while (remaining > 0) {
+                int to_read = remaining < (int) sizeof(discard) ? remaining : (int) sizeof(discard);
+                int bytes = recv(sock, discard, to_read, 0);
+                if (bytes <= 0) break;
+                remaining -= bytes;
+            }
+            *body = NULL;
+            *len = 0;
+            return true;
         }
-        *body = NULL;
-        *len = 0;
-        return true;
+        *body = heap_caps_malloc(*len + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    } else {
+        *body = malloc(*len + 1);
     }
-
-    *body = malloc(*len + 1);
     if (!*body) {
-        LOG_ERROR("failed to allocate body buffer", NULL);
+        // Says which path failed and how much was wanted. The old message said
+        // neither, and an allocation failure that cannot be sized is a report
+        // that something went wrong without saying what to change.
+        LOG_ERROR("failed to allocate a %d-byte body buffer", *len);
         return false;
     }
 
