@@ -677,14 +677,38 @@ static bool handle_rtsp(raop_ctx_t *ctx, int sock)
                 success = ctx->cmd_cb(RAOP_INT_METADATA, metadata.artist, metadata.album, metadata.title, timestamp);
 				free_metadata(&metadata);
 			}
-		} else if ((p = kd_lookup(headers, "Content-Type")) != NULL && strcasestr(p, "image/jpeg")) {
+		} else if ((p = kd_lookup(headers, "Content-Type")) != NULL && strcasestr(p, "image/")) {
+				// Any image/*, not only image/jpeg.
+				//
+				// Measured against a real sender: the only image message that
+				// arrived carried `Content-Type: image/none`, which the old
+				// jpeg-only test skipped straight into the "Unhandled SET
+				// PARAMETER" branch. image/none is how a sender says this track
+				// has no art, or that the previous art should be dropped - a
+				// message that has to be acted on, not ignored, or the panel
+				// keeps showing the last track's cover. Senders also use
+				// image/png, which the old test missed for the same reason.
+				//
+				// The content type is logged either way, because the previous
+				// version of this branch could not distinguish "no image was
+				// sent" from "an image was sent in a format we do not match".
 				uint32_t timestamp = 0;
 				if ((p = kd_lookup(headers, "RTP-Info")) != NULL) sscanf(p, "%*[^=]=%lu", (unsigned long*)&timestamp);
-				if (body) {
-						LOG_INFO("[%p]: received JPEG image of %d bytes (ts:%d)", ctx, len, timestamp);
+				char *ctype = kd_lookup(headers, "Content-Type");
+				if (ctype != NULL && strcasestr(ctype, "image/none")) {
+						LOG_INFO("[%p]: sender reports no artwork for this track (ts:%d)", ctx, timestamp);
+						ctx->cmd_cb(RAOP_INT_ARTWORK, NULL, 0, timestamp);
+				} else if (body) {
+						LOG_INFO("[%p]: received %s image of %d bytes (ts:%d)",
+								 ctx, ctype ? ctype : "image", len, timestamp);
 						ctx->cmd_cb(RAOP_INT_ARTWORK, body, len, timestamp);
 				} else {
-						LOG_INFO("[%p]: JPEG image discarded (too large: %d bytes)", ctx, len);
+						// util.c only returns a null body now when the length
+						// exceeded kMaxBodyBytes, and it logs the real size when
+						// it does - so this no longer hides the figure the way
+						// "too large: 0 bytes" did.
+						LOG_INFO("[%p]: %s image not buffered (%d bytes)",
+								 ctx, ctype ? ctype : "image", len);
 				}
 		} else {
 			char *dump = kd_dump(headers);
