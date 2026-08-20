@@ -126,10 +126,32 @@ correct.
 
 ## 5. The display flush still costs 28 ms of cache-thrashing CPU
 
-**Status: reduced 6x, root cause untouched.**
+**Status: cost per flush unchanged, but the flush rate is down ~40x.**
 
-157 ms per frame at the start of the day, 26-28 ms now, repeating every
-~190 ms. The remaining cost is streaming the 240 KB RGB565 draw buffer out of
+The repetition is fixed and was the larger half of this item. It used to repeat
+every ~190-270 ms - 4.4 full-panel rewrites per second, awake or idle - because
+every LVGL style setter invalidates unconditionally and `update_tray_indicators()`
+rewrites every slot's opacity on every 100 ms tick. Under
+`LV_DISPLAY_RENDER_MODE_FULL` one invalidated object rewrites the whole panel,
+so the board was repainting continuously with nothing changing. `f98824f` made
+those setters compare first.
+
+Measured after: **0.10-0.19 flushes/sec over 165 s**, of which nearly all fall
+in the ~21 s an AirPlay session was open. Idle is now essentially a clock
+minute rollover and a sensor update - a handful of flushes per minute.
+
+What remains is one flush per second *during playback*, which is deliberate:
+`ui_app.cpp` rebuilds the now-playing page on each elapsed second so the
+progress bar moves. A full page rebuild for two changed labels is the same
+waste this item is about, one level up, and the mechanism to avoid it already
+exists - `update_visible_fields()` - it just needs this page's time label and
+progress fill registered in `UiContext`. That is six places including the
+staging/promote path used for atomic page replacement, so it is not a one-liner
+and has not been done. **Do it if one repaint per second is visible on the
+panel; the dither of a cover makes panel rewrites far easier to see than flat
+text does.**
+
+157 ms per frame at the start of the day, 26-28 ms now. The remaining cost is streaming the 240 KB RGB565 draw buffer out of
 PSRAM, which is far larger than the cache both cores share, so a single sweep
 evicts whatever the other core was using. That is why bypassing the flush
 entirely took codec writes more than 20 ms apart from 74 in 5,632 down to 1 in
@@ -149,6 +171,14 @@ while chasing a bug, which is why it has not been made.
 
 **Done looks like:** flush conversion in single-digit milliseconds, and codec
 write gaps that stay under one 8 ms chunk.
+
+**Not measured:** the pre-fix idle rate. The log ring only ever held windows
+with an AirPlay session in them, so 4.4/sec is a playback figure. The code path
+says idle was the same - the per-tick opacity write is unconditional, and
+`lv_obj_area_is_visible()` tests `LV_OBJ_FLAG_HIDDEN` rather than opacity, so an
+inactive indicator invalidated exactly like an active one - and subtracting the
+post-fix playback rate from 4.4 puts pre-fix idle near 3.4/sec. That is an
+inference from the code and two measurements, not a reading.
 
 ---
 
