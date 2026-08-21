@@ -29,14 +29,6 @@
   above `kChargingBoltRows` for how that was confirmed), and checked in as
   the literal `kChargingBoltRows` array in `components/ui/ui_theme.hpp`,
   next to the exact regeneration command.
-- Why a raster rather than the vector shape itself: this project's panel is
-  a 1-bit LVGL canvas at tray-icon scale (22x10px for this cell), where a
-  glyph's own stroke weight and corner treatment are not resolvable - only
-  the silhouette survives downscaling. Still treated as a one-off
-  exception for this icon, not a precedent for converting the rest of the
-  hand-drawn icon set (tray Wi-Fi/audio/AirPlay, thermometer, humidity,
-  weather silhouettes) - see `scripts/svg-to-bitmap.py`'s own header for
-  that evaluation's outcome.
 
 ### Superseded: Material Symbols `bolt`
 
@@ -48,3 +40,22 @@ holds up better at this size than Material's thinner outlined stroke did -
 so there is nothing left here for that provenance entry to describe. Not
 recorded further; if it is ever needed again, `git log -p` on this file
 finds the entry this replaced.
+
+## System tray icons
+
+- Repository: <https://github.com/phosphor-icons/core>
+- Pinned commit: `2b75f3ad12b420c9504ef05df8d2564a28f8500e`
+- Licence: MIT, repository root `LICENSE`.
+- Copyright: Copyright (c) 2023 Phosphor Icons.
+- Upstream to vendored paths:
+  - `assets/bold/speaker-high-bold.svg` → `components/ui/assets/speaker-high-bold.svg`
+  - `assets/bold/airplay-bold.svg` → `components/ui/assets/airplay-bold.svg`
+  - `assets/bold/wifi-high-bold.svg` → `components/ui/assets/wifi-high-bold.svg`
+  - `assets/bold/wifi-slash-bold.svg` → `components/ui/assets/wifi-slash-bold.svg`
+- All four are single-path, filled `256×256` SVGs.
+- Raster parameters: `--width 20 --height 20 --fit viewbox
+  --threshold 0.35 --min-stroke 1`.
+- The checked-in firmware assets are tight-packed, row-major, MSB-first I1
+  arrays. The SVG files are provenance and regeneration inputs only.
+- Generated arrays live in `modules/audio/audio.cpp`,
+  `modules/airplay/airplay.cpp`, and `components/ui/ui_theme.cpp`.

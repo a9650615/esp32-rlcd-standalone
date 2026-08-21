@@ -55,12 +55,6 @@ void set_style_bg_opa_if_changed(lv_obj_t* obj, lv_opa_t opa) {
   lv_obj_set_style_bg_opa(obj, opa, 0);
 }
 
-void set_style_border_opa_if_changed(lv_obj_t* obj, lv_opa_t opa) {
-  if (obj == nullptr) return;
-  if (lv_obj_get_style_border_opa(obj, LV_PART_MAIN) == opa) return;
-  lv_obj_set_style_border_opa(obj, opa, 0);
-}
-
 // The style width rather than lv_obj_get_width(): the latter reports the laid
 // out width, which is 0 until LVGL's first layout pass has run, so comparing
 // against it would skip the very first write.
@@ -323,64 +317,75 @@ void humidity_icon(lv_obj_t* parent, Rect bounds, bool inverse) {
                inverse);
 }
 
-// Three thick arcs over a filled dot - the standard mark.
-//
-// There is no arc primitive here and no diagonal, so each arc is a whole ring
-// concentric with the dot, clipped by a container whose bottom edge sits above
-// the dot: LVGL clips children to their parent unless OVERFLOW_VISIBLE is set,
-// so only the upper cap of each ring survives. The ends come out cut square
-// rather than angled, which is the one way this differs from the drawn glyph;
-// at tray size that is not what the eye picks up. Stroke weight and the
-// number of bands are.
-//
-// Returns the arcs so the caller can hide them in place. Rebuilding the page
-// to change a connection indicator would repaint the whole panel visibly.
+namespace {
+
+// Regenerate exactly with: python3 scripts/svg-to-bitmap.py
+// components/ui/assets/wifi-high-bold.svg --width 20 --height 20 --fit viewbox
+// --threshold 0.35 --min-stroke 1 --emit-bytes kWifiHighBoldBitmap
+constexpr uint8_t kWifiHighBoldBitmap[] = {
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf0, 0x00,
+    0x0f, 0xff, 0x00, 0x1f, 0x9f, 0x80, 0x78, 0x01, 0xe0, 0x61, 0xf8, 0x60,
+    0x07, 0xfe, 0x00, 0x0f, 0x0f, 0x00, 0x1c, 0x03, 0x80, 0x01, 0xf8, 0x00,
+    0x03, 0xfc, 0x00, 0x03, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x60, 0x00,
+    0x00, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+};
+static_assert(sizeof(kWifiHighBoldBitmap) == app_core::kTrayIconBitmapBytes,
+              "wifi-high-bold bitmap must be 60 tight-packed bytes");
+
+// Regenerate exactly with: python3 scripts/svg-to-bitmap.py
+// components/ui/assets/wifi-slash-bold.svg --width 20 --height 20 --fit viewbox
+// --threshold 0.35 --min-stroke 1 --emit-bytes kWifiSlashBoldBitmap
+constexpr uint8_t kWifiSlashBoldBitmap[] = {
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x00, 0x00, 0x1c, 0x70, 0x00,
+    0x0c, 0xff, 0x00, 0x1e, 0x1f, 0x80, 0x7f, 0x01, 0xe0, 0x63, 0x80, 0x60,
+    0x07, 0xce, 0x00, 0x0f, 0xef, 0x00, 0x1c, 0x73, 0x80, 0x01, 0xf8, 0x00,
+    0x03, 0xfc, 0x00, 0x03, 0x0e, 0x00, 0x00, 0x07, 0x00, 0x00, 0x63, 0x00,
+    0x00, 0x63, 0x80, 0x00, 0x01, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+};
+static_assert(sizeof(kWifiSlashBoldBitmap) == app_core::kTrayIconBitmapBytes,
+              "wifi-slash-bold bitmap must be 60 tight-packed bytes");
+
+alignas(LV_DRAW_BUF_ALIGN) uint8_t g_wifi_high_storage[
+    i1_canvas_storage_bound(app_core::kTrayIconSize, app_core::kTrayIconSize)];
+alignas(LV_DRAW_BUF_ALIGN) uint8_t g_wifi_slash_storage[
+    i1_canvas_storage_bound(app_core::kTrayIconSize, app_core::kTrayIconSize)];
+
+}  // namespace
+
+// Two static I1 canvases share a tray cell. State updates change opacity only,
+// avoiding a page rebuild and its full-panel redraw.
 WifiIconParts wifi_icon(lv_obj_t* parent, Rect bounds, bool connected) {
   WifiIconParts parts{};
-  const int dot = std::max(5, bounds.height * 3 / 10);
-  const int stroke = std::max(2, bounds.height / 7);
-  const int arc_height = bounds.height - dot - 1;
-  lv_obj_t* clip = lv_obj_create(parent);
-  if (clip == nullptr) return parts;
-  apply_surface(clip);
-  lv_obj_set_pos(clip, bounds.x, bounds.y);
-  lv_obj_set_size(clip, bounds.width, arc_height);
 
-  const int centre_x = bounds.width / 2;
-  // Relative to the container, so the rings are concentric with the dot that
-  // sits below it. Centring them on the container's own edge would give exact
-  // semicircles, and a dome over a dot is the hotspot idiom.
-  const int centre_y = bounds.height - dot / 2 - 1;
-  // Evenly spaced bands: the outermost reaches the top of the icon, the
-  // innermost stops just above the dot.
-  const int span = arc_height;
-  for (int i = 0; i < 3; ++i) {
-    const int radius = centre_y - (span * i) / 3;
-    lv_obj_t* ring = lv_obj_create(clip);
-    if (ring == nullptr) continue;
-    apply_surface(ring);
-    lv_obj_set_pos(ring, centre_x - radius, centre_y - radius);
-    lv_obj_set_size(ring, radius * 2, radius * 2);
-    lv_obj_set_style_radius(ring, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_opa(ring, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(ring, stroke, 0);
-    lv_obj_set_style_border_color(ring, lv_color_black(), 0);
-    parts.bars[i] = ring;
-  }
-  // Always drawn: an indicator that vanishes completely cannot be told apart
-  // from one that failed to render.
-  filled_circle(parent, bounds.x + centre_x, bounds.y + centre_y, dot, false);
+  repack_i1_bits(kWifiHighBoldBitmap, g_wifi_high_storage,
+                 sizeof(g_wifi_high_storage), app_core::kTrayIconSize,
+                 app_core::kTrayIconSize,
+                 i1_canvas_stride(app_core::kTrayIconSize),
+                 i1_canvas_pixel_offset());
+  repack_i1_bits(kWifiSlashBoldBitmap, g_wifi_slash_storage,
+                 sizeof(g_wifi_slash_storage), app_core::kTrayIconSize,
+                 app_core::kTrayIconSize,
+                 i1_canvas_stride(app_core::kTrayIconSize),
+                 i1_canvas_pixel_offset());
+
+  parts.connected = bind_i1_canvas(
+      parent, bounds.x, bounds.y, app_core::kTrayIconSize,
+      app_core::kTrayIconSize, g_wifi_high_storage, lv_color_white(),
+      LV_OPA_TRANSP, lv_color_black());
+  parts.disconnected = bind_i1_canvas(
+      parent, bounds.x, bounds.y, app_core::kTrayIconSize,
+      app_core::kTrayIconSize, g_wifi_slash_storage, lv_color_white(),
+      LV_OPA_TRANSP, lv_color_black());
+
   set_wifi_icon_state(parts, connected);
   return parts;
 }
 
 void set_wifi_icon_state(const WifiIconParts& parts, bool connected) {
-  // Hidden rather than hollowed: these are already outlines, so there is no
-  // emptier version to fall back to. The dot alone means no link.
-  for (lv_obj_t* ring : parts.bars) {
-    set_style_border_opa_if_changed(
-        ring, connected ? LV_OPA_COVER : LV_OPA_TRANSP);
-  }
+  set_style_opa_if_changed(parts.connected,
+                           connected ? LV_OPA_COVER : LV_OPA_TRANSP);
+  set_style_opa_if_changed(parts.disconnected,
+                           connected ? LV_OPA_TRANSP : LV_OPA_COVER);
 }
 
 // LVGL's own row stride for an I1 canvas this wide - never recomputed as a
@@ -463,10 +468,12 @@ namespace {
 // and every write into this buffer is bounds-checked against its actual
 // sizeof() as the capacity, so this only needs to be *at least* big
 // enough, not exact.
-uint8_t g_charging_bolt_bitmap[i1_canvas_pixel_offset() + 8 * 16];
+alignas(LV_DRAW_BUF_ALIGN) uint8_t
+    g_charging_bolt_bitmap[i1_canvas_pixel_offset() + 8 * 16];
 
 // Proves "generous headroom" above rather than asserting it in prose: the
-// tray's battery cell (kTrayBatteryIconWidth x kTrayIconHeight, ui_data.hpp)
+// tray's battery cell (kTrayBatteryIconWidth x kTrayBatteryIconHeight,
+// ui_data.hpp)
 // is the one input battery_fill_rect() ever actually receives in this
 // firmware, so its real charging-bolt canvas size is knowable at compile
 // time, not just "~22x10". An icon cell grown past what this buffer holds
@@ -475,9 +482,9 @@ uint8_t g_charging_bolt_bitmap[i1_canvas_pixel_offset() + 8 * 16];
 static_assert(
     sizeof(g_charging_bolt_bitmap) >=
         i1_canvas_storage_bound(
-            battery_fill_rect({0, 0, kTrayBatteryIconWidth, kTrayIconHeight})
+            battery_fill_rect({0, 0, kTrayBatteryIconWidth, kTrayBatteryIconHeight})
                 .width,
-            battery_fill_rect({0, 0, kTrayBatteryIconWidth, kTrayIconHeight})
+            battery_fill_rect({0, 0, kTrayBatteryIconWidth, kTrayBatteryIconHeight})
                 .height),
     "g_charging_bolt_bitmap is too small for the tray battery cell's actual "
     "charging-overlay canvas - grow its fixed backing store");
@@ -568,47 +575,18 @@ void set_battery_icon_level(const BatteryIconParts& parts, uint8_t percent,
                            charging ? LV_OPA_COVER : LV_OPA_TRANSP);
 }
 
-// One LV_COLOR_FORMAT_I1 canvas, backed directly by the module's own bytes
-// (no copy, no conversion) - core blits whatever it was handed and never
-// draws anything module-specific of its own. This is the one place that
-// bitmap layout (app_core::TrayIndicatorBitmap: row-major, MSB-first,
-// byte-padded rows) has to line up with what LVGL expects, and it does
-// without any repacking: lv_canvas_set_buffer()'s own stride formula for
-// I1 is `(width*1 + 7) / 8` bytes/row rounded up to
-// CONFIG_LV_DRAW_BUF_STRIDE_ALIGN, which is 1 in this project's
-// sdkconfig - i.e. exactly the tightly-packed layout the bitmap struct's
-// own comment documents, with no hidden padding a module could get wrong
-// silently.
-//
-// const_cast is safe here specifically because nothing in this function (or
-// anything else this module calls) ever writes through the canvas buffer -
-// lv_canvas_set_px()/set_palette() touch different backing storage, and
-// this canvas is never used as a draw target, only ever blitted read-only.
+// tray_indicator_icon() repacks a module's tight I1 bytes into LVGL's
+// palette-and-stride backing storage once while creating its canvas. Core
+// remains generic: it receives only the registered bitmap and never draws a
+// module-specific shape.
 namespace {
 
-// One persistent backing buffer per tray-indicator slot - sized the same
-// generous way g_charging_bolt_bitmap is (see its own comment): headroom
-// over today's actual 16x12 module icons, not an exact fit, since
-// i1_canvas_storage_bytes() bounds-checks every write against this array's
-// real sizeof() rather than assuming it matches.
-uint8_t g_tray_indicator_storage[app_core::kMaxTrayIndicators]
-                                [i1_canvas_pixel_offset() + 8 * 16];
-
-// Proves the "today's actual 16x12" claim above rather than leaving it a
-// claim nothing checks: 16x12 (duplicated here as a literal, not included
-// from modules/audio/audio.cpp's own kIconWidth/kIconHeight) is the largest
-// icon any in-tree module currently registers. Core deliberately stays
-// unaware of which modules exist or what they draw - see
-// tray_indicator_icon()'s own comment - so this cannot generalise to every
-// module a future registration might add without breaking that decoupling;
-// repack_i1_bits()'s runtime bounds check stays the actual backstop for a
-// module this project has never seen. This only catches this codebase's
-// own comment going stale, or this buffer shrinking under it.
-static_assert(sizeof(g_tray_indicator_storage[0]) >=
-                  i1_canvas_storage_bound(16, 12),
-              "g_tray_indicator_storage's per-slot buffer is too small for "
-              "today's largest known tray-indicator icon (16x12) - grow its "
-              "fixed backing store");
+// One persistent LVGL backing buffer per registry slot, sized from the
+// shared module contract rather than a particular module's icon.
+alignas(LV_DRAW_BUF_ALIGN) uint8_t
+    g_tray_indicator_storage[app_core::kMaxTrayIndicators]
+                            [i1_canvas_storage_bound(app_core::kTrayIconSize,
+                                                     app_core::kTrayIconSize)];
 
 }  // namespace
 

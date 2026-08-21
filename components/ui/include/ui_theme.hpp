@@ -157,9 +157,11 @@ constexpr int text_outline_width(const int font_line_height) {
 // host build. Both drawing calls return their mutable parts so a state change
 // is applied in place: rebuilding the page to move a battery bar would repaint
 // the whole reflective panel, which is what the cheap update path exists to
-// avoid.
+// avoid. Wi-Fi has two overlapping static canvases; switching state only
+// changes their opacity.
 struct WifiIconParts {
-  lv_obj_t* bars[3]{};
+  lv_obj_t* connected = nullptr;
+  lv_obj_t* disconnected = nullptr;
 };
 
 struct BatteryIconParts {
@@ -520,9 +522,9 @@ void set_battery_icon_level(const BatteryIconParts& parts, uint8_t percent,
 // modules could stomp on if more than one icon were ever visible at once.
 TrayIndicatorIcon tray_indicator_icon(lv_obj_t* parent, Rect bounds, int slot,
                                       const app_core::TrayIndicatorBitmap& bitmap);
-// Shows or hides the whole icon - not a per-part toggle like wifi_icon's
-// rings, since a tray-registry icon is one opaque bitmap, not several
-// hand-drawn primitives core understands individually.
+// Shows or hides the whole icon - not a two-canvas state switch like
+// wifi_icon(), since a tray-registry icon is one opaque bitmap rather than
+// a pair of static state glyphs.
 void set_tray_indicator_icon_visible(const TrayIndicatorIcon& icon, bool visible);
 
 void button_hints(lv_obj_t* parent, Rect bounds, InputHints hints);

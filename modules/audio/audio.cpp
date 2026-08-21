@@ -150,67 +150,18 @@ int g_volume_percent = kOutputVolumePercent;
 // repeated i2c_master_probe() calls already share the bus with everyone else.
 i2c_master_dev_handle_t g_diag_i2c_device = nullptr;
 
-// This module's own tray icon, registered once with app_core's registry
-// (see tray_registry.hpp) and never referred to by name anywhere in core -
-// core only ever sees the bytes below, not "audio" or "speaker". 16x12,
-// 1 bit/pixel, row-major MSB-first, each row padded to a whole byte
-// (stride = (kIconWidth+7)/8 = 2 bytes) - see TrayIndicatorBitmap's own
-// comment in tray_registry.hpp for why this exact layout.
-//
-// Built once at runtime, in audio_init(), rather than hand-encoded as a
-// byte literal: this is the same body-plus-two-concentric-arcs design the
-// old hand-drawn LVGL speaker icon used (see this file's git history),
-// just rasterized into bits instead of LVGL sub-objects - a plain
-// distance-from-centre test per pixel needs a loop, not a lookup table, and
-// this runs exactly once. This is also what "supplies its own icon as
-// data, not code" means in practice: this module includes nothing
-// LVGL-specific to draw itself with any more.
-constexpr int kIconWidth = 16;
-constexpr int kIconHeight = 12;
-constexpr int kIconStride = (kIconWidth + 7) / 8;
-uint8_t g_icon_bitmap[kIconStride * kIconHeight];
+// Regenerate exactly with: python3 scripts/svg-to-bitmap.py components/ui/assets/speaker-high-bold.svg --width 20 --height 20 --fit viewbox --threshold 0.35 --min-stroke 1 --emit-bytes kSpeakerHighBoldBitmap
+constexpr uint8_t kSpeakerHighBoldBitmap[] = {
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x38, 0x00, 0x00, 0x78, 0x00,
+    0x00, 0xf8, 0x00, 0x03, 0xd8, 0x40, 0x7f, 0x18, 0xe0, 0x7e, 0x19, 0x60,
+    0x66, 0x1b, 0x70, 0x66, 0x1b, 0xb0, 0x66, 0x1b, 0xb0, 0x66, 0x1b, 0x70,
+    0x7e, 0x1b, 0x60, 0x7f, 0x18, 0xe0, 0x03, 0xd8, 0x40, 0x00, 0xf8, 0x00,
+    0x00, 0x78, 0x00, 0x00, 0x38, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+};
+static_assert(sizeof(kSpeakerHighBoldBitmap) ==
+                  app_core::kTrayIconBitmapBytes,
+              "speaker-high-bold bitmap must be 60 tight-packed bytes");
 app_core::TrayIndicatorHandle g_tray_indicator;
-
-void set_icon_pixel(int x, int y) {
-  if (x < 0 || x >= kIconWidth || y < 0 || y >= kIconHeight) return;
-  g_icon_bitmap[y * kIconStride + x / 8] |=
-      static_cast<uint8_t>(0x80 >> (x % 8));
-}
-
-void build_icon_bitmap() {
-  std::fill(g_icon_bitmap, g_icon_bitmap + sizeof(g_icon_bitmap), uint8_t{0});
-  // Body: left ~40% of width, ~5/7 of height, vertically centred - the same
-  // proportions the old hand-drawn icon's rectangle used.
-  const int body_width = std::max(3, kIconWidth * 2 / 5);
-  const int body_height = std::max(4, kIconHeight * 5 / 7);
-  const int body_y = (kIconHeight - body_height) / 2;
-  for (int y = body_y; y < body_y + body_height; ++y) {
-    for (int x = 0; x < body_width; ++x) set_icon_pixel(x, y);
-  }
-  // Two concentric arcs to the right of the body ("sound waves"): a plain
-  // distance-from-centre band test per pixel, since a raw bitmap has no
-  // LVGL clip container to lean on for the "only draw the right half"
-  // trick the old LVGL-object version used.
-  const int centre_x = body_width + 1;
-  const int centre_y = kIconHeight / 2;
-  const int max_radius = std::min(kIconWidth - centre_x, centre_y);
-  constexpr int kWaveCount = 2;
-  constexpr int kStrokeWidth = 1;  // pixels; this bitmap is tiny, keep it thin
-  for (int i = 0; i < kWaveCount; ++i) {
-    const int radius = max_radius * (i + 1) / kWaveCount;
-    const int inner = std::max(0, radius - kStrokeWidth);
-    for (int y = 0; y < kIconHeight; ++y) {
-      for (int x = centre_x; x < kIconWidth; ++x) {
-        const int dx = x - centre_x;
-        const int dy = y - centre_y;
-        const int dist_sq = dx * dx + dy * dy;
-        if (dist_sq <= radius * radius && dist_sq > inner * inner) {
-          set_icon_pixel(x, y);
-        }
-      }
-    }
-  }
-}
 
 void configure_amp_gpio() {
   // Write the level before switching the pin to an output driver, and again
@@ -539,12 +490,12 @@ esp_err_t audio_init() {
   // app_core::set_tray_indicator_active() is already a documented no-op
   // for an invalid handle, so nothing later needs its own extra check.
   if (!g_tray_indicator.valid()) {
-    build_icon_bitmap();
     g_tray_indicator = app_core::register_tray_indicator(
-        {g_icon_bitmap, static_cast<uint8_t>(kIconWidth),
-         static_cast<uint8_t>(kIconHeight)});
+        {kSpeakerHighBoldBitmap, app_core::kTrayIconSize,
+         app_core::kTrayIconSize, sizeof(kSpeakerHighBoldBitmap)});
     if (!g_tray_indicator.valid()) {
-      ESP_LOGW(kTag, "tray indicator registration failed: registry full");
+      ESP_LOGW(kTag,
+               "tray indicator registration failed: invalid bitmap or registry full");
     }
   }
 

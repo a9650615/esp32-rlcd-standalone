@@ -32,6 +32,11 @@ Slot g_slots[kMaxTrayIndicators];
 }  // namespace
 
 TrayIndicatorHandle register_tray_indicator(const TrayIndicatorBitmap& bitmap) {
+  if (bitmap.pixels == nullptr || bitmap.width != kTrayIconSize ||
+      bitmap.height != kTrayIconSize || bitmap.byte_count != kTrayIconBitmapBytes) {
+    return TrayIndicatorHandle{};
+  }
+
   for (int i = 0; i < kMaxTrayIndicators; ++i) {
     if (g_slots[i].registered.load()) continue;
     // bitmap written before registered flips true, so a reader that

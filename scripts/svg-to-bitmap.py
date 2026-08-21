@@ -35,6 +35,9 @@ Usage
   python3 scripts/svg-to-bitmap.py path/to/glyph.svg --width 22 --height 10
   python3 scripts/svg-to-bitmap.py path/to/glyph.svg --width 22 --height 10 \\
       --threshold 0.3 --min-stroke 2 --emit-rows
+  python3 scripts/svg-to-bitmap.py path/to/glyph.svg --width 20 --height 20 \\
+      --fit viewbox --threshold 0.35 --min-stroke 1 \\
+      --emit-bytes kGlyphBitmap
 
   --emit-rows also prints a components/ui/ui_theme.cpp-style
   `constexpr std::string_view kFooRows[] = {...}` block, using the same
@@ -47,42 +50,20 @@ Usage
 What this has actually been used for
 -------------------------------------
 The tray's charging-bolt overlay (22x10px, `battery_fill_rect()` in
-ui_theme.hpp): Material Symbols Outlined "bolt" rasterised at
---threshold 0.35 --min-stroke 2, the defaults above, which is why they are
-the defaults rather than something narrower this file's own history
-outgrew. See UPSTREAM.md and the comment above kChargingBoltRows in
-ui_theme.cpp for the exact commit and the regeneration command. That is the
-only icon converted so far - see the evaluation below for why.
+ui_theme.hpp) ships as Bootstrap Icons `lightning-charge-fill`, rasterised
+from the vendored SVG with `--rotate 90 --width 22 --height 10
+--threshold 0.35 --min-stroke 1` and checked in as `kChargingBoltRows`.
+See UPSTREAM.md and the comment above `kChargingBoltRows` in
+`components/ui/include/ui_theme.hpp` for the exact commit and regeneration
+command.
 
-Evaluation: is the rest of the hand-drawn icon set worth converting?
-----------------------------------------------------------------------
-Run once, deliberately, before converting anything beyond the bolt, so this
-does not get redone from scratch. Rasterised real Material Symbols glyphs
-("bolt", "battery_charging_full", "sunny") at every hand-drawn icon's actual
-target size and read the ASCII, rather than reasoning about it:
-
-  - Tray scale (10-22px: Wi-Fi 22x20, battery-bolt 22x10, audio 16x12,
-    AirPlay 16x12) - **probable losses, not converted.** Material's outlined
-    weight is tuned thin, for backlit displays at 20dp+; that thinness is
-    exactly what has already failed twice on this panel (see
-    kChargingBoltRows's own history). `battery_charging_full` at 22x10
-    degenerates to a rectangle with a hole - its bolt is a notch inside the
-    same path that draws the battery outline, not a separable shape.
-  - 28x28 (home-tile leading visual: weather/temperature/humidity) -
-    **borderline, not converted.** "sunny" at 28x28 keeps a legible disc but
-    its 8 thin rays fragment at the corners - the precise failure
-    draw_sun's own comment says its 4-fat-ray design exists to avoid.
-  - 38-48px (weather page: 38x30 forecast icons, 48x46 main icon) -
-    **the identified future candidate, not converted in this pass.**
-    "sunny" at 48x46 renders clean and recognisable - arguably closer to a
-    literal sun than the deliberately abstracted hand-drawn version. This is
-    the size range where vector downscaling is expected to win outright;
-    revisit `draw_sun`/`draw_cloud`/`draw_rain`/`draw_snow` in ui_theme.cpp
-    here first if this gets picked up again.
+Audio, AirPlay, connected Wi-Fi, and disconnected Wi-Fi ship as Phosphor
+Icons Bold `20×20` tight-packed I1 bitmaps with `--fit viewbox --threshold
+0.35 --min-stroke 1`. Weather remains a separate later stage.
 
 Supported path syntax: M/m L/l H/h V/v C/c S/s Q/q T/t A/a Z/z - the
-common subset every Material Symbols glyph in this repo's UPSTREAM.md so far
-has used. Anything else raises rather than silently mis-rendering.
+common subset used by the SVG sources recorded in this repo's UPSTREAM.md
+so far. Anything else raises rather than silently mis-rendering.
 """
 import argparse
 import re
@@ -551,6 +532,23 @@ def to_cpp_rows(mask: np.ndarray, name: str, ink="X", bg=".") -> str:
     )
 
 
+def pack_i1_bytes(mask: np.ndarray) -> bytes:
+    """Packs a 2-D boolean mask row-major, MSB-first, padding each row."""
+    if mask.ndim != 2:
+        raise ValueError("mask must be a 2-D array")
+    return np.packbits(mask, axis=1, bitorder="big").tobytes()
+
+
+def to_cpp_bytes(mask: np.ndarray, name: str) -> str:
+    packed = pack_i1_bytes(mask)
+    lines = []
+    for start in range(0, len(packed), 12):
+        chunk = packed[start:start + 12]
+        lines.append("    " + ", ".join(f"0x{value:02x}" for value in chunk) + ",")
+    body = "\n".join(lines)
+    return f"constexpr uint8_t {name}[] = {{\n{body}\n}};\n"
+
+
 def _selftest():
     # A 4x4 fully-inked square, sourced from a plain rectangle path.
     svg = '<svg viewBox="0 0 4 4"><path d="M0,0 L4,0 L4,4 L0,4 Z"/></svg>'
@@ -703,6 +701,15 @@ def _selftest():
     assert mask_plain[8, 8] and not mask_plain[1, 8]
     assert mask_flip_y[1, 8] and not mask_flip_y[8, 8], "flip-y should mirror top-bottom"
 
+    # Tight I1 output must restart padding on every row and keep x=0 in bit 7.
+    packed_sample = np.zeros((2, 10), dtype=bool)
+    packed_sample[0, 0] = True
+    packed_sample[0, 9] = True
+    packed_sample[1, :] = True
+    assert pack_i1_bytes(packed_sample) == bytes(
+        [0x80, 0x40, 0xFF, 0xC0]
+    )
+
     print("selftest: ok")
 
 
@@ -743,6 +750,11 @@ def main():
                           "the source's own padding/alignment)")
     ap.add_argument("--emit-rows", metavar="NAME",
                      help="also print a kNAMERows-style C++ literal block")
+    ap.add_argument(
+        "--emit-bytes",
+        metavar="NAME",
+        help="also print a tight-packed row-major MSB-first C byte array",
+    )
     ap.add_argument("--no-double", action="store_true",
                      help="print ASCII one line per row (default doubles "
                           "each row so it reads roughly square in a terminal)")
@@ -770,6 +782,9 @@ def main():
     if args.emit_rows:
         print()
         print(to_cpp_rows(mask, args.emit_rows))
+    if args.emit_bytes:
+        print()
+        print(to_cpp_bytes(mask, args.emit_bytes))
 
 
 if __name__ == "__main__":

@@ -482,12 +482,11 @@ struct TrayIndicators {
 // words - "WIFI", "NO WIFI", "BAT 91%" - which is a lot of the tray spent on
 // two facts that a shape carries at a glance. The exact charge figure moved to
 // the settings page, where it is the number a calibration is compared against.
-// Three stacked arcs plus a dot need height; the battery does not, so they
-// are sized separately rather than sharing one number that suits neither.
-inline constexpr int kTrayWifiIconWidth = 22;
-inline constexpr int kTrayWifiIconHeight = 20;
-inline constexpr int kTrayIconHeight = 14;
+// The network and transient icons use app_core's shared 20x20 contract; the
+// battery keeps its separate footprint because it also carries live level and
+// charging state.
 inline constexpr int kTrayBatteryIconWidth = 30;
+inline constexpr int kTrayBatteryIconHeight = 14;
 inline constexpr int kTrayIconGap = 8;
 
 // Sized to match the previous mast band (28) plus its trailing gap (8) so
@@ -547,15 +546,18 @@ constexpr SystemTrayLayout system_tray_layout(const Rect bounds,
   const int leading_width =
       wide_leading ? kSystemTrayDateWidth : kSystemTrayTimeWidth;
   const Rect time{bounds.x, bounds.y, leading_width, kSystemTrayTimeHeight};
-  // Icon cells now, both flush right: battery last, wifi immediately left of
-  // it, and whatever is between them and the leading cell stays empty (or is
-  // filled by transient indicators below).
-  const int icon_y = bounds.y + (kSystemTrayHeight - kTrayIconHeight) / 2;
-  const Rect battery{bounds.right() - kTrayBatteryIconWidth, icon_y,
-                     kTrayBatteryIconWidth, kTrayIconHeight};
-  const Rect network{battery.x - kTrayIconGap - kTrayWifiIconWidth,
-                     bounds.y + (kSystemTrayHeight - kTrayWifiIconHeight) / 2,
-                     kTrayWifiIconWidth, kTrayWifiIconHeight};
+  // Icon cells now, both flush right: battery last, network immediately left
+  // of it, and whatever is between them and the leading cell stays empty (or
+  // is filled by transient indicators below).
+  const int tray_icon_y =
+      bounds.y + (kSystemTrayHeight - app_core::kTrayIconSize) / 2;
+  const int battery_icon_y =
+      bounds.y + (kSystemTrayHeight - kTrayBatteryIconHeight) / 2;
+  const Rect battery{bounds.right() - kTrayBatteryIconWidth, battery_icon_y,
+                     kTrayBatteryIconWidth, kTrayBatteryIconHeight};
+  const Rect network{
+      battery.x - kTrayIconGap - app_core::kTrayIconSize, tray_icon_y,
+      app_core::kTrayIconSize, app_core::kTrayIconSize};
 
   SystemTrayLayout layout{time, network, battery, {}};
   int next_right_edge = network.x - kTrayIconGap;
@@ -569,7 +571,8 @@ constexpr SystemTrayLayout system_tray_layout(const Rect bounds,
     // not move, so a later (lower-priority) slot gets exactly the same
     // chance at the same space rather than being pushed further left still.
     if (candidate_x < time.right() + kTrayIconGap) continue;
-    layout.indicators[i] = {candidate_x, icon_y, entry.width, kTrayIconHeight};
+    layout.indicators[i] = {candidate_x, tray_icon_y, entry.width,
+                            app_core::kTrayIconSize};
     next_right_edge = candidate_x - kTrayIconGap;
   }
   return layout;
@@ -665,7 +668,7 @@ static_assert(system_tray_layout(safe_canvas(), app_core::PageId::Weather)
                       .width == 0,
               "no transient indicators visible means no indicator cell");
 static_assert(system_tray_layout(safe_canvas(), app_core::PageId::Weather,
-                                 one_indicator(20))
+                                 one_indicator(app_core::kTrayIconSize))
                       .indicators[0]
                       .width > 0,
               "an active indicator gets a nonzero-width cell when the tray "
@@ -704,31 +707,31 @@ static_assert(
 // not collide, which is the combination most likely to crowd the tray.
 static_assert(
     system_tray_layout(safe_canvas(), app_core::PageId::Home,
-                       one_indicator(20))
+                       one_indicator(app_core::kTrayIconSize))
             .time.right() <=
         system_tray_layout(safe_canvas(), app_core::PageId::Home,
-                           one_indicator(20))
+                           one_indicator(app_core::kTrayIconSize))
             .indicators[0]
             .x,
     "Home's wide leading cell and a visible indicator do not overlap");
 static_assert(
     system_tray_layout(safe_canvas(), app_core::PageId::Home,
-                       one_indicator(20))
+                       one_indicator(app_core::kTrayIconSize))
             .indicators[0]
             .right() +
             kTrayIconGap <=
         system_tray_layout(safe_canvas(), app_core::PageId::Home,
-                           one_indicator(20))
+                           one_indicator(app_core::kTrayIconSize))
             .network.x,
     "a visible indicator does not touch the anchored network cell");
 static_assert(
     system_tray_layout(safe_canvas(), app_core::PageId::Home,
-                       one_indicator(20))
+                       one_indicator(app_core::kTrayIconSize))
             .network.x ==
         system_tray_layout(safe_canvas(), app_core::PageId::Home, TrayIndicators{})
             .network.x &&
         system_tray_layout(safe_canvas(), app_core::PageId::Home,
-                           one_indicator(20))
+                           one_indicator(app_core::kTrayIconSize))
                 .battery.x ==
             system_tray_layout(safe_canvas(), app_core::PageId::Home, TrayIndicators{})
                 .battery.x,

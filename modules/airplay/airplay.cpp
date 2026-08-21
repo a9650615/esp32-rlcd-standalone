@@ -26,22 +26,17 @@ namespace {
 const char *kTag = "airplay";
 raop_handle_t *g_handle = nullptr;
 
-// --- Tray icon: registered directly with app_core's registry, exactly the
-// pattern modules/audio/audio.cpp already established (register once, at
-// init, before anything that could fail; toggle active/inactive around the
-// session). This is the case the registry was designed for - a second
-// module getting a tray icon needs zero changes to app_core or ui, only
-// this module's own bitmap and its own calls to the same registry
-// audio.cpp already uses.
-//
-// 16x12, 1 bit/pixel, row-major MSB-first, each row padded to a whole byte
-// - the exact layout TrayIndicatorBitmap's own comment (tray_registry.hpp)
-// documents, same size as modules/audio's icon so both read at a
-// consistent scale in the tray.
-constexpr int kIconWidth = 16;
-constexpr int kIconHeight = 12;
-constexpr int kIconStride = (kIconWidth + 7) / 8;
-uint8_t g_icon_bitmap[kIconStride * kIconHeight];
+// Regenerate exactly with: python3 scripts/svg-to-bitmap.py components/ui/assets/airplay-bold.svg --width 20 --height 20 --fit viewbox --threshold 0.35 --min-stroke 1 --emit-bytes kAirPlayBoldBitmap
+constexpr uint8_t kAirPlayBoldBitmap[] = {
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3f, 0xff, 0xc0,
+    0x7f, 0xff, 0xe0, 0x70, 0x00, 0xe0, 0x70, 0x00, 0xe0, 0x70, 0x00, 0xe0,
+    0x70, 0x00, 0xe0, 0x70, 0x00, 0xe0, 0x70, 0x00, 0xe0, 0x70, 0x00, 0xe0,
+    0x70, 0x60, 0xe0, 0x70, 0xf0, 0xe0, 0x39, 0xf9, 0xc0, 0x3b, 0x9d, 0xc0,
+    0x07, 0xfe, 0x00, 0x07, 0xfe, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+};
+static_assert(sizeof(kAirPlayBoldBitmap) ==
+                  app_core::kTrayIconBitmapBytes,
+              "airplay-bold bitmap must be 60 tight-packed bytes");
 app_core::TrayIndicatorHandle g_tray_indicator;
 
 // --- Now-playing page: this module's own copy of what it has published so
@@ -201,53 +196,6 @@ void publish_locked() {
 void publish() {
   std::lock_guard<std::mutex> lock(g_state_mutex);
   publish_locked();
-}
-
-void set_icon_pixel(int x, int y) {
-  if (x < 0 || x >= kIconWidth || y < 0 || y >= kIconHeight) return;
-  g_icon_bitmap[y * kIconStride + x / 8] |=
-      static_cast<uint8_t>(0x80 >> (x % 8));
-}
-
-// A small solid anchor at the bottom-centre - the device AirPlay is
-// casting to - with two concentric arcs fanning upward from it: the
-// conventional "broadcasting audio" glyph, bold and simple at this size.
-// Built the same way modules/audio's own icon is (see its
-// build_icon_bitmap()): a plain distance-from-centre band test per pixel,
-// run once at startup rather than hand-encoded as a byte literal - this
-// module supplies its icon as data, not code, the same contract audio's
-// icon follows.
-void build_icon_bitmap() {
-  std::fill(g_icon_bitmap, g_icon_bitmap + sizeof(g_icon_bitmap), uint8_t{0});
-
-  const int centre_x = kIconWidth / 2;
-  const int anchor_y = kIconHeight - 1;
-  constexpr int kAnchorHalfWidth = 2;
-  for (int y = kIconHeight - 3; y < kIconHeight; ++y) {
-    for (int x = centre_x - kAnchorHalfWidth; x <= centre_x + kAnchorHalfWidth;
-        ++x) {
-      set_icon_pixel(x, y);
-    }
-  }
-
-  constexpr int kWaveCount = 2;
-  constexpr int kStrokeWidth = 1;  // pixels; this bitmap is tiny, keep it thin
-  const int max_radius = std::min(centre_x, anchor_y - 2);
-  const int fan_top = anchor_y - 2;  // stop short of the anchor blob itself
-  for (int i = 0; i < kWaveCount; ++i) {
-    const int radius = max_radius * (i + 1) / kWaveCount;
-    const int inner = std::max(0, radius - kStrokeWidth);
-    for (int y = 0; y < fan_top; ++y) {
-      for (int x = 0; x < kIconWidth; ++x) {
-        const int dx = x - centre_x;
-        const int dy = y - anchor_y;
-        const int dist_sq = dx * dx + dy * dy;
-        if (dist_sq <= radius * radius && dist_sq > inner * inner) {
-          set_icon_pixel(x, y);
-        }
-      }
-    }
-  }
 }
 
 // --- Wi-Fi power save: off for the whole streaming session, restored to
@@ -582,12 +530,12 @@ void airplay_register_tray() {
   // depending on it. See this function's declaration (airplay.hpp) for why
   // it is called separately from, and before, airplay_init().
   if (!g_tray_indicator.valid()) {
-    build_icon_bitmap();
     g_tray_indicator = app_core::register_tray_indicator(
-        {g_icon_bitmap, static_cast<uint8_t>(kIconWidth),
-         static_cast<uint8_t>(kIconHeight)});
+        {kAirPlayBoldBitmap, app_core::kTrayIconSize,
+         app_core::kTrayIconSize, sizeof(kAirPlayBoldBitmap)});
     if (!g_tray_indicator.valid()) {
-      ESP_LOGW(kTag, "tray indicator registration failed: registry full");
+      ESP_LOGW(kTag,
+               "tray indicator registration failed: invalid bitmap or registry full");
     }
   }
 }

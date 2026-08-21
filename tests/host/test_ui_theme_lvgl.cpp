@@ -104,10 +104,54 @@ HOST_TEST(battery_icon_charging_overlay_stays_opaque_white) {
 HOST_TEST(tray_indicator_icon_stays_transparent) {
   lv_obj_t* parent = fresh_parent();
   static const uint8_t bits[2] = {0xff, 0xff};
-  app_core::TrayIndicatorBitmap bitmap{bits, 8, 2};
+  app_core::TrayIndicatorBitmap bitmap{bits, 8, 2, sizeof(bits)};
   ui::TrayIndicatorIcon icon =
       ui::tray_indicator_icon(parent, {0, 0, 8, 2}, 0, bitmap);
   EXPECT_TRUE(icon.canvas != nullptr);
   EXPECT_EQ(lv_obj_get_style_bg_opa(icon.canvas, LV_PART_MAIN),
             static_cast<lv_opa_t>(LV_OPA_TRANSP));
+}
+
+HOST_TEST(wifi_icon_switches_between_connected_and_disconnected_canvases_in_place) {
+  lv_obj_t* parent = fresh_parent();
+  ui::WifiIconParts parts = ui::wifi_icon(
+      parent,
+      {0, 0, app_core::kTrayIconSize, app_core::kTrayIconSize}, true);
+
+  EXPECT_TRUE(parts.connected != nullptr);
+  EXPECT_TRUE(parts.disconnected != nullptr);
+  lv_obj_t* const connected_canvas = parts.connected;
+  lv_obj_t* const disconnected_canvas = parts.disconnected;
+
+  EXPECT_EQ(lv_obj_get_style_opa(parts.connected, LV_PART_MAIN),
+            static_cast<lv_opa_t>(LV_OPA_COVER));
+  EXPECT_EQ(lv_obj_get_style_opa(parts.disconnected, LV_PART_MAIN),
+            static_cast<lv_opa_t>(LV_OPA_TRANSP));
+
+  ui::set_wifi_icon_state(parts, false);
+
+  EXPECT_TRUE(parts.connected == connected_canvas);
+  EXPECT_TRUE(parts.disconnected == disconnected_canvas);
+  EXPECT_EQ(lv_obj_get_style_opa(parts.connected, LV_PART_MAIN),
+            static_cast<lv_opa_t>(LV_OPA_TRANSP));
+  EXPECT_EQ(lv_obj_get_style_opa(parts.disconnected, LV_PART_MAIN),
+            static_cast<lv_opa_t>(LV_OPA_COVER));
+}
+
+HOST_TEST(wifi_icon_uses_aligned_canvas_storage) {
+  lv_obj_t* parent = fresh_parent();
+  const ui::WifiIconParts parts = ui::wifi_icon(
+      parent,
+      {0, 0, app_core::kTrayIconSize, app_core::kTrayIconSize}, true);
+
+  EXPECT_TRUE(parts.connected != nullptr);
+  EXPECT_TRUE(parts.disconnected != nullptr);
+  EXPECT_TRUE(reinterpret_cast<uintptr_t>(
+                  lv_canvas_get_draw_buf(parts.connected)->data) %
+                  LV_DRAW_BUF_ALIGN ==
+              0);
+  EXPECT_TRUE(reinterpret_cast<uintptr_t>(
+                  lv_canvas_get_draw_buf(parts.disconnected)->data) %
+                  LV_DRAW_BUF_ALIGN ==
+              0);
 }

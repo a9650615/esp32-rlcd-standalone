@@ -183,7 +183,7 @@ HOST_TEST(plain_threshold_dark_splits_exactly_at_the_midpoint) {
 }
 
 // The tray battery cell's real dimensions (kTrayBatteryIconWidth=30,
-// kTrayIconHeight=14 in ui_data.hpp, not reachable from here - this header
+// kTrayBatteryIconHeight=14 in ui_data.hpp, not reachable from here - this header
 // cannot depend on that one, so the numbers are repeated as literals, the
 // same way battery_icon()'s own body_width/nub math already does).
 constexpr ui::Rect kBatteryTrayCell{100, 3, 30, 14};
