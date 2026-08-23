@@ -1,6 +1,7 @@
 #include "ui_app.hpp"
 
 #include "carousel_controller.hpp"
+#include "now_playing_controller.hpp"
 
 #include <algorithm>
 #include <array>
@@ -39,6 +40,26 @@ struct Runtime {
   app_core::PageRegistry registry;
   std::vector<app_core::PageId> active_pages;
   app_core::CarouselState carousel;
+  // Now-playing seize and volume-overlay state machines (Task 4). Ticked
+  // every timer_callback regardless of which page is showing - see the call
+  // site for why - so both live here beside carousel rather than only being
+  // constructed when the now-playing page happens to be on screen.
+  app_core::SeizeState now_playing_seize;
+  app_core::VolumeOverlayState volume_overlay;
+  // Mirrors showing_setup/showing_ota/showing_settings below: true only once
+  // a seize has actually rendered PageId::NowPlaying, so the rebuild-gating
+  // comparison at the call site can tell "already showing it" from "about to
+  // take over this tick" without re-deriving it from now_playing_seize.
+  bool showing_now_playing = false;
+  // Last observed media-session state, so a session opening or closing can
+  // rebuild the rotation immediately - see timer_callback for why waiting
+  // for the carousel to wrap is not good enough.
+  bool last_session_open = false;
+  // The whole-second the now-playing page last drew. m:ss only changes once a
+  // second, and the progress bar moves about 1.6 px/s on a 388 px span over a
+  // four-minute track, so a finer interval would repaint the panel for a
+  // difference nobody can see.
+  uint32_t last_now_playing_second = 0;
   lv_timer_t* timer = nullptr;
   uint32_t cycle = 0;
   bool initialized = false;
@@ -155,6 +176,8 @@ const char* page_name(app_core::PageId page) {
       return "Settings";
     case app_core::PageId::Ota:
       return "Ota";
+    case app_core::PageId::NowPlaying:
+      return "NowPlaying";
   }
   return "Unknown";
 }
@@ -528,9 +551,138 @@ void timer_callback(lv_timer_t* timer) {
     }
   }
 
-  if (!runtime->snapshot.setup.active && !runtime->showing_settings &&
-      !app_core::ota_owns_screen(runtime->snapshot.ota) &&
-      !app_core::ota_awaits_confirm(runtime->snapshot.ota)) {
+  // Both machines run every tick regardless of which page is up: the seize
+  // has to notice a session opening while another page is showing, and the
+  // overlay's own timer has to expire even on the tick where nothing else
+  // changed.
+  const app_core::NowPlaying media = app_core::now_playing();
+
+  // A session opening or closing changes which pages exist, and the registry
+  // is only consulted by begin_cycle(). Left to the carousel's own wrap, that
+  // is a two-minute wait for a page the operator expects to see immediately:
+  // the seize holds the screen for 60 s while stamping page_started_ms every
+  // tick, so rotation does not advance at all during the hold, and only then
+  // does a full five-page lap have to elapse before the registry is asked
+  // again. Rebuilding here makes it one tick.
+  //
+  // begin_cycle() resets the index to 0. On open that is invisible, because
+  // the seize below takes the screen on this same tick. On close it is a
+  // deliberate return to the top of the rotation, which is also when the page
+  // has to leave it.
+  if (media.session_open != runtime->last_session_open) {
+    runtime->last_session_open = media.session_open;
+    begin_cycle(*runtime, now_ms);
+  }
+
+  const app_core::SeizeState previous_seize = runtime->now_playing_seize;
+  runtime->now_playing_seize = app_core::seize_tick(
+      previous_seize, media.session_open, media.title, now_ms);
+
+  // The four pages that own the screen for a reason of their own, in one
+  // named place because both the seize below and the carousel block further
+  // down have to respect exactly the same set - and did not, at first. An
+  // earlier version of this block returned before these were ever consulted,
+  // which let a media session take the screen away from an OTA write in
+  // progress: the panel would show a track title while the firmware was
+  // writing its own flash, with nothing left on screen telling anyone not to
+  // pull the power.
+  //
+  // The state machines above still tick through all of this. Only taking the
+  // screen is suppressed, so an OTA that finishes inside the 60 s hold hands
+  // back to a seize that has been counting down the whole time, rather than
+  // to one that starts over.
+  const bool takeover_page_owns_screen =
+      runtime->snapshot.setup.active || runtime->showing_settings ||
+      app_core::ota_owns_screen(runtime->snapshot.ota) ||
+      app_core::ota_awaits_confirm(runtime->snapshot.ota);
+
+  const bool page_is_now_playing =
+      !takeover_page_owns_screen &&
+      (runtime->now_playing_seize.owns_screen ||
+       (!runtime->active_pages.empty() &&
+        runtime->active_pages[runtime->carousel.index] ==
+            app_core::PageId::NowPlaying));
+
+  const bool overlay_was_visible = runtime->volume_overlay.visible;
+  runtime->volume_overlay = app_core::volume_overlay_tick(
+      runtime->volume_overlay, media.volume, page_is_now_playing, now_ms);
+  runtime->context.volume_overlay_visible = runtime->volume_overlay.visible;
+
+  const bool now_playing_owns_screen =
+      runtime->now_playing_seize.owns_screen && !takeover_page_owns_screen;
+
+  if (now_playing_owns_screen) {
+    // Rebuild only on a real transition - taking the screen, changing track,
+    // or the overlay appearing or disappearing. A rebuild every tick would
+    // repaint the whole reflective panel ten times a second, which is exactly
+    // what update_visible_fields() exists to avoid.
+    const bool seize_changed =
+        !previous_seize.owns_screen ||
+        previous_seize.title != runtime->now_playing_seize.title;
+    // Without this the bar and the times froze for the entire 60 s hold: the
+    // gating had no case for a progress change, so nothing repainted between
+    // taking the screen and changing track. Reported from the panel as
+    // "畫面更新可以勤一點", which was the polite version of "the progress
+    // bar does not move".
+    //
+    // One repaint per second, not per tick. A tick is 100 ms and a full page
+    // rebuild costs ~28 ms of conversion plus ~10.5 ms blocked on the panel's
+    // DMA, so repainting on every tick would spend a third of the CPU redrawing
+    // a bar that had moved a sixth of a pixel. If one per second still proves
+    // to disturb the audio path, the next step is label-only updates through
+    // update_visible_fields() rather than a full rebuild - the mechanism
+    // already exists, it just needs this page's labels registered.
+    const uint32_t now_playing_second = media.elapsed_ms / 1000;
+    const bool second_changed =
+        now_playing_second != runtime->last_now_playing_second;
+    if (!runtime->showing_now_playing || seize_changed || second_changed ||
+        overlay_was_visible != runtime->volume_overlay.visible) {
+      runtime->last_now_playing_second = now_playing_second;
+      const lv_obj_t* rendered =
+          render_page(runtime->context, runtime->snapshot,
+                      app_core::PageId::NowPlaying, safe_canvas(), 0, 0);
+      if (rendered == nullptr) ESP_LOGE(kTag, "renderer failure page=NowPlaying");
+      page_rebuilt = true;
+    }
+    runtime->showing_now_playing = true;
+    // Keeps the carousel's dwell timer from expiring behind the seize, so
+    // releasing lands on a fresh dwell rather than an already-stale one.
+    runtime->carousel.page_started_ms = now_ms;
+  } else if (runtime->showing_now_playing) {
+    // The release tick, and it has to repaint explicitly - exactly like
+    // ota-exit, setup-exit and settings-exit below and above. Letting the
+    // carousel block do it does not work: page_started_ms was stamped to
+    // now_ms on every tick of the hold, so on this tick the dwell has run
+    // for ~100 ms, carousel::tick reports no change, and nothing renders.
+    // The panel would sit on the last now-playing frame until the residual
+    // dwell elapsed and then jump to the *next* page, silently skipping
+    // whichever page the carousel was actually on when the session started.
+    // The flag clears either way, but the repaint is only worth doing when
+    // the hold ended on its own. If a takeover page grabbed the screen
+    // mid-hold, its own block a few lines down renders this same tick, and
+    // painting the carousel first would be two full-panel repaints inside
+    // one 100 ms tick - the exact cost every other piece of gating in this
+    // function exists to avoid.
+    runtime->showing_now_playing = false;
+    if (!takeover_page_owns_screen) {
+      runtime->carousel.page_started_ms = now_ms;
+      (void)render_current(*runtime, "now-playing-exit", false);
+      page_rebuilt = true;
+    }
+  }
+
+  // No early return above, unlike a first version of this block. Everything
+  // below - the carousel, the takeover pages, and the clock/tray updates at
+  // the end of this function - still has to run while the seize holds the
+  // screen. Returning skipped update_clock() and update_tray_indicators()
+  // for the whole 60 s hold, which froze the clock on a page that does carry
+  // the tray (page_shows_tray excludes only Ota) and reintroduced, for a full
+  // minute, precisely the missed-indicator-blip failure update_tray_indicators'
+  // own comment in render_shared.cpp exists to document. The takeover blocks
+  // below are self-guarding: while the seize holds the screen none of
+  // setup.active, showing_settings or the two ota_* predicates can be true,
+  // because takeover_page_owns_screen is what let the seize run at all.
+  if (!takeover_page_owns_screen && !now_playing_owns_screen) {
     const app_core::PageId current_page =
         runtime->active_pages[runtime->carousel.index];
     const auto transition = app_core::carousel::tick(
@@ -544,7 +696,9 @@ void timer_callback(lv_timer_t* timer) {
         runtime->carousel.index + 1 >= runtime->active_pages.size() &&
         transition.state.index == 0;
     runtime->carousel = transition.state;
-    if (transition.page_changed) {
+    if (transition.page_changed ||
+        (current_page == app_core::PageId::NowPlaying &&
+         overlay_was_visible != runtime->volume_overlay.visible)) {
       if (wrapped) begin_cycle(*runtime, now_ms);
       // Automatic dwell only: KEY/BOOT navigation above goes through
       // carousel::next/previous, which never sees the snapshot and so cannot

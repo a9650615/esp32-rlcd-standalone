@@ -10,12 +10,17 @@ namespace app_core {
 // register_tray_indicator() below enforces it rather than assuming callers
 // register a sane number.
 inline constexpr int kMaxTrayIndicators = 4;
+inline constexpr uint8_t kTrayIconSize = 20;
+inline constexpr int kTrayIconStride = (kTrayIconSize + 7) / 8;
+inline constexpr int kTrayIconBitmapBytes = kTrayIconStride * kTrayIconSize;
 
-// A 1-bit bitmap, supplied by the module that registers it - core only
-// ever blits these bytes, and never interprets what they depict or knows
-// who supplied them. Row-major, MSB-first (bit 7 of byte 0 is pixel x=0),
-// each row padded up to a whole byte: stride = (width + 7) / 8 bytes,
-// buffer size = stride * height.
+static_assert(kTrayIconStride == 3);
+static_assert(kTrayIconBitmapBytes == 60);
+
+// A fixed-size 20x20, 1-bit bitmap supplied by the module that registers it.
+// Core only ever blits these bytes, and never interprets what they depict or
+// knows who supplied them. Row-major, MSB-first (bit 7 of byte 0 is pixel
+// x=0), each row padded to kTrayIconStride bytes.
 //
 // This is *not* the layout LVGL's own `LV_COLOR_FORMAT_I1` canvas actually
 // wants on its wire, despite an earlier version of this comment claiming
@@ -28,19 +33,22 @@ inline constexpr int kMaxTrayIndicators = 4;
 // LVGL-agnostic format is deliberately kept as what a module authors,
 // specifically so no module has to know any of that.
 //
-// `pixels` must stay valid for the module's entire lifetime - in practice a
-// static const array, the same way this project's compiled-in fonts and
-// strings are static data rather than something allocated and freed.
+// `pixels` must point to kTrayIconBitmapBytes valid bytes and stay valid for
+// the module's entire lifetime - in practice a static const array, the same
+// way this project's compiled-in fonts and strings are static data rather than
+// something allocated and freed. `byte_count` lets registration reject a
+// short payload before any renderer reads it.
 struct TrayIndicatorBitmap {
   const uint8_t* pixels = nullptr;
   uint8_t width = 0;
   uint8_t height = 0;
+  uint8_t byte_count = 0;
 };
 
 // Returned by register_tray_indicator(). A negative slot (see valid())
-// means registration failed because the registry was already full at
-// kMaxTrayIndicators - callers must check this rather than assume
-// registration always succeeds.
+// means registration failed because the bitmap pointer, dimensions, or byte
+// count was invalid, or the registry was already full at kMaxTrayIndicators -
+// callers must check this rather than assume registration always succeeds.
 struct TrayIndicatorHandle {
   int8_t slot = -1;
   constexpr bool valid() const { return slot >= 0; }
@@ -48,10 +56,9 @@ struct TrayIndicatorHandle {
 
 // Registers one indicator, typically once at a module's init time. Core
 // draws whatever `bitmap` contains and knows nothing about who registered
-// it or why - this is the whole point: a second module (a future AirPlay
-// receiver, say) registers its own icon here and this component does not
-// change by a single line. See modules/README.md for the module contract
-// this satisfies.
+// it or why - another module registers its own icon here and this component
+// does not change by a single line. See modules/README.md for the module
+// contract this satisfies.
 TrayIndicatorHandle register_tray_indicator(const TrayIndicatorBitmap& bitmap);
 
 // Sets whether a registered indicator wants to show right now. Safe to

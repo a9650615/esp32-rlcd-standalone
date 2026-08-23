@@ -150,62 +150,6 @@ HOST_TEST(voltage_suggests_charging_honest_false_positive_a_full_cell_just_unplu
   EXPECT_TRUE(app_core::voltage_suggests_charging(full_cell_off_charger, 3));
 }
 
-// --- ChargeDetector -------------------------------------------------------
-//
-// The signal voltage_suggests_charging() above cannot produce: whether a
-// charger is attached at a state of charge nowhere near full.
-
-HOST_TEST(charge_detector_sees_a_charger_at_any_state_of_charge) {
-  app_core::ChargeDetector detector;
-  // Half charge, on nothing. 3.85 V is 300 mV below
-  // kChargingVoltageThresholdMillivolts, so the high-water rule is blind here.
-  for (const int mv : {3850, 3845, 3852, 3848}) {
-    EXPECT_TRUE(!detector.update(mv));
-    EXPECT_TRUE(!app_core::voltage_suggests_charging(&mv, 1));
-  }
-  // The cable lands: charge current across the cell's internal resistance
-  // steps the terminal voltage up off the valley.
-  EXPECT_TRUE(detector.update(3845 + app_core::kBatteryChargeStepMillivolts));
-}
-
-HOST_TEST(charge_detector_ignores_jitter_and_a_slow_discharge) {
-  app_core::ChargeDetector detector;
-  // The spread observed on hardware (4078/4050/4069 mV between consecutive
-  // samples), riding a cell that is genuinely draining. Every upward sample
-  // here is noise off a falling valley and must not read as a charger.
-  for (const int mv : {4078, 4050, 4069, 4040, 4061, 4030, 4051, 4020}) {
-    EXPECT_TRUE(!detector.update(mv));
-  }
-}
-
-HOST_TEST(charge_detector_lets_go_when_the_cable_comes_out) {
-  app_core::ChargeDetector detector;
-  // First reading only seeds the extreme - one sample is not a direction, and
-  // this is what voltage_suggests_charging() is the anchor for.
-  EXPECT_TRUE(!detector.update(3900));
-  EXPECT_TRUE(detector.update(3900 + app_core::kBatteryChargeStepMillivolts));
-
-  // Climbing, then a dip short of the threshold: still charging. A charging
-  // cell's voltage is not monotonic at this resolution.
-  EXPECT_TRUE(detector.update(4000));
-  EXPECT_TRUE(
-      detector.update(4000 - app_core::kBatteryChargeStepMillivolts + 1));
-  // The load pulling the terminal voltage down off the peak is an unplug.
-  EXPECT_TRUE(!detector.update(4000 - app_core::kBatteryChargeStepMillivolts));
-  // ...and it stays that way as the cell drains rather than flapping back.
-  for (const int mv : {3930, 3925, 3931, 3920}) {
-    EXPECT_TRUE(!detector.update(mv));
-  }
-}
-
-HOST_TEST(charge_detector_threshold_clears_the_jitter_it_has_to_clear) {
-  // The two numbers this detector lives between, asserted rather than
-  // trusted: the step has to be bigger than the ADC spread seen on hardware
-  // and smaller than what a charger does to the terminal voltage.
-  EXPECT_TRUE(app_core::kBatteryChargeStepMillivolts > 30);
-  EXPECT_TRUE(app_core::kBatteryChargeStepMillivolts < 150);
-}
-
 // Locks down the ownership split app_snapshot.hpp documents on
 // AppSnapshot::battery_runtime: wifi_provision's set_battery() (every ~30 s,
 // a different task than the ~5 min history/runtime estimator) does exactly
@@ -244,4 +188,176 @@ HOST_TEST(publishing_a_battery_reading_does_not_erase_a_runtime_estimate) {
   EXPECT_TRUE(snapshot.battery_runtime.known);
   EXPECT_EQ(static_cast<int>(snapshot.battery_runtime.minutes_remaining), 483);
   EXPECT_EQ(static_cast<int>(snapshot.battery_runtime.samples_used), 129);
+}
+
+// The 69 readings measured on hardware over 34.5 minutes with the USB cable
+// out, oldest first, 30 s apart. Slope is -0.66 mV/min = -40 mV/hour, and the
+// whole series sits above kChargingVoltageThresholdMillivolts - which is
+// exactly the case that showed a charging icon for an hour after unplugging.
+constexpr int kMeasuredDischarge[] = {
+    4214, 4211, 4208, 4199, 4205, 4208, 4199, 4202, 4193, 4202, 4205, 4217,
+    4205, 4211, 4208, 4208, 4214, 4202, 4205, 4211, 4208, 4199, 4211, 4205,
+    4205, 4208, 4214, 4205, 4193, 4193, 4202, 4214, 4211, 4205, 4196, 4205,
+    4193, 4196, 4196, 4193, 4190, 4196, 4193, 4202, 4196, 4190, 4183, 4196,
+    4193, 4196, 4193, 4186, 4193, 4180, 4199, 4183, 4193, 4190, 4183, 4199,
+    4190, 4186, 4196, 4180, 4190, 4186, 4193, 4186, 4196};
+constexpr int kMeasuredCount =
+    static_cast<int>(sizeof(kMeasuredDischarge) / sizeof(int));
+
+HOST_TEST(voltage_is_falling_recognises_the_measured_discharge) {
+  // The whole real series: 69 samples 30 s apart is a 34-minute span, well
+  // past kChargingSlopeMinSpanSeconds. This is the case the fix exists for.
+  EXPECT_TRUE(app_core::voltage_is_falling(kMeasuredDischarge, kMeasuredCount, 30));
+
+  // And the level alone does not, which is the whole point: every reading in
+  // that series is above the charging threshold, so the old signal calls it
+  // charging for the entire 34 minutes.
+  EXPECT_TRUE(
+      app_core::voltage_suggests_charging(kMeasuredDischarge, kMeasuredCount));
+}
+
+HOST_TEST(a_full_slope_window_at_the_samplers_cadence_is_measurable) {
+  // The regression test for a five-second off-by-one. The window and the
+  // minimum span are two constants that have to agree, and they disagreed:
+  // 132 samples 5 s apart span 655 s against a 660 s minimum, so a full
+  // window was refused and both direction signals were permanently false.
+  // Nothing failed visibly - the CV test below passed on the refusal instead
+  // of on the fit - so this asserts the span itself, in the units the
+  // sampler feeds.
+  EXPECT_TRUE((app_core::kChargingSlopeWindow - 1) * 5 >=
+              app_core::kChargingSlopeMinSpanSeconds);
+
+  // And that a real discharge over exactly that window is called: 132
+  // intervals of -1.7 mV each is the -20 mV/hour boundary crossed with room
+  // to spare, and it must not be refused for span.
+  int falling[app_core::kChargingSlopeWindow];
+  for (int i = 0; i < app_core::kChargingSlopeWindow; ++i) {
+    falling[i] = 4205 - i / 3;
+  }
+  EXPECT_TRUE(
+      app_core::voltage_is_falling(falling, app_core::kChargingSlopeWindow, 5));
+}
+
+HOST_TEST(voltage_is_falling_says_no_to_a_charger_holding_cv) {
+  // A charger at its CV setpoint holds the terminal voltage, so the only
+  // movement is ADC noise. Same +/-10 mV seen on hardware, no trend. Sized
+  // and spaced the way the sampler actually feeds it: 132 samples, 5 s apart.
+  int held[app_core::kChargingSlopeWindow];
+  for (int i = 0; i < app_core::kChargingSlopeWindow; ++i) {
+    held[i] = 4205 + ((i % 3) - 1) * 9;
+  }
+  EXPECT_TRUE(
+      !app_core::voltage_is_falling(held, app_core::kChargingSlopeWindow, 5));
+}
+
+HOST_TEST(the_rule_is_span_not_sample_count) {
+  // The same forty real samples, read two ways. Fitted slopes, computed from
+  // this array:
+  //
+  //   40 samples at 30 s -> 1170 s span, -44.7 mV/hour -> falling
+  //   40 samples at  5 s ->  195 s span, six times steeper per hour, refused
+  //
+  // The second is refused by the span guard even though its per-hour slope is
+  // larger, which is the point: a rule written in sample count would have
+  // accepted it. Precision comes from how long you watched, not how often you
+  // looked.
+  const int* window = kMeasuredDischarge + (kMeasuredCount - 40);
+  EXPECT_TRUE(app_core::voltage_is_falling(window, 40, 30));
+  EXPECT_TRUE(!app_core::voltage_is_falling(window, 40, 5));
+}
+
+HOST_TEST(ten_minutes_of_the_real_series_is_not_enough_to_call_it) {
+  // Why eleven minutes is a measurement and not a preference.
+  //
+  // Twenty samples spaced 40 s apart clears the span guard at 760 s, so the
+  // guard is not what answers here - the fit is. Ten minutes of this genuine
+  // discharge fits to -6.4 mV/hour, well inside the -20 boundary, because
+  // -0.66 mV/min over that span is 6.6 mV of movement buried in +/-10 mV of
+  // per-reading noise. The same series over 34 minutes fits to -40.7.
+  //
+  // If a future change shortens kChargingSlopeMinSpanSeconds, this is the test
+  // that should stop it.
+  EXPECT_TRUE(!app_core::voltage_is_falling(
+      kMeasuredDischarge + (kMeasuredCount - 20), 20, 40));
+}
+
+HOST_TEST(voltage_is_falling_guards_its_arguments) {
+  EXPECT_TRUE(!app_core::voltage_is_falling(nullptr, 40, 30));
+  EXPECT_TRUE(!app_core::voltage_is_falling(kMeasuredDischarge, 40, 0));
+}
+
+// --- voltage_is_rising ----------------------------------------------------
+//
+// The half neither of the two above can answer: a cell nowhere near full,
+// with a charger attached. Everything up here reads 4180-4217 mV; a cell at
+// half charge on a charger reads 3850, and the level rule is blind to it.
+
+HOST_TEST(voltage_is_rising_sees_a_charger_below_the_level_threshold) {
+  // A cell climbing through the plateau at +120 mV/hour - the slowest part of
+  // a real charge - sampled the way the sampler feeds it: 132 samples, 5 s
+  // apart, 11 minutes, so about 22 mV of movement. Noise is the same +/-9 mV
+  // the measured series carries.
+  int climbing[app_core::kChargingSlopeWindow];
+  for (int i = 0; i < app_core::kChargingSlopeWindow; ++i) {
+    const double minutes = i * 5.0 / 60.0;
+    climbing[i] = 3850 + static_cast<int>(minutes * 2.0) + ((i % 3) - 1) * 9;
+  }
+  EXPECT_TRUE(
+      app_core::voltage_is_rising(climbing, app_core::kChargingSlopeWindow, 5));
+  // Which is the whole reason this exists: the level rule calls this
+  // discharging for the entire climb.
+  EXPECT_TRUE(!app_core::voltage_suggests_charging(
+      climbing, app_core::kChargingSlopeWindow));
+  EXPECT_TRUE(
+      !app_core::voltage_is_falling(climbing, app_core::kChargingSlopeWindow, 5));
+}
+
+HOST_TEST(voltage_is_rising_says_no_to_the_measured_discharge_and_to_noise) {
+  // The real 34-minute discharge must never read as rising.
+  EXPECT_TRUE(
+      !app_core::voltage_is_rising(kMeasuredDischarge, kMeasuredCount, 30));
+
+  // Nor may noise alone. Same +/-9 mV, no trend: the bar sits at nearly four
+  // sigma of the noise floor precisely so this cannot flip the icon.
+  int held[app_core::kChargingSlopeWindow];
+  for (int i = 0; i < app_core::kChargingSlopeWindow; ++i) {
+    held[i] = 3850 + ((i % 3) - 1) * 9;
+  }
+  EXPECT_TRUE(
+      !app_core::voltage_is_rising(held, app_core::kChargingSlopeWindow, 5));
+}
+
+HOST_TEST(voltage_is_rising_refuses_a_span_it_cannot_measure) {
+  // Same span rule as falling, and the same reason: "unknown" must not read
+  // as "rising" either, or every boot spent on a charger would raise the icon
+  // from noise before the window has filled.
+  int climbing[40];
+  for (int i = 0; i < 40; ++i) climbing[i] = 3850 + i;
+  EXPECT_TRUE(!app_core::voltage_is_rising(climbing, 40, 5));  // 195 s span
+  EXPECT_TRUE(app_core::voltage_is_rising(climbing, 40, 30));  // 1170 s span
+  EXPECT_TRUE(!app_core::voltage_is_rising(nullptr, 40, 30));
+  EXPECT_TRUE(!app_core::voltage_is_rising(climbing, 40, 0));
+}
+
+HOST_TEST(the_two_thresholds_are_one_fit_read_two_ways) {
+  // battery_voltage_slope() is what both read, and the boundaries have to
+  // straddle zero with a dead band in between - a cell cannot be rising and
+  // falling at once, and a flat one must be neither.
+  EXPECT_TRUE(app_core::kDischargeSlopeMillivoltsPerHour < 0.0f);
+  EXPECT_TRUE(app_core::kChargingRiseMillivoltsPerHour > 0.0f);
+
+  float per_hour = 0.0f;
+  EXPECT_TRUE(app_core::battery_voltage_slope(kMeasuredDischarge,
+                                              kMeasuredCount, 30, &per_hour));
+  // The measured -40 mV/hour, from the series the thresholds were sized on.
+  EXPECT_TRUE(per_hour < -30.0f && per_hour > -50.0f);
+
+  // Refused spans leave the caller's value alone rather than reporting zero,
+  // which would read as a flat cell.
+  float untouched = 12345.0f;
+  EXPECT_TRUE(!app_core::battery_voltage_slope(kMeasuredDischarge, 20, 5,
+                                               &untouched));
+  EXPECT_EQ(untouched, 12345.0f);
+  EXPECT_TRUE(!app_core::battery_voltage_slope(kMeasuredDischarge,
+                                               kMeasuredCount, 30, nullptr));
 }

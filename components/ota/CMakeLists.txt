@@ -3,6 +3,7 @@ idf_component_register(
         "ota.cpp"
         "ota_image.cpp"
         "ota_prefix.cpp"
+        "ota_quiesce.cpp"
         "ota_session.cpp"
         "ota_pull.cpp"
         "ota_version.cpp"

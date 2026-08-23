@@ -26,6 +26,9 @@ ui::TrayIndicators n_active(int count, int width) {
   return indicators;
 }
 
+constexpr std::array<uint8_t, app_core::kTrayIconBitmapBytes> kTrayIconPixels{};
+constexpr std::array<uint8_t, 1> kTooShortTrayIconPixels{};
+
 }  // namespace
 
 // The full combination space for a single indicator is small - two page
@@ -43,7 +46,7 @@ HOST_TEST(tray_layout_all_combinations_are_valid) {
   for (const app_core::PageId page : pages) {
     for (const bool active : indicator_states) {
       const ui::SystemTrayLayout cells = ui::system_tray_layout(
-          bounds, page, active ? one_active(20) : ui::TrayIndicators{});
+          bounds, page, active ? one_active(app_core::kTrayIconSize) : ui::TrayIndicators{});
       const ui::Rect indicator = cells.indicators[0];
       const bool indicator_present = indicator.width > 0;
 
@@ -88,7 +91,7 @@ HOST_TEST(tray_layout_anchors_never_move_when_indicator_toggles) {
     const ui::SystemTrayLayout without =
         ui::system_tray_layout(bounds, page, ui::TrayIndicators{});
     const ui::SystemTrayLayout with =
-        ui::system_tray_layout(bounds, page, one_active(20));
+        ui::system_tray_layout(bounds, page, one_active(app_core::kTrayIconSize));
     EXPECT_EQ(without.network.x, with.network.x);
     EXPECT_EQ(without.network.width, with.network.width);
     EXPECT_EQ(without.battery.x, with.battery.x);
@@ -104,7 +107,7 @@ HOST_TEST(tray_layout_anchors_never_move_when_indicator_toggles) {
 HOST_TEST(tray_layout_drops_indicator_when_the_tray_is_too_narrow) {
   const ui::Rect bounds{0, 0, 140, ui::kSystemTrayHeight};
   const ui::SystemTrayLayout cells =
-      ui::system_tray_layout(bounds, app_core::PageId::Weather, one_active(20));
+      ui::system_tray_layout(bounds, app_core::PageId::Weather, one_active(app_core::kTrayIconSize));
 
   EXPECT_EQ(cells.indicators[0].width, 0);
   // Dropping the transient indicator must not be an excuse to let the
@@ -119,6 +122,25 @@ HOST_TEST(tray_layout_drops_indicator_when_the_tray_is_too_narrow) {
   EXPECT_TRUE(!ui::rects_intersect(cells.network, cells.battery));
 }
 
+HOST_TEST(tray_layout_uses_shared_icon_size_and_preserves_battery_size) {
+  const ui::Rect bounds = ui::safe_canvas();
+  const ui::SystemTrayLayout cells = ui::system_tray_layout(
+      bounds, app_core::PageId::Weather, one_active(app_core::kTrayIconSize));
+
+  EXPECT_EQ(cells.network.width, static_cast<int>(app_core::kTrayIconSize));
+  EXPECT_EQ(cells.network.height, static_cast<int>(app_core::kTrayIconSize));
+  EXPECT_EQ(cells.indicators[0].width,
+            static_cast<int>(app_core::kTrayIconSize));
+  EXPECT_EQ(cells.indicators[0].height,
+            static_cast<int>(app_core::kTrayIconSize));
+  EXPECT_EQ(cells.battery.width, 30);
+  EXPECT_EQ(cells.battery.height, 14);
+  EXPECT_EQ(cells.network.y,
+            bounds.y + (ui::kSystemTrayHeight - app_core::kTrayIconSize) / 2);
+  EXPECT_EQ(cells.indicators[0].y, cells.network.y);
+  EXPECT_EQ(cells.battery.y, bounds.y + (ui::kSystemTrayHeight - 14) / 2);
+}
+
 // Several indicators active at once - up to every registry slot - all get
 // distinct, non-overlapping cells, placed outward from the anchored group
 // in slot order (slot 0 closest to network). This is the case the dynamic
@@ -129,7 +151,7 @@ HOST_TEST(tray_layout_places_every_active_indicator_when_all_fit) {
   const ui::Rect bounds = ui::safe_canvas();
   for (int count = 1; count <= app_core::kMaxTrayIndicators; ++count) {
     const ui::SystemTrayLayout cells = ui::system_tray_layout(
-        bounds, app_core::PageId::Weather, n_active(count, 20));
+        bounds, app_core::PageId::Weather, n_active(count, app_core::kTrayIconSize));
 
     for (int i = 0; i < count; ++i) {
       EXPECT_TRUE(cells.indicators[i].width > 0);
@@ -152,16 +174,13 @@ HOST_TEST(tray_layout_places_every_active_indicator_when_all_fit) {
 
 // With several indicators active but not enough room for all of them, the
 // lower-index (higher-priority) ones win and the rest are dropped, rather
-// than shrinking everyone or overlapping the leading cell. 160px is wide
-// enough for time + network + battery + exactly one 20px indicator (below
-// that, per the narrow-tray test above, even one is dropped; at 156px the
-// margin is exactly zero) - requesting two here proves the second one
-// drops while the first still gets placed, instead of both being dropped
-// or both crowding in somewhere they do not belong.
+// than shrinking everyone or overlapping the leading cell. This deliberately
+// crowded 160px tray fits the first requested indicator but not the second,
+// proving the lower-priority slot drops rather than both crowding in.
 HOST_TEST(tray_layout_drops_lowest_priority_indicators_first_when_crowded) {
   const ui::Rect bounds{0, 0, 160, ui::kSystemTrayHeight};
-  const ui::SystemTrayLayout cells =
-      ui::system_tray_layout(bounds, app_core::PageId::Weather, n_active(2, 20));
+  const ui::SystemTrayLayout cells = ui::system_tray_layout(
+      bounds, app_core::PageId::Weather, n_active(2, app_core::kTrayIconSize));
 
   EXPECT_TRUE(cells.indicators[0].width > 0);
   EXPECT_EQ(cells.indicators[1].width, 0);
@@ -172,16 +191,60 @@ HOST_TEST(tray_layout_drops_lowest_priority_indicators_first_when_crowded) {
 
 // --- app_core::tray_registry.hpp -------------------------------------
 
+HOST_TEST(tray_registry_accepts_valid_20x20_bitmap) {
+  app_core::reset_tray_registry_for_test();
+  const app_core::TrayIndicatorHandle handle =
+      app_core::register_tray_indicator(
+          {kTrayIconPixels.data(), app_core::kTrayIconSize,
+           app_core::kTrayIconSize, kTrayIconPixels.size()});
+  EXPECT_TRUE(handle.valid());
+  app_core::reset_tray_registry_for_test();
+}
+
+HOST_TEST(tray_registry_rejects_too_short_20x20_bitmap) {
+  app_core::reset_tray_registry_for_test();
+  const app_core::TrayIndicatorHandle handle =
+      app_core::register_tray_indicator(
+          {kTooShortTrayIconPixels.data(), app_core::kTrayIconSize,
+           app_core::kTrayIconSize, kTooShortTrayIconPixels.size()});
+  EXPECT_TRUE(!handle.valid());
+  app_core::reset_tray_registry_for_test();
+}
+
+HOST_TEST(tray_registry_rejects_null_pixels) {
+  app_core::reset_tray_registry_for_test();
+  const app_core::TrayIndicatorHandle handle =
+      app_core::register_tray_indicator(
+          {nullptr, app_core::kTrayIconSize, app_core::kTrayIconSize,
+           kTrayIconPixels.size()});
+  EXPECT_TRUE(!handle.valid());
+  app_core::reset_tray_registry_for_test();
+}
+
+HOST_TEST(tray_registry_rejects_non_20x20_bitmaps) {
+  app_core::reset_tray_registry_for_test();
+  EXPECT_TRUE(!app_core::register_tray_indicator(
+                   {kTrayIconPixels.data(), 19, app_core::kTrayIconSize,
+                    kTrayIconPixels.size()})
+                   .valid());
+  EXPECT_TRUE(!app_core::register_tray_indicator(
+                   {kTrayIconPixels.data(), app_core::kTrayIconSize, 19,
+                    kTrayIconPixels.size()})
+                   .valid());
+  app_core::reset_tray_registry_for_test();
+}
+
 // Fixed capacity, enforced: filling every slot succeeds with distinct
 // handles, and the next registration past capacity is refused rather than
 // silently growing the registry or overwriting an existing slot.
 HOST_TEST(tray_registry_capacity_is_enforced) {
   app_core::reset_tray_registry_for_test();
-  const uint8_t pixel = 0;
   app_core::TrayIndicatorHandle handles[app_core::kMaxTrayIndicators];
 
   for (int i = 0; i < app_core::kMaxTrayIndicators; ++i) {
-    handles[i] = app_core::register_tray_indicator({&pixel, 1, 1});
+    handles[i] = app_core::register_tray_indicator(
+        {kTrayIconPixels.data(), app_core::kTrayIconSize,
+         app_core::kTrayIconSize, kTrayIconPixels.size()});
     EXPECT_TRUE(handles[i].valid());
     for (int j = 0; j < i; ++j) {
       EXPECT_TRUE(handles[i].slot != handles[j].slot);
@@ -189,7 +252,9 @@ HOST_TEST(tray_registry_capacity_is_enforced) {
   }
 
   const app_core::TrayIndicatorHandle one_too_many =
-      app_core::register_tray_indicator({&pixel, 1, 1});
+      app_core::register_tray_indicator(
+          {kTrayIconPixels.data(), app_core::kTrayIconSize,
+           app_core::kTrayIconSize, kTrayIconPixels.size()});
   EXPECT_TRUE(!one_too_many.valid());
 
   app_core::reset_tray_registry_for_test();
@@ -200,16 +265,17 @@ HOST_TEST(tray_registry_capacity_is_enforced) {
 // caller never checked) it is a documented no-op, not a crash.
 HOST_TEST(tray_registry_set_active_reflects_in_slot_and_ignores_invalid_handle) {
   app_core::reset_tray_registry_for_test();
-  const uint8_t pixel = 0xff;
   const app_core::TrayIndicatorHandle handle =
-      app_core::register_tray_indicator({&pixel, 3, 2});
+      app_core::register_tray_indicator(
+          {kTrayIconPixels.data(), app_core::kTrayIconSize,
+           app_core::kTrayIconSize, kTrayIconPixels.size()});
   EXPECT_TRUE(handle.valid());
 
   app_core::TrayIndicatorSlot slot = app_core::tray_indicator_slot(handle.slot);
   EXPECT_TRUE(slot.registered);
   EXPECT_TRUE(!slot.active);
-  EXPECT_EQ(static_cast<int>(slot.bitmap.width), 3);
-  EXPECT_EQ(static_cast<int>(slot.bitmap.height), 2);
+  EXPECT_EQ(static_cast<int>(slot.bitmap.width), app_core::kTrayIconSize);
+  EXPECT_EQ(static_cast<int>(slot.bitmap.height), app_core::kTrayIconSize);
 
   app_core::set_tray_indicator_active(handle, true);
   slot = app_core::tray_indicator_slot(handle.slot);

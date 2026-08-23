@@ -13,7 +13,7 @@ namespace app_core {
 // the ui::publish_snapshot() seam while snapshot.setup.active is true.
 // Setup and Ota are addressable pages that never enter the carousel: each is
 // shown because its own state says so, not because rotation reached it.
-enum class PageId { Home, TaiwanMarket, UsMarket, Weather, Indoor, Setup, Settings, Ota };
+enum class PageId { Home, TaiwanMarket, UsMarket, Weather, Indoor, Setup, Settings, Ota, NowPlaying };
 enum class DemoScenario { MorningAlert, TaiwanSession, NightSession };
 
 struct ClockData {
@@ -290,53 +290,114 @@ int smoothed_battery_millivolts(const int* recent_millivolts, int count);
 inline constexpr int kChargingVoltageThresholdMillivolts = 4150;
 bool voltage_suggests_charging(const int* recent_millivolts, int count);
 
-// How far the terminal voltage has to reverse off its running extreme before
-// ChargeDetector below believes the cable state changed. Sized above the
-// worst ADC jitter observed on hardware (a ~30 mV spread between consecutive
-// samples) and above a plausible load step, below the step a charger makes.
-inline constexpr int kBatteryChargeStepMillivolts = 60;
+// The other half of the charging signal, and the half that was missing.
+//
+// voltage_suggests_charging() above cannot tell a charger at its CV setpoint
+// from a full cell that was unplugged, because at one instant they read the
+// same. Its own comment predicted the resulting false positive would clear
+// "typically a couple of minutes". Measured on this board, 69 samples over
+// 34.5 minutes with the cable out: 4214 mV -> 4196 mV, a slope of
+// -0.66 mV/min = -40 mV/hour. From a full 4210 mV that is an hour before the
+// reading crosses back under 4150 mV - not a couple of minutes, and long
+// enough that the panel shows a charging icon for an hour after unplugging.
+//
+// Direction is the discriminator. A charger holds the terminal voltage at CV
+// (slope ~0, or positive on a cell that is not yet full); nothing makes an
+// unplugged cell gain voltage. So charging is "high AND not falling", and
+// this is the "not falling" part.
+//
+// It is necessarily slow, and the full window is the minimum rather than a
+// nicety. Single readings carry about +/-10 mV of ADC noise against a
+// 0.66 mV/min signal, so a short window is movement smaller than its own
+// noise floor - a host test over the real measured series confirms the fit
+// correctly declines to call ten minutes of it.
+//
+// Sizing this is not "more samples is better". The standard error of a
+// least-squares slope goes as sigma * sqrt(dt) / span^1.5, so the *span*
+// dominates and the sample interval barely matters:
+//
+//   40 samples at 30 s = 20 min span -> SE about 16 mV/hour
+//  132 samples at  5 s = 11 min span -> SE about 16 mV/hour
+//
+// Six times the samples buys a span 6^(1/3) = 1.8x shorter, not 6x. The
+// window below takes that trade because eleven minutes of a wrong charging
+// icon is better than twenty, and 528 bytes is cheap - but it is worth
+// writing down that the first estimate of this was "about eight minutes",
+// from assuming sample count drove the precision. It does not.
+//
+// The boundary sits at -20 mV/hour: between a charger's ~0 and a real
+// discharge's measured -40, and far enough from zero not to be noise given
+// the SE above.
+//
+// There is no fast version of this on hardware with no charge-detect line.
+// A slow signal that is right beats the fast one that was wrong for an hour.
+//
+// `ordered_millivolts` must be oldest-first with even spacing - unlike
+// smoothed_battery_millivolts(), which only uses the values, a slope needs
+// the order.
+//
+// The refusal threshold is a minimum *span*, not a minimum count, for the
+// same reason the sizing arithmetic above is about span: forty samples thirty
+// seconds apart and a hundred and thirty-two five seconds apart carry the same
+// information, and a rule written in samples would accept one and reject the
+// other. Returns false below it, because "unknown" must not read as "falling"
+// - that would suppress the charging icon for the first eleven minutes after
+// every boot spent on a charger.
+// 133, not 132. The span of a window is (count - 1) intervals, not count:
+// 132 samples 5 s apart cover 655 s, five short of the minimum below, so a
+// full window was refused and voltage_is_falling() could never fire on
+// hardware at all - which left charging = level_high && !falling reading as
+// plain level_high, the exact false positive that whole function was added to
+// kill. The sampler asserts the relationship rather than restating the
+// arithmetic; see kBatterySlopePeriodMs in app_main.cpp.
+inline constexpr int kChargingSlopeWindow = 133;          // sampler's buffer
+inline constexpr int kChargingSlopeMinSpanSeconds = 660;  // 11 minutes
+inline constexpr float kDischargeSlopeMillivoltsPerHour = -20.0f;
+bool voltage_is_falling(const int* ordered_millivolts, int count,
+                        int seconds_per_sample);
 
-// Charge/discharge detection by hysteresis on the raw reading, fed one sample
-// at a time on the sampler's own cadence.
+// The same fit read the other way, and the answer to the question
+// voltage_suggests_charging() cannot reach: is a cell that is nowhere near
+// full being charged right now.
 //
-// This is the signal that actually answers "is it charging"; the other two
-// are anchors. voltage_suggests_charging() above catches the case with no
-// step to see (a board that booted already sitting on a finished charger),
-// and PowerTrend::Charging (history.hpp) confirms it over hours.
+// That function fires only at or above 4150 mV, within about 50 mV of a full
+// cell. A cell at half charge sits around 3.85 V on the charger, so for the
+// entire hours-long climb from empty to nearly full - the whole span where
+// someone actually wants to know a charger is attached - the level rule reads
+// exactly like a cell on nothing. Direction is what separates them: nothing
+// makes an unplugged cell gain voltage, and a charging one gains it fast.
 //
-// Why hysteresis and not a threshold: below full, a charging cell's terminal
-// voltage is nowhere near kChargingVoltageThresholdMillivolts - a cell at
-// half charge sits around 3.85 V on the charger - so a fixed high-water mark
-// cannot see charging at all until the cell is nearly full, which is the one
-// moment it matters least. What a charger does at *every* state of charge is
-// push the terminal voltage up: the charge current across the cell's internal
-// resistance steps it up tens of millivolts the moment the cable lands, and
-// it climbs from there. Unplugging steps it back down by the same mechanism.
+// Sizing, against the same measured series that sized the falling threshold
+// (-0.66 mV/min unplugged, +/-10 mV of ADC noise per reading, so a standard
+// error near 16 mV/hour over the 11-minute minimum span):
 //
-// So track the running extreme in the direction currently believed - the
-// valley while discharging, the peak while charging - and flip when a reading
-// reverses off that extreme by kBatteryChargeStepMillivolts or more. The
-// running extreme is what makes ADC noise harmless: noise cannot accumulate,
-// because every reading in the believed direction takes the extreme with it.
+//   this board discharging, measured        -40 mV/hour
+//   noise alone, 1 sigma                    +/-16 mV/hour
+//   kChargingRiseMillivoltsPerHour           +60 mV/hour  <- the bar
+//   a cell charging below its CV setpoint   +100 mV/hour and up
 //
-// Ceiling, stated rather than hidden: a big load dropping off (the panel or
-// the radio going idle) lets the terminal voltage rebound, and a rebound past
-// the threshold reads as a charger until the cell falls that far again.
-// Sizing the threshold above a plausible load step is the whole defence -
-// there is no charge-detect line on this board to do better, see
-// BatteryData::charging.
-struct ChargeDetector {
-  bool charging = false;
-  // Peak seen since charging began, or valley seen since it ended.
-  int extreme_millivolts = 0;
-  // First reading only seeds the extreme; one sample is not a direction.
-  bool seeded = false;
+// The bar sits at nearly four sigma of noise and still well under the
+// slowest part of a real charge - the plateau between 3.7 V and 3.9 V, which
+// is where a charging cell spends most of its time and moves slowest. It is
+// deliberately three times further from zero than the falling threshold:
+// falling is a confirmation that only ever suppresses an icon the level rule
+// already raised, while this raises one on its own, and the failure it has to
+// survive is a big load dropping off (the panel or the radio going idle),
+// which lets the terminal voltage rebound and fits as a positive slope.
+//
+// Same span rule and same refusal below it as voltage_is_falling(): "unknown"
+// must not read as "rising" either.
+inline constexpr float kChargingRiseMillivoltsPerHour = 60.0f;
+bool voltage_is_rising(const int* ordered_millivolts, int count,
+                       int seconds_per_sample);
 
-  // Feeds one raw (unsmoothed) reading and returns the current belief.
-  // Smoothed input would lag the step this exists to catch by most of the
-  // smoothing window, the same reason voltage_suggests_charging() takes raw.
-  bool update(int millivolts);
-};
+// The least-squares fit both of the above read, in millivolts per hour.
+// Exposed because they are two thresholds on one number and a caller (or a
+// test) reading that number directly is clearer than inferring it from two
+// bools. Returns false, leaving `out` untouched, when the window spans less
+// than kChargingSlopeMinSpanSeconds - the same refusal, in the same place.
+bool battery_voltage_slope(const int* ordered_millivolts, int count,
+                           int seconds_per_sample, float* out);
 
 // Overvoltage thresholds for a single-cell Li-ion pack, above a normal
 // 4200 mV CC/CV termination plus typical charger/ADC tolerance. These are

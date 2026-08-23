@@ -8,6 +8,7 @@
 #include <esp_chip_info.h>
 #include <esp_flash.h>
 #include <esp_lcd_panel_io.h>
+#include <esp_memory_utils.h>
 #include <esp_log.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -18,6 +19,9 @@ namespace board {
 namespace {
 
 constexpr char kTag[] = "board_display";
+// One frame goes out as ceil(kFramebufferBytes / this) SPI transfers. See
+// the bus config in init() for why it is not the whole frame.
+constexpr size_t kSpiChunkBytes = 2048;
 constexpr size_t kFramebufferBytes =
     static_cast<size_t>(kWidth) * static_cast<size_t>(kHeight) / 8U;
 constexpr size_t kPixelCount =
@@ -78,7 +82,12 @@ esp_err_t Display::init() {
   bus_config.sclk_io_num = kDisplaySck;
   bus_config.quadwp_io_num = -1;
   bus_config.quadhd_io_num = -1;
-  bus_config.max_transfer_sz = kFramebufferBytes;
+  // Not kFramebufferBytes. This is what esp_lcd chunks colour transfers by
+  // (spi_bus_get_max_transaction_len), and therefore the size of the bounce
+  // buffer spi_master.c allocates per chunk for a PSRAM source. 15 KB in one
+  // piece could not be found on a fragmented heap; 4 KB always can, and the
+  // frame simply goes out as four transfers instead of one.
+  bus_config.max_transfer_sz = kSpiChunkBytes;
 
   esp_err_t result = spi_bus_initialize(SPI3_HOST, &bus_config, SPI_DMA_CH_AUTO);
   if (result != ESP_OK) {
@@ -94,7 +103,22 @@ esp_err_t Display::init() {
   io_config.lcd_cmd_bits = 8;
   io_config.lcd_param_bits = 8;
   io_config.spi_mode = 0;
-  io_config.trans_queue_depth = 10;
+  // One, not two, and not upstream's ten. Each queued chunk holds its own
+  // bounce buffer until it is recycled, so the transient internal RAM this
+  // costs is chunk size times queue depth - and that product, not the chunk
+  // size alone, is what has to fit.
+  //
+  // Measured in the field at depth 2 with 4 KB chunks, during the market and
+  // weather TLS handshakes at t=9.9 s: "display refresh failed:
+  // ESP_ERR_NO_MEM ... internal free=29807 largest=7680, dma largest=5120".
+  // Two 4 KB buffers is 8 KB against 5 KB available, so it still failed -
+  // less often than the 15 KB single transfer it replaced, which is why it
+  // looked fixed. Depth 1 with 2 KB chunks needs 2 KB at a time.
+  //
+  // Serialising costs nothing measurable: the whole frame transfers in
+  // 0.7 ms, so the per-chunk overhead of eight transfers instead of four is
+  // far below the noise on a 265 ms refresh.
+  io_config.trans_queue_depth = 1;
 
   auto* io = reinterpret_cast<esp_lcd_panel_io_handle_t*>(&io_handle_);
   result = esp_lcd_new_panel_io_spi(static_cast<esp_lcd_spi_bus_handle_t>(SPI3_HOST),
@@ -119,6 +143,26 @@ esp_err_t Display::init() {
     return result;
   }
 
+  // PSRAM, and the transfer below is chunked so that this does not cost a
+  // 15 KB contiguous internal allocation per refresh.
+  //
+  // The history matters because both obvious answers are wrong. Left in PSRAM
+  // with the whole frame as one transfer, spi_master.c's setup_priv_desc()
+  // saw a tx_buffer failing esp_ptr_dma_capable() and allocated a fresh
+  // kFramebufferBytes of contiguous MALLOC_CAP_DMA memory for every refresh -
+  // against a largest free block measured between 7.9 and 14.3 KB, so most
+  // refreshes returned ESP_ERR_NO_MEM.
+  //
+  // Moving the framebuffer itself into MALLOC_CAP_DMA fixed that and broke
+  // something else: 15 KB taken permanently, before wifi initialises, left
+  // the wifi RX path short, and AirPlay went from 0-1 inserted silence frames
+  // per capture to 1,266. The display worked and the audio turned to
+  // crackle. Internal RAM here is not a resource one subsystem can quietly
+  // claim.
+  //
+  // kSpiChunkBytes below is the actual fix: the driver still bounces through
+  // an internal buffer, but one small enough that a fragmented heap can
+  // always satisfy it, and nothing is held between refreshes.
   display_buffer_ = static_cast<uint8_t*>(
       heap_caps_malloc(kFramebufferBytes, MALLOC_CAP_SPIRAM));
   if (display_buffer_ == nullptr) {
@@ -367,6 +411,97 @@ void Display::init_landscape_lut() {
       pixel_bit_lut_[x][y] = static_cast<uint8_t>(1U << bit);
     }
   }
+}
+
+// Measured at 157 ms per 400x300 frame before this existed, against 0.7 ms
+// for the SPI transfer that follows it - 230x the cost of the thing everyone
+// assumes is expensive, repeating every 265 ms, and the reason AirPlay
+// dropped packets intermittently.
+//
+// Three costs, all removed here:
+//
+//  - pixel_index_lut_[x][y] and pixel_bit_lut_[x][y] live in PSRAM and were
+//    indexed with x innermost, so consecutive lookups jumped kHeight*2 = 600
+//    bytes. Every one of the 240,000 lookups per frame was a cache miss on
+//    the slowest memory on the board. The values they held are four shifts
+//    and a multiply; computing them in registers is not a trade-off.
+//  - set_pixel() is in this translation unit and the caller was in another,
+//    so none of the 120,000 calls per frame could be inlined, and each one
+//    re-checked the same six bounds conditions.
+//  - The per-row terms were recomputed per pixel.
+//
+// The LUTs had exactly one caller, this path, and are gone with it - 360 KB
+// of PSRAM returned as well.
+void Display::write_rgb565_area(const uint16_t* rgb565, int x1, int y1,
+                                int x2, int y2) {
+  if (!initialized_ || display_buffer_ == nullptr || rgb565 == nullptr) return;
+  if (x1 < 0) x1 = 0;
+  if (y1 < 0) y1 = 0;
+  if (x2 >= kWidth) x2 = kWidth - 1;
+  if (y2 >= kHeight) y2 = kHeight - 1;
+
+  const int height_blocks = kHeight >> 2;
+  for (int y = y1; y <= y2; ++y) {
+    // Per-row, not per-pixel: none of this depends on x.
+    const int inverted_y = kHeight - 1 - y;
+    const int block_y = inverted_y >> 2;
+    const int local_y = inverted_y & 3;
+    const int bit_hi = 7 - (local_y << 1);        // x even
+    const int bit_lo = 7 - ((local_y << 1) | 1);  // x odd
+    const uint8_t mask_hi = static_cast<uint8_t>(1U << bit_hi);
+    const uint8_t mask_lo = static_cast<uint8_t>(1U << bit_lo);
+
+    const uint16_t* src = rgb565 + static_cast<size_t>(y - y1) * (x2 - x1 + 1);
+    for (int x = x1; x <= x2; ++x) {
+      // LVGL renders white as 0xffff and black as 0x0000; the original
+      // threshold is kept exactly rather than reinterpreted.
+      const bool black = *src++ < 0x7fff;
+      const size_t index =
+          static_cast<size_t>(x >> 1) * height_blocks + block_y;
+      const uint8_t mask = (x & 1) ? mask_lo : mask_hi;
+      if (black) {
+        display_buffer_[index] &= static_cast<uint8_t>(~mask);
+      } else {
+        display_buffer_[index] |= mask;
+      }
+    }
+  }
+}
+
+// The inverse of write_rgb565_area()'s layout, run on demand.
+//
+// A shadow copy of this used to be maintained pixel by pixel on every flush,
+// which is 120,000 iterations and a second PSRAM write pattern per frame, to
+// serve a screenshot route that fires when a person asks for one. Deriving it
+// here costs the same work once per request instead of four times a second
+// forever.
+bool Display::read_row_major(uint8_t* out, size_t length) const {
+  const size_t stride = kWidth / 8;
+  if (out == nullptr || display_buffer_ == nullptr ||
+      length < stride * kHeight) {
+    return false;
+  }
+  std::memset(out, 0, stride * kHeight);
+  const int height_blocks = kHeight >> 2;
+  for (int y = 0; y < kHeight; ++y) {
+    const int inverted_y = kHeight - 1 - y;
+    const int block_y = inverted_y >> 2;
+    const int local_y = inverted_y & 3;
+    const uint8_t mask_hi = static_cast<uint8_t>(1U << (7 - (local_y << 1)));
+    const uint8_t mask_lo =
+        static_cast<uint8_t>(1U << (7 - ((local_y << 1) | 1)));
+    uint8_t* row = out + static_cast<size_t>(y) * stride;
+    for (int x = 0; x < kWidth; ++x) {
+      const size_t index =
+          static_cast<size_t>(x >> 1) * height_blocks + block_y;
+      const uint8_t mask = (x & 1) ? mask_lo : mask_hi;
+      // write_rgb565_area() clears the bit for black and sets it for white.
+      if ((display_buffer_[index] & mask) == 0) {
+        row[x >> 3] |= static_cast<uint8_t>(0x80U >> (x & 7));
+      }
+    }
+  }
+  return true;
 }
 
 void Display::set_pixel(int x, int y, Color color) {

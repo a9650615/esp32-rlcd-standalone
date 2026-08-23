@@ -5,6 +5,7 @@ idf_component_register(
         "page_registry.cpp"
         "carousel_controller.cpp"
         "tray_registry.cpp"
+        "media_registry.cpp"
     INCLUDE_DIRS
         "include"
 )

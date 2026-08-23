@@ -259,28 +259,54 @@ bool voltage_suggests_charging(const int* recent_millivolts, int count) {
   return true;
 }
 
-bool ChargeDetector::update(int millivolts) {
-  if (!seeded) {
-    seeded = true;
-    extreme_millivolts = millivolts;
-    return charging;
+bool battery_voltage_slope(const int* ordered_millivolts, int count,
+                           int seconds_per_sample, float* out) {
+  if (out == nullptr) return false;
+  if (ordered_millivolts == nullptr || seconds_per_sample <= 0) return false;
+  if (count < 2) return false;
+  if ((count - 1) * seconds_per_sample < kChargingSlopeMinSpanSeconds) {
+    return false;
   }
-  if (charging) {
-    if (millivolts > extreme_millivolts) {
-      extreme_millivolts = millivolts;
-    } else if (extreme_millivolts - millivolts >= kBatteryChargeStepMillivolts) {
-      charging = false;
-      extreme_millivolts = millivolts;
-    }
-  } else {
-    if (millivolts < extreme_millivolts) {
-      extreme_millivolts = millivolts;
-    } else if (millivolts - extreme_millivolts >= kBatteryChargeStepMillivolts) {
-      charging = true;
-      extreme_millivolts = millivolts;
-    }
+
+  // Least squares on millivolts against hours. Time origin is arbitrary for a
+  // slope, so index units are used and scaled once at the end - it keeps the
+  // sums small and avoids a per-sample multiply.
+  double sum_i = 0.0, sum_v = 0.0, sum_iv = 0.0, sum_ii = 0.0;
+  for (int i = 0; i < count; ++i) {
+    const double v = static_cast<double>(ordered_millivolts[i]);
+    sum_i += i;
+    sum_v += v;
+    sum_iv += i * v;
+    sum_ii += static_cast<double>(i) * i;
   }
-  return charging;
+  const double n = static_cast<double>(count);
+  const double denominator = n * sum_ii - sum_i * sum_i;
+  if (denominator == 0.0) return false;
+
+  const double per_sample = (n * sum_iv - sum_i * sum_v) / denominator;
+  const double samples_per_hour = 3600.0 / seconds_per_sample;
+  *out = static_cast<float>(per_sample * samples_per_hour);
+  return true;
+}
+
+bool voltage_is_falling(const int* ordered_millivolts, int count,
+                        int seconds_per_sample) {
+  float per_hour = 0.0f;
+  if (!battery_voltage_slope(ordered_millivolts, count, seconds_per_sample,
+                             &per_hour)) {
+    return false;
+  }
+  return per_hour < kDischargeSlopeMillivoltsPerHour;
+}
+
+bool voltage_is_rising(const int* ordered_millivolts, int count,
+                       int seconds_per_sample) {
+  float per_hour = 0.0f;
+  if (!battery_voltage_slope(ordered_millivolts, count, seconds_per_sample,
+                             &per_hour)) {
+    return false;
+  }
+  return per_hour > kChargingRiseMillivoltsPerHour;
 }
 
 bool battery_overvoltage_warning(int millivolts) {

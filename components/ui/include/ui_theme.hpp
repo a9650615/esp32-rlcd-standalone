@@ -157,9 +157,11 @@ constexpr int text_outline_width(const int font_line_height) {
 // host build. Both drawing calls return their mutable parts so a state change
 // is applied in place: rebuilding the page to move a battery bar would repaint
 // the whole reflective panel, which is what the cheap update path exists to
-// avoid.
+// avoid. Wi-Fi has two overlapping static canvases; switching state only
+// changes their opacity.
 struct WifiIconParts {
-  lv_obj_t* bars[3]{};
+  lv_obj_t* connected = nullptr;
+  lv_obj_t* disconnected = nullptr;
 };
 
 struct BatteryIconParts {
@@ -459,6 +461,33 @@ constexpr int i1_canvas_pixel_offset() {
 }
 int i1_canvas_stride(int width);
 std::size_t i1_canvas_storage_bytes(int width, int height);
+
+// Compile-time equivalents of the two functions just above, for the fixed
+// backing arrays that have to be sized before LVGL exists to be asked. Those
+// two call into LVGL and so cannot be constexpr; these mirror
+// lv_draw_buf_width_to_stride()'s own formula for LV_COLOR_FORMAT_I1 (see
+// width_to_stride() in lv_draw_buf.c: the 1-bit-per-pixel byte width rounded
+// up to LV_DRAW_BUF_STRIDE_ALIGN, which is read by name here rather than
+// assumed to stay 1).
+//
+// Public rather than private to ui_theme.cpp because sizing an I1 buffer by
+// hand is precisely what has gone wrong twice: once as a bare (width + 7) / 8
+// that ignored the palette prefix and LVGL's stride, and once as
+// `width * height`, which is the byte count for 8 bits per pixel and so
+// over-allocated by 8x - 43 KB of .bss for one debug screen's swatches, enough
+// that net_log could no longer create its 4 KiB sender task. A caller that
+// needs a compile-time size should have one correct answer to reach for.
+constexpr int i1_canvas_stride_bound(int width) {
+  const int width_bytes = (width + 7) / 8;  // 1 bit per pixel, rounded up
+  return ((width_bytes + LV_DRAW_BUF_STRIDE_ALIGN - 1) /
+          LV_DRAW_BUF_STRIDE_ALIGN) *
+         LV_DRAW_BUF_STRIDE_ALIGN;
+}
+constexpr std::size_t i1_canvas_storage_bound(int width, int height) {
+  return static_cast<std::size_t>(i1_canvas_pixel_offset()) +
+         static_cast<std::size_t>(i1_canvas_stride_bound(width)) *
+             static_cast<std::size_t>(height);
+}
 // `background_opa` is separate from `ink`'s (always LV_OPA_COVER) because
 // callers disagree on it: the battery overlay is a self-contained
 // replacement for everything underneath it (LV_OPA_COVER), while a tray
@@ -493,9 +522,9 @@ void set_battery_icon_level(const BatteryIconParts& parts, uint8_t percent,
 // modules could stomp on if more than one icon were ever visible at once.
 TrayIndicatorIcon tray_indicator_icon(lv_obj_t* parent, Rect bounds, int slot,
                                       const app_core::TrayIndicatorBitmap& bitmap);
-// Shows or hides the whole icon - not a per-part toggle like wifi_icon's
-// rings, since a tray-registry icon is one opaque bitmap, not several
-// hand-drawn primitives core understands individually.
+// Shows or hides the whole icon - not a two-canvas state switch like
+// wifi_icon(), since a tray-registry icon is one opaque bitmap rather than
+// a pair of static state glyphs.
 void set_tray_indicator_icon_visible(const TrayIndicatorIcon& icon, bool visible);
 
 void button_hints(lv_obj_t* parent, Rect bounds, InputHints hints);

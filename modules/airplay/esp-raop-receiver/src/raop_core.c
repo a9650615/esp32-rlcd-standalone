@@ -18,6 +18,7 @@ struct raop_handle_s {
     raop_config_t config;
     char device_name[64];
     float volume;
+    bool volume_known;
 };
 
 // ---- Internal callback: translates internal events to public API ----
@@ -39,6 +40,22 @@ static bool internal_cmd_cb(raop_internal_event_t event, ...) {
         case RAOP_INT_SETUP: {
             uint8_t **buffer = va_arg(args, uint8_t**);
             size_t *size = va_arg(args, size_t*);
+
+            // Volume belongs to the sender, so it cannot outlive the sender.
+            // handle->volume was set once in raop_init() and never again, so
+            // a second device inherited whatever the first had left there -
+            // connect from something quiet, then from something else, and the
+            // second one plays at the first one's level until it happens to
+            // send a volume of its own.
+            //
+            // Reset quiet rather than to 0 dB (unity). A sender sets its
+            // volume within a fraction of a second of RECORD, so this value
+            // is only ever heard in that gap; being briefly too quiet is a
+            // blip, and being briefly at full drive is unpleasant on this
+            // speaker - see kStreamVolumePercent in modules/audio, which was
+            // itself lowered after full drive was reported as distorted.
+            handle->volume = -20.0f;
+            handle->volume_known = false;
 
             // See RAOP_BUFFER_FRAMES in audio_buffer.h for why this is 384
             // frames, not upstream's 512.
@@ -107,12 +124,57 @@ static bool internal_cmd_cb(raop_internal_event_t event, ...) {
             uint32_t local_head_time = now + buffer_duration_ms;
             int32_t error = (int32_t)(head_playtime - local_head_time);
 
-            if (error < -50) {
-                uint32_t skip = (-error * 44100) / (352 * 1000);
-                audio_buffer_skip_frames(skip);
-            } else if (error > 50) {
-                uint32_t pause = (error * 44100) / (352 * 1000);
-                audio_buffer_pause_frames(pause);
+            // Measured, then measured again, and it has never once helped.
+            //
+            // At +/-50 ms it fired 46 times in 97 evaluations against a real
+            // iPhone - every two seconds, discarding 7 to 13 frames each time,
+            // which is 56 to 104 ms of music. That was the stutter. It never
+            // converged either: the error sat between -47 and -111 ms with no
+            // trend, a constant offset with noise, and skipping frames does
+            // nothing to an offset, so it skipped again forever.
+            //
+            // Widening it to +/-500 ms stopped that and produced the next
+            // fault. The large positive errors it still caught - +685 ms,
+            // +556 ms, +393 ms, all at session start - are not desync. They
+            // are the buffer not being full yet: frames_buffered is small, so
+            // buffer_duration_ms is small, so local_head_time is close to now,
+            // while head_playtime is already the sender's full declared
+            // latency away. Acting on that inserts hundreds of milliseconds of
+            // silence that nothing ever takes back, and audio ends up that far
+            // behind video. Which is what "音畫不同步" turned out to be.
+            //
+            // So it observes and does not act. Correct playback timing is
+            // already audio_output_task()'s playtime gate, which is derived
+            // from the sender's sync packets and therefore tracks the sender's
+            // clock without help - and being exactly on the sender's schedule
+            // is precisely what lip sync needs. The ring holds 384 frames,
+            // about 3 s; at a realistic 100 ppm clock difference real drift
+            // would take hours to matter, and audio_buffer_write() reports a
+            // full buffer long before that (measured at zero occurrences).
+            //
+            // Kept as a measurement rather than deleted because if genuine
+            // drift ever does show up, it will show up here first - as an
+            // error that grows steadily rather than one that sits still.
+            // Two maxima, because one of them was misleading. The all-time
+            // figure never resets, so a single excursion sets it forever and
+            // a later report showing a larger number looks like a trend when
+            // it is a memory. The window figure resets every report, so
+            // consecutive lines can be compared: if this is real clock drift
+            // the window maxima climb steadily, and if it is jitter they do
+            // not. That distinction is the whole question about leaving the
+            // correction switched off.
+            static uint32_t evaluations = 0;
+            static int32_t worst_ever = 0, worst_window = 0;
+            const int32_t magnitude = error < 0 ? -error : error;
+            if (magnitude > worst_ever) worst_ever = magnitude;
+            if (magnitude > worst_window) worst_window = magnitude;
+            if ((++evaluations % 16) == 0) {
+                ESP_LOGI(TAG, "drift: error=%d ms, window max %d ms, all-time "
+                              "max %d ms over %u evaluations (observed, not "
+                              "corrected - see comment)",
+                         (int) error, (int) worst_window, (int) worst_ever,
+                         (unsigned) evaluations);
+                worst_window = 0;
             }
             break;
         }
@@ -122,6 +184,7 @@ static bool internal_cmd_cb(raop_internal_event_t event, ...) {
         case RAOP_INT_VOLUME: {
             float volume = (float)va_arg(args, double);
             handle->volume = volume;
+            handle->volume_known = true;
 
             if (handle->config.volume_mode == RAOP_VOLUME_SOFTWARE) {
                 // Will be applied in audio output path - store for use there
@@ -210,6 +273,7 @@ esp_err_t raop_init(const raop_config_t *config, raop_handle_t **out_handle) {
     // Copy config
     memcpy(&handle->config, config, sizeof(raop_config_t));
     handle->volume = 0.0f;
+    handle->volume_known = false;
 
     // Resolve device name
     uint8_t mac[6];
@@ -307,6 +371,11 @@ esp_err_t raop_set_device_name(raop_handle_t *handle, const char *name) {
     if (!handle || !name) return ESP_ERR_INVALID_ARG;
     snprintf(handle->device_name, sizeof(handle->device_name), "%s", name);
     return ESP_OK;
+}
+
+bool raop_volume_is_known(raop_handle_t *handle) {
+    if (!handle) return false;
+    return handle->volume_known;
 }
 
 float raop_get_volume(raop_handle_t *handle) {

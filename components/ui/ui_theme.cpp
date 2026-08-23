@@ -15,6 +15,55 @@ namespace {
 
 lv_color_t ink(bool inverse) { return inverse ? lv_color_white() : lv_color_black(); }
 
+// Every LVGL style setter invalidates unconditionally.
+// lv_obj_set_local_style_prop() ends in lv_obj_refresh_style(), which calls
+// lv_obj_invalidate() with no old-versus-new comparison anywhere in the path
+// (managed_components/lvgl__lvgl/src/core/lv_obj_style.c, twice in fact).
+//
+// That is free on a backlit panel already redrawing 60 times a second, and
+// ruinous here: lvgl_port.cpp configures LV_DISPLAY_RENDER_MODE_FULL, so one
+// invalidated object means the entire 400x300 framebuffer is re-rendered and
+// the whole panel rewritten - ~28 ms reading the draw buffer out of PSRAM plus
+// 10-50 ms of SPI. Writing an object the value it already holds is not a no-op
+// on this board; it is a full repaint.
+//
+// So the setters that run on the ~100 ms UI tick compare first, through these.
+// Measured before they existed: 4.4 full-panel rewrites per second against
+// 0.87 publishes per second, continuously, because update_tray_indicators()
+// rewrites every slot's opacity on every tick by design - the tray registry
+// has no change event, so polling is correct and it is the write that has to
+// be conditional. Visible on the panel as the dither pattern of a cover
+// crawling, which is what a fine 1-bit pattern looks like when it is being
+// rewritten four times a second.
+//
+// LV_OBJ_FLAG_HIDDEN would not have avoided it either: lv_obj_area_is_visible()
+// tests that flag and not opacity, so an icon parked at LV_OPA_TRANSP is
+// invalidated exactly like a visible one.
+//
+// Named `_if_changed` after set_label_text_if_changed() and
+// set_setup_status_if_changed(), which this file already had for the same
+// reason applied to text.
+void set_style_opa_if_changed(lv_obj_t* obj, lv_opa_t opa) {
+  if (obj == nullptr) return;
+  if (lv_obj_get_style_opa(obj, LV_PART_MAIN) == opa) return;
+  lv_obj_set_style_opa(obj, opa, 0);
+}
+
+void set_style_bg_opa_if_changed(lv_obj_t* obj, lv_opa_t opa) {
+  if (obj == nullptr) return;
+  if (lv_obj_get_style_bg_opa(obj, LV_PART_MAIN) == opa) return;
+  lv_obj_set_style_bg_opa(obj, opa, 0);
+}
+
+// The style width rather than lv_obj_get_width(): the latter reports the laid
+// out width, which is 0 until LVGL's first layout pass has run, so comparing
+// against it would skip the very first write.
+void set_width_if_changed(lv_obj_t* obj, int32_t width) {
+  if (obj == nullptr) return;
+  if (lv_obj_get_style_width(obj, LV_PART_MAIN) == width) return;
+  lv_obj_set_width(obj, width);
+}
+
 }  // namespace
 
 void apply_setup_status_style(lv_obj_t* label_obj, bool is_error) {
@@ -268,65 +317,75 @@ void humidity_icon(lv_obj_t* parent, Rect bounds, bool inverse) {
                inverse);
 }
 
-// Three thick arcs over a filled dot - the standard mark.
-//
-// There is no arc primitive here and no diagonal, so each arc is a whole ring
-// concentric with the dot, clipped by a container whose bottom edge sits above
-// the dot: LVGL clips children to their parent unless OVERFLOW_VISIBLE is set,
-// so only the upper cap of each ring survives. The ends come out cut square
-// rather than angled, which is the one way this differs from the drawn glyph;
-// at tray size that is not what the eye picks up. Stroke weight and the
-// number of bands are.
-//
-// Returns the arcs so the caller can hide them in place. Rebuilding the page
-// to change a connection indicator would repaint the whole panel visibly.
+namespace {
+
+// Regenerate exactly with: python3 scripts/svg-to-bitmap.py
+// components/ui/assets/wifi-high-bold.svg --width 20 --height 20 --fit viewbox
+// --threshold 0.35 --min-stroke 1 --emit-bytes kWifiHighBoldBitmap
+constexpr uint8_t kWifiHighBoldBitmap[] = {
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf0, 0x00,
+    0x0f, 0xff, 0x00, 0x1f, 0x9f, 0x80, 0x78, 0x01, 0xe0, 0x61, 0xf8, 0x60,
+    0x07, 0xfe, 0x00, 0x0f, 0x0f, 0x00, 0x1c, 0x03, 0x80, 0x01, 0xf8, 0x00,
+    0x03, 0xfc, 0x00, 0x03, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x60, 0x00,
+    0x00, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+};
+static_assert(sizeof(kWifiHighBoldBitmap) == app_core::kTrayIconBitmapBytes,
+              "wifi-high-bold bitmap must be 60 tight-packed bytes");
+
+// Regenerate exactly with: python3 scripts/svg-to-bitmap.py
+// components/ui/assets/wifi-slash-bold.svg --width 20 --height 20 --fit viewbox
+// --threshold 0.35 --min-stroke 1 --emit-bytes kWifiSlashBoldBitmap
+constexpr uint8_t kWifiSlashBoldBitmap[] = {
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x00, 0x00, 0x1c, 0x70, 0x00,
+    0x0c, 0xff, 0x00, 0x1e, 0x1f, 0x80, 0x7f, 0x01, 0xe0, 0x63, 0x80, 0x60,
+    0x07, 0xce, 0x00, 0x0f, 0xef, 0x00, 0x1c, 0x73, 0x80, 0x01, 0xf8, 0x00,
+    0x03, 0xfc, 0x00, 0x03, 0x0e, 0x00, 0x00, 0x07, 0x00, 0x00, 0x63, 0x00,
+    0x00, 0x63, 0x80, 0x00, 0x01, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+};
+static_assert(sizeof(kWifiSlashBoldBitmap) == app_core::kTrayIconBitmapBytes,
+              "wifi-slash-bold bitmap must be 60 tight-packed bytes");
+
+alignas(LV_DRAW_BUF_ALIGN) uint8_t g_wifi_high_storage[
+    i1_canvas_storage_bound(app_core::kTrayIconSize, app_core::kTrayIconSize)];
+alignas(LV_DRAW_BUF_ALIGN) uint8_t g_wifi_slash_storage[
+    i1_canvas_storage_bound(app_core::kTrayIconSize, app_core::kTrayIconSize)];
+
+}  // namespace
+
+// Two static I1 canvases share a tray cell. State updates change opacity only,
+// avoiding a page rebuild and its full-panel redraw.
 WifiIconParts wifi_icon(lv_obj_t* parent, Rect bounds, bool connected) {
   WifiIconParts parts{};
-  const int dot = std::max(5, bounds.height * 3 / 10);
-  const int stroke = std::max(2, bounds.height / 7);
-  const int arc_height = bounds.height - dot - 1;
-  lv_obj_t* clip = lv_obj_create(parent);
-  if (clip == nullptr) return parts;
-  apply_surface(clip);
-  lv_obj_set_pos(clip, bounds.x, bounds.y);
-  lv_obj_set_size(clip, bounds.width, arc_height);
 
-  const int centre_x = bounds.width / 2;
-  // Relative to the container, so the rings are concentric with the dot that
-  // sits below it. Centring them on the container's own edge would give exact
-  // semicircles, and a dome over a dot is the hotspot idiom.
-  const int centre_y = bounds.height - dot / 2 - 1;
-  // Evenly spaced bands: the outermost reaches the top of the icon, the
-  // innermost stops just above the dot.
-  const int span = arc_height;
-  for (int i = 0; i < 3; ++i) {
-    const int radius = centre_y - (span * i) / 3;
-    lv_obj_t* ring = lv_obj_create(clip);
-    if (ring == nullptr) continue;
-    apply_surface(ring);
-    lv_obj_set_pos(ring, centre_x - radius, centre_y - radius);
-    lv_obj_set_size(ring, radius * 2, radius * 2);
-    lv_obj_set_style_radius(ring, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_opa(ring, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(ring, stroke, 0);
-    lv_obj_set_style_border_color(ring, lv_color_black(), 0);
-    parts.bars[i] = ring;
-  }
-  // Always drawn: an indicator that vanishes completely cannot be told apart
-  // from one that failed to render.
-  filled_circle(parent, bounds.x + centre_x, bounds.y + centre_y, dot, false);
+  repack_i1_bits(kWifiHighBoldBitmap, g_wifi_high_storage,
+                 sizeof(g_wifi_high_storage), app_core::kTrayIconSize,
+                 app_core::kTrayIconSize,
+                 i1_canvas_stride(app_core::kTrayIconSize),
+                 i1_canvas_pixel_offset());
+  repack_i1_bits(kWifiSlashBoldBitmap, g_wifi_slash_storage,
+                 sizeof(g_wifi_slash_storage), app_core::kTrayIconSize,
+                 app_core::kTrayIconSize,
+                 i1_canvas_stride(app_core::kTrayIconSize),
+                 i1_canvas_pixel_offset());
+
+  parts.connected = bind_i1_canvas(
+      parent, bounds.x, bounds.y, app_core::kTrayIconSize,
+      app_core::kTrayIconSize, g_wifi_high_storage, lv_color_white(),
+      LV_OPA_TRANSP, lv_color_black());
+  parts.disconnected = bind_i1_canvas(
+      parent, bounds.x, bounds.y, app_core::kTrayIconSize,
+      app_core::kTrayIconSize, g_wifi_slash_storage, lv_color_white(),
+      LV_OPA_TRANSP, lv_color_black());
+
   set_wifi_icon_state(parts, connected);
   return parts;
 }
 
 void set_wifi_icon_state(const WifiIconParts& parts, bool connected) {
-  // Hidden rather than hollowed: these are already outlines, so there is no
-  // emptier version to fall back to. The dot alone means no link.
-  for (lv_obj_t* ring : parts.bars) {
-    if (ring == nullptr) continue;
-    lv_obj_set_style_border_opa(ring, connected ? LV_OPA_COVER : LV_OPA_TRANSP,
-                                0);
-  }
+  set_style_opa_if_changed(parts.connected,
+                           connected ? LV_OPA_COVER : LV_OPA_TRANSP);
+  set_style_opa_if_changed(parts.disconnected,
+                           connected ? LV_OPA_TRANSP : LV_OPA_COVER);
 }
 
 // LVGL's own row stride for an I1 canvas this wide - never recomputed as a
@@ -364,6 +423,18 @@ lv_obj_t* bind_i1_canvas(lv_obj_t* parent, int x, int y, int width, int height,
   lv_obj_t* canvas = lv_canvas_create(parent);
   if (canvas == nullptr) return nullptr;
   apply_surface(canvas);
+  // apply_surface() leaves every surface opaque white - correct for most
+  // objects, but a canvas's own background is a style layer LVGL paints
+  // *underneath* whatever the I1 palette's index 0 resolves to, not the
+  // palette itself. A caller that asked for a transparent background (a
+  // tray indicator sitting on something other than white) would otherwise
+  // still get an opaque white square behind its "transparent" pixels -
+  // this is the bug both callers happened not to trigger, not a case for
+  // hardcoding transparency here instead: the battery overlay's opaque
+  // white request is just as real a requirement as the tray's transparent
+  // one.
+  lv_obj_set_style_bg_color(canvas, background, 0);
+  lv_obj_set_style_bg_opa(canvas, background_opa, 0);
   lv_canvas_set_buffer(canvas, storage, width, height, LV_COLOR_FORMAT_I1);
   lv_canvas_set_palette(canvas, 0, lv_color_to_32(background, background_opa));
   lv_canvas_set_palette(canvas, 1, lv_color_to_32(ink, LV_OPA_COVER));
@@ -373,6 +444,17 @@ lv_obj_t* bind_i1_canvas(lv_obj_t* parent, int x, int y, int width, int height,
 }
 
 namespace {
+
+// i1_canvas_stride_bound()/i1_canvas_storage_bound() (ui_theme.hpp) are the
+// compile-time mirrors of i1_canvas_stride()/i1_canvas_storage_bytes() that
+// let the fixed backing stores below be *proven* sufficient at compile time
+// instead of only ever being caught by their own runtime bounds checks - the
+// same static_assert convention every other hardcoded size in this codebase
+// already follows (kChargingBoltRows above, ui_strings.cpp's kRows,
+// history.hpp's HistoryBlob). They started out private here; they are in the
+// header now because render_dither_card.cpp needed the same answer and,
+// lacking it, spelled the size `width * height` - the byte count for eight
+// bits per pixel, so eight times too large.
 
 // Generous fixed backing store for the charging overlay canvas - LVGL's
 // I1-format canvas buffer must outlive the canvas object, so it cannot be a
@@ -386,7 +468,26 @@ namespace {
 // and every write into this buffer is bounds-checked against its actual
 // sizeof() as the capacity, so this only needs to be *at least* big
 // enough, not exact.
-uint8_t g_charging_bolt_bitmap[i1_canvas_pixel_offset() + 8 * 16];
+alignas(LV_DRAW_BUF_ALIGN) uint8_t
+    g_charging_bolt_bitmap[i1_canvas_pixel_offset() + 8 * 16];
+
+// Proves "generous headroom" above rather than asserting it in prose: the
+// tray's battery cell (kTrayBatteryIconWidth x kTrayBatteryIconHeight,
+// ui_data.hpp)
+// is the one input battery_fill_rect() ever actually receives in this
+// firmware, so its real charging-bolt canvas size is knowable at compile
+// time, not just "~22x10". An icon cell grown past what this buffer holds
+// now fails the build, rather than being silently rejected by
+// build_battery_charging_composite()'s own bounds check at first boot.
+static_assert(
+    sizeof(g_charging_bolt_bitmap) >=
+        i1_canvas_storage_bound(
+            battery_fill_rect({0, 0, kTrayBatteryIconWidth, kTrayBatteryIconHeight})
+                .width,
+            battery_fill_rect({0, 0, kTrayBatteryIconWidth, kTrayBatteryIconHeight})
+                .height),
+    "g_charging_bolt_bitmap is too small for the tray battery cell's actual "
+    "charging-overlay canvas - grow its fixed backing store");
 
 }  // namespace
 
@@ -456,53 +557,36 @@ void set_battery_icon_level(const BatteryIconParts& parts, uint8_t percent,
                             bool valid, bool charging) {
   if (parts.fill == nullptr) return;
   if (!valid) {
-    lv_obj_set_style_bg_opa(parts.fill, LV_OPA_TRANSP, 0);
-    if (parts.charging_bolt != nullptr) {
-      lv_obj_set_style_opa(parts.charging_bolt, LV_OPA_TRANSP, 0);
-    }
+    set_style_bg_opa_if_changed(parts.fill, LV_OPA_TRANSP);
+    set_style_opa_if_changed(parts.charging_bolt, LV_OPA_TRANSP);
     return;
   }
-  lv_obj_set_style_bg_opa(parts.fill, LV_OPA_COVER, 0);
+  set_style_bg_opa_if_changed(parts.fill, LV_OPA_COVER);
   const int usable = parts.body_width - 4;
   const int filled = usable * (percent > 100 ? 100 : percent) / 100;
   const int fill_width = filled < 1 ? 1 : filled;
-  lv_obj_set_width(parts.fill, fill_width);
+  set_width_if_changed(parts.fill, fill_width);
 
   // The overlay's own content never changes (built once, in battery_icon())
   // - charging only ever toggles whether it is shown, the same one-line
   // pattern set_tray_indicator_icon_visible() already uses for a static
   // bitmap that also never changes after construction.
-  if (parts.charging_bolt != nullptr) {
-    lv_obj_set_style_opa(parts.charging_bolt,
-                         charging ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
-  }
+  set_style_opa_if_changed(parts.charging_bolt,
+                           charging ? LV_OPA_COVER : LV_OPA_TRANSP);
 }
 
-// One LV_COLOR_FORMAT_I1 canvas, backed directly by the module's own bytes
-// (no copy, no conversion) - core blits whatever it was handed and never
-// draws anything module-specific of its own. This is the one place that
-// bitmap layout (app_core::TrayIndicatorBitmap: row-major, MSB-first,
-// byte-padded rows) has to line up with what LVGL expects, and it does
-// without any repacking: lv_canvas_set_buffer()'s own stride formula for
-// I1 is `(width*1 + 7) / 8` bytes/row rounded up to
-// CONFIG_LV_DRAW_BUF_STRIDE_ALIGN, which is 1 in this project's
-// sdkconfig - i.e. exactly the tightly-packed layout the bitmap struct's
-// own comment documents, with no hidden padding a module could get wrong
-// silently.
-//
-// const_cast is safe here specifically because nothing in this function (or
-// anything else this module calls) ever writes through the canvas buffer -
-// lv_canvas_set_px()/set_palette() touch different backing storage, and
-// this canvas is never used as a draw target, only ever blitted read-only.
+// tray_indicator_icon() repacks a module's tight I1 bytes into LVGL's
+// palette-and-stride backing storage once while creating its canvas. Core
+// remains generic: it receives only the registered bitmap and never draws a
+// module-specific shape.
 namespace {
 
-// One persistent backing buffer per tray-indicator slot - sized the same
-// generous way g_charging_bolt_bitmap is (see its own comment): headroom
-// over today's actual 16x12 module icons, not an exact fit, since
-// i1_canvas_storage_bytes() bounds-checks every write against this array's
-// real sizeof() rather than assuming it matches.
-uint8_t g_tray_indicator_storage[app_core::kMaxTrayIndicators]
-                                [i1_canvas_pixel_offset() + 8 * 16];
+// One persistent LVGL backing buffer per registry slot, sized from the
+// shared module contract rather than a particular module's icon.
+alignas(LV_DRAW_BUF_ALIGN) uint8_t
+    g_tray_indicator_storage[app_core::kMaxTrayIndicators]
+                            [i1_canvas_storage_bound(app_core::kTrayIconSize,
+                                                     app_core::kTrayIconSize)];
 
 }  // namespace
 
@@ -537,8 +621,11 @@ TrayIndicatorIcon tray_indicator_icon(lv_obj_t* parent, Rect bounds, int slot,
 }
 
 void set_tray_indicator_icon_visible(const TrayIndicatorIcon& icon, bool visible) {
-  if (icon.canvas == nullptr) return;
-  lv_obj_set_style_opa(icon.canvas, visible ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+  // This is the one that mattered: update_tray_indicators() calls it for every
+  // slot on every ~100 ms tick, so before the guard it repainted the whole
+  // panel ten times a second regardless of whether any indicator had moved.
+  set_style_opa_if_changed(icon.canvas,
+                           visible ? LV_OPA_COVER : LV_OPA_TRANSP);
 }
 
 void button_hints(lv_obj_t* parent, Rect bounds, InputHints hints) {

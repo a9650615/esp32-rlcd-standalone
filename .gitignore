@@ -35,3 +35,9 @@ sdkconfig
 # untracked build trees once accumulated at the repository root.
 build/
 build-host/
+
+# Panel captures from `scripts/remote.sh shot`. Written on demand, overwritten
+# every time, and only ever meaningful next to the session that took them -
+# a checked-in Live.png is a picture of whatever firmware happened to be
+# running when someone last looked.
+screenshots/

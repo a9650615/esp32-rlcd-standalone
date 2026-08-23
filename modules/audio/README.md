@@ -508,31 +508,15 @@ contract: fixed capacity enforced, registration past it refused, an invalid
 handle's `set_tray_indicator_active()` a documented no-op (loud, now, not
 silent).
 
-**Confirmed on hardware**, after the polling-gate fix above shipped: a
-silent (`vol=0`) 8 s tone showed the speaker icon present in a `/shot`
-during playback and gone afterwards, the network/battery icons did not
-move, and both sides of the diagnostic log lined up (`tray indicator:
-requesting slot 0 active=true` on the sending side, `tray indicator slot 0
--> active` from `ui_tray` 145 ms later). That settles every claim the
-paragraph above used to list as screenshot-only: the registry is polled
-every tick, the LVGL canvas opacity toggle reaches the real display driver,
-and the 16x12px procedural bitmap `build_icon_bitmap()` builds renders as
-the intended shape rather than a garbled or blank rectangle.
+**Confirmed on hardware before this icon replacement:** a silent (`vol=0`)
+8 s tone showed the speaker indicator present during playback and gone
+afterwards. Network and battery did not move. That evidence proves the
+registry polling, LVGL opacity update, anchoring, and display-driver path.
 
-One thing that bitmap's own size is now also evidence for: `/dither-card`'s
-size ramp (see `components/ui/render_dither_card.cpp` and
-`components/ui/include/dither.hpp`'s `kMinDitherDimensionPx`) found 16 px
-on the shorter dimension to be the smallest that still reads as a distinct
-grey on this panel, with 12 px reading as a dark dot instead. This icon's
-shorter dimension is exactly 12 px (16 wide, 12 tall) - below that
-threshold. That is not a defect to fix: `build_icon_bitmap()` never
-attempts grey at all, every pixel is fully black or fully white
-(`set_icon_pixel()`/`kBayer4x4` do not appear anywhere in this file), which
-is exactly the case `kMinDitherDimensionPx` says a shape this small should
-be. If this icon (or any tray indicator this small) is ever redrawn using
-`ui::dither_pixel_dark()` to render something with actual grey in it, that
-function already falls back to a plain threshold below 16 px on its own -
-nothing here needs to change for that to be correct.
+The speaker source is now Phosphor Icons Bold `speaker-high-bold`, rasterized
+offline into a `20×20` tight-packed I1 bitmap. The prior hardware evidence
+does not approve the new shape. Its centring, clipping, and recognition on
+the reflective panel remain pending until someone can inspect the panel.
 
 ## Core touch points
 
@@ -547,31 +531,24 @@ entire footprint this module has on core:
   as the existing `POST /restart` route: unauthenticated, disabled in
   release builds, and safe to leave that way because neither can corrupt
   anything and the board has no cable to press a button over.
-- `audio_init()` calls `app_core::register_tray_indicator()` once, with a
-  16x12px 1-bit bitmap this module builds procedurally
-  (`build_icon_bitmap()` in `audio.cpp`), and `write_tone_step()` calls
-  `app_core::set_tray_indicator_active(handle, true)` right before raising
-  GPIO46 and `set_tray_indicator_active(handle, false)` right after it
-  drops, on every exit path. Both are direct calls into `app_core`'s
-  `tray_registry.hpp` - no handler indirection, unlike `ota::
-  set_progress_handler`'s function pointer for `wifi_provision::set_ota`,
-  because `app_core` has no dependents of its own that a direct call back
-  could ever be circular with.
+- `audio_init()` calls `app_core::register_tray_indicator()` once with a
+  checked-in `20×20` tight-packed I1 bitmap generated from Phosphor Icons
+  Bold `speaker-high-bold`. Only the `enable_amplifier=true` playback path in
+  `write_tone_step()` calls `app_core::set_tray_indicator_active(handle, true)`
+  before raising GPIO46 and sets it false after GPIO46 drops, including every
+  exit path; the diagnostic-bypass path does neither.
 
-  The registry (`app_core::tray_registry`, `kMaxTrayIndicators = 4`) is
-  core's, and any module may call it directly: a module registers once, as
-  data - a bitmap plus width/height, not code - and core renders whatever
-  it is handed onto a generic LVGL canvas, with no per-module knowledge or
-  switch anywhere in `app_core` or `ui`. This module only ever calls
-  `register_tray_indicator()`/`set_tray_indicator_active()` with its own
-  handle; a second source of tray activity later (a future AirPlay module,
-  say) registers its own bitmap and gets its own handle, with no change to
-  this module's call sites or to core.
+  The registry accepts only non-null `pixels` with static lifetime, `20×20`
+  module bitmaps, and `byte_count == 60`; it has a fixed capacity of four
+  slots. Audio and AirPlay each own their source bitmap and handle. Core
+  renders both through the same generic LVGL canvas path and has no
+  module-specific drawing switch. System-tray network and transient cells are
+  `20×20`; the independently centred battery remains `30×14`.
 
   A short `/beep` can still start and finish between two ~100 ms ticks and
   never surface on the tray at all - that is a gap in how often the render
   tick runs, not staleness (the registry's `active` flag is read fresh on
-  every tick, see `render_shared.cpp`'s `update_visible_fields()`). The
+  every tick, see `render_shared.cpp`'s `update_tray_indicators()`). The
   indicator is for activity that persists across a tick or two, an alarm or
   streamed audio, not a diagnostic click test.
 

@@ -1,5 +1,7 @@
 #include "ota_session.hpp"
 
+#include "ota_quiesce.hpp"
+
 #include <esp_log.h>
 #include <esp_partition.h>
 
@@ -42,6 +44,17 @@ esp_err_t Session::open_slot() {
     ESP_LOGE(kTag, "no OTA slot available to write into");
     return ESP_ERR_NOT_FOUND;
   }
+  // Before the first erase, and on this task, so a module can put its
+  // hardware somewhere safe. A push sent during playback produced loud noise
+  // from the speaker and then failed; the amplifier was left enabled with an
+  // undriven input. See ota_quiesce.hpp and
+  // docs/design/2026-08-20-quiescing-modules-before-an-ota-write.md.
+  //
+  // Here rather than in the HTTP handler: every path that writes firmware
+  // goes through open_slot(), so putting it at the point of the erase means a
+  // future feeder cannot forget to call it.
+  run_quiesce_hooks();
+
   // OTA_SIZE_UNKNOWN erases the whole partition, which is the only correct
   // choice when the feeder had no Content-Length to pass on.
   const std::size_t erase_size =

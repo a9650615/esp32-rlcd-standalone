@@ -23,8 +23,25 @@
 #include "dmap_parser.h"
 #include "log_util.h"
 
-#define RTSP_STACK_SIZE 	(24*1024)
-#define SEARCH_STACK_SIZE	(3*1024)
+// PROVISIONAL pending hardware measurement - see UPSTREAM.md and the
+// uxTaskGetStackHighWaterMark() logging in rtsp_thread()/search_remote()
+// below. Upstream's 24KB was never measured against actual usage; it alone
+// pushed raop_ctx_s (this stack embedded as a struct member, see below) past
+// every contiguous internal-DRAM block available at raop_create() time on
+// this board. 8KB is a cut deep enough to fit, generous enough for what this
+// task actually does (HTTP header/DMAP parsing, one mbedtls RSA-2048
+// sign/decrypt per session - no deep recursion) not to be an obviously
+// reckless guess. Final value comes from the high-water-mark measurement,
+// not from this comment.
+#define RTSP_STACK_SIZE 	(8*1024)
+// MEASURED, was 3*1024. uxTaskGetStackHighWaterMark() reported 736 bytes
+// free at 3 KB - it survived, but 736 bytes is not headroom, it is luck.
+// This task runs an mDNS query for the sender's DACP service, and mDNS
+// resolution depth varies with what else is on the network, so the peak
+// this board happened to see is not the peak it will ever see. 5 KB puts
+// the measured peak at roughly half the stack. Costs 2 KB of internal RAM
+// inside raop_ctx_s, which is allocated once per receiver, not per session.
+#define SEARCH_STACK_SIZE	(5*1024)
 
 typedef struct raop_ctx_s {
 	struct in_addr host;	// IP of bridge
@@ -60,6 +77,28 @@ typedef struct raop_ctx_s {
 
 extern log_level	raop_loglevel;
 
+// The remote's mDNS hostname, discovered by search_remote() below and read
+// back by airplay.cpp through raop_get_remote_hostname() (esp_raop_
+// receiver.h). Defined here rather than in raop_core.c, which implements
+// every other public getter (raop_get_volume() and friends): raop_core.c is
+// out of scope for this change (see UPSTREAM.md for the boundary), and
+// struct raop_handle_s's fields are private to that file anyway, so there
+// is no path from a handle to a per-ctx value without editing it. A plain
+// global rather than a raop_ctx_t field for the same reason raop_core.c's
+// own s_handle is one: this receiver supports exactly one connected sender
+// at a time, so there is only ever one hostname worth remembering, and
+// raop_get_remote_hostname() takes no handle argument to match.
+//
+// Written exactly once per session (search_remote() below stops searching
+// the instant it finds one) and read roughly once a second from publish()'s
+// periodic republish (airplay.cpp) - on a different task than the one
+// writing it, with no lock between them. Unsynchronised on purpose: the one
+// possible outcome of that race is a garbled source name on the one publish
+// that lands mid-write, self-correcting on the very next one, and that is a
+// cheaper price than a mutex shared between a C file and a C++ one for a
+// cosmetic string. Sized like raop_core.c's own device_name[64].
+static char g_remote_hostname[64];
+
 static void		rtsp_thread(void *arg);
 static void 	search_remote(void *args);
 static void		cleanup_rtsp(raop_ctx_t *ctx, bool abort);
@@ -83,6 +122,37 @@ struct raop_ctx_s *raop_create(uint32_t host, char *name,
 	struct sockaddr_in addr;
 	char id[64];
 
+	// raop_ctx_t also embeds two static task stacks (RTSP_STACK_SIZE +
+	// SEARCH_STACK_SIZE, same shape as rtp_t's xStack before it was split
+	// out - see rtp.c). Left as one allocation here on purpose: unlike
+	// rtp_init(), which runs on every AirPlay SETUP and inherits whatever
+	// fragmentation earlier sessions left behind, raop_create() runs exactly
+	// once per boot, before any session has run, so it is not subject to the
+	// same fragmentation-driven contiguity failure. It previously had no
+	// failure log at all (silent NULL return) - add one so this claim stays
+	// checkable if it ever stops holding.
+	// Worded as a remainder, not a budget. This line sits after the malloc
+	// above, so its figures are what is left once the allocation has been
+	// taken - and read as "allocating N (largest block M)" with M below N it
+	// looks exactly like a failure that has just happened. Two people read it
+	// that way on the same day, one of whom had a change queued to spend
+	// 13.5 KB of permanent .bss fixing a path that works. On a healthy boot
+	// the remainder is genuinely smaller than the request; that is the normal
+	// case, not a warning.
+	LOG_INFO("raop_create: allocated %u bytes of internal RAM; heap now has "
+			 "%u free, largest block %u (both AFTER this allocation)",
+			  (unsigned) sizeof(struct raop_ctx_s),
+			  (unsigned) heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+			  (unsigned) heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+	if (!ctx) {
+		LOG_ERROR("raop_create: could not allocate %u bytes of internal RAM "
+				  "(free %u, largest block %u)",
+				  (unsigned) sizeof(struct raop_ctx_s),
+				  (unsigned) heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+				  (unsigned) heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+		return NULL;
+	}
+
 	const mdns_txt_item_t txt[] = {
 		{"am", "airesp32"},
 		{"tp", "UDP"},
@@ -98,8 +168,6 @@ struct raop_ctx_s *raop_create(uint32_t host, char *name,
 		{"vn","3"},
 		{"txtvers","1"},
 	};
-
-	if (!ctx) return NULL;
 
 	// make sure we have a clean context
 	memset(ctx, 0, sizeof(raop_ctx_t));
@@ -283,12 +351,23 @@ bool raop_cmd(struct raop_ctx_s *ctx, raop_internal_event_t event, void *param) 
 static void rtsp_thread(void *arg) {
 	raop_ctx_t *ctx = (raop_ctx_t*) arg;
 	int  sock = -1;
+	// Provisional RTSP_STACK_SIZE instrumentation pending hardware
+	// measurement - see UPSTREAM.md. Logged only on a new minimum: this loop
+	// wakes on every ~100ms select() timeout even when idle, so logging every
+	// iteration would spam the log without adding information.
+	UBaseType_t stack_min = (UBaseType_t) -1;
 
 	while (ctx->running) {
 		fd_set rfds;
 		struct timeval timeout = {0, 100*1000};
 		int n;
 		bool res = false;
+
+		UBaseType_t stack_now = uxTaskGetStackHighWaterMark(NULL);
+		if (stack_now < stack_min) {
+			stack_min = stack_now;
+			LOG_INFO("[%p]: RTSP task stack high water mark %u bytes free (new minimum)", ctx, (unsigned) stack_min);
+		}
 
 		if (sock == -1) {
 			struct sockaddr_in peer;
@@ -356,6 +435,9 @@ static void apple_challenge(raop_ctx_t *ctx, int sock, key_data_t *req_headers, 
 	hex_dump[64] = '\0';
 	int n;
 	char *rsa_result = rsa_apply((unsigned char*) data, 32, &n, RSA_MODE_AUTH);
+	// Kept separately because the padding-strip loop below reuses `n` as a
+	// string index, so by the time the log line runs `n` is no longer a length.
+	const int sig_len = n;
 
 	char *data_b64 = NULL;
 	base64_encode(rsa_result, n, &data_b64);
@@ -364,6 +446,18 @@ static void apple_challenge(raop_ctx_t *ctx, int sock, key_data_t *req_headers, 
 	for (n = strlen(data_b64) - 1; n > 0 && data_b64[n] == '='; data_b64[n--] = '\0');
 
 	kd_add(resp_headers, "Apple-Response", data_b64);
+
+	// Logged because the failure mode this sits in front of is otherwise
+	// completely silent. The sender verifies this signature against the
+	// AirPort Express PUBLIC key that ships inside iOS. Signing with any
+	// other private key succeeds here - mbedtls has no idea which key it is
+	// supposed to be - and is then rejected by the sender, which retries
+	// OPTIONS a few times and disconnects without ever sending ANNOUNCE.
+	// Nothing on this device errors, so "the sender connects but will not
+	// play" is all you get. If you see this line, then several more OPTIONS,
+	// then a disconnect and no ANNOUNCE, the key at
+	// modules/airplay/secrets/raop_private_key.pem is not Apple's.
+	LOG_INFO("[%p]: answered Apple-Challenge with a %d-byte signature", ctx, sig_len);
 
 	if (rsa_result) free(rsa_result);
 	if (buf_pad) free(buf_pad);
@@ -378,13 +472,19 @@ static bool handle_rtsp(raop_ctx_t *ctx, int sock)
 	int len;
 	bool success = true;
 
-	LOG_DEBUG("[%p]: received %s", ctx, method);
-
 	if (!http_parse(sock, method, headers, &body, &len)) {
 		if (body) free(body);
 		kd_free(headers);
 		return false;
 	}
+
+	// Upstream logged this line *before* http_parse() filled `method`, so it
+	// printed the empty initialiser every time. That is worse than logging
+	// nothing: an empty method reads as "the request did not parse", which is
+	// exactly the wrong conclusion to hand someone debugging a session that
+	// went nowhere. Moved after the parse, the only point at which the value
+	// exists.
+	LOG_DEBUG("[%p]: received %s", ctx, method);
 
 	// Handle Apple-Challenge
 	apple_challenge(ctx, sock, headers, resp);
@@ -519,6 +619,20 @@ static bool handle_rtsp(raop_ctx_t *ctx, int sock)
 	} else if (!strcmp(method, "SET_PARAMETER")) {
 		char *p;
 
+		// Local diagnostic (see UPSTREAM.md): a panel test with two different
+		// senders showed a live progress bar and no title at all, and the
+		// existing logging could not say why - the DMAP branch below is the
+		// only one that logs on success, and every failure mode reaches this
+		// handler and then falls out of it silently. One line at the entry
+		// naming the Content-Type and whether a body survived tells apart
+		// "the sender never sent it", "it was dropped before we saw it" and
+		// "it arrived and the branch conditions rejected it".
+		{
+			char *ct = kd_lookup(headers, "Content-Type");
+			LOG_INFO("[%p]: SET_PARAMETER content-type='%s' body=%s len=%d", ctx,
+					 ct ? ct : "(none)", body ? "yes" : "NULL", (int) len);
+		}
+
 		if (body && (p = strcasestr(body, "volume")) != NULL) {
 			float volume;
 
@@ -541,7 +655,20 @@ static bool handle_rtsp(raop_ctx_t *ctx, int sock)
 
 			settings.ctx = &metadata;
 			memset(&metadata, 0, sizeof(struct metadata_s));
-			if (!dmap_parse(&settings, body, len)) {
+			// Upstream tested `!dmap_parse(...)`, which is inverted:
+			// dmap_parse() returns 1 on a successful parse and 0 on every
+			// failure path (see dmap_parser.c - `return 1` after
+			// parse_value(), `return 0` for a short buffer, an unknown tag,
+			// or a size that disagrees with the payload). So the metadata
+			// callback fired only when parsing had FAILED, and a correctly
+			// parsed title was dropped on the floor every time.
+			//
+			// This is why an iPhone and an Apple TV both produced a live
+			// progress bar and a permanently empty title: the DMAP body was
+			// arriving intact (logged at this handler's entry as
+			// content-type='application/x-dmap-tagged' body=yes len=128) and
+			// parsing fine. Nothing was missing; the result was discarded.
+			if (dmap_parse(&settings, body, len)) {
                 uint32_t timestamp = 0;
                 if ((p = kd_lookup(headers, "RTP-Info")) != NULL) sscanf(p, "%*[^=]=%lu", (unsigned long*)&timestamp);
 				LOG_INFO("[%p]: received metadata (ts: %d)\n\tartist: %s\n\talbum:  %s\n\ttitle:  %s",
@@ -550,14 +677,38 @@ static bool handle_rtsp(raop_ctx_t *ctx, int sock)
                 success = ctx->cmd_cb(RAOP_INT_METADATA, metadata.artist, metadata.album, metadata.title, timestamp);
 				free_metadata(&metadata);
 			}
-		} else if ((p = kd_lookup(headers, "Content-Type")) != NULL && strcasestr(p, "image/jpeg")) {
+		} else if ((p = kd_lookup(headers, "Content-Type")) != NULL && strcasestr(p, "image/")) {
+				// Any image/*, not only image/jpeg.
+				//
+				// Measured against a real sender: the only image message that
+				// arrived carried `Content-Type: image/none`, which the old
+				// jpeg-only test skipped straight into the "Unhandled SET
+				// PARAMETER" branch. image/none is how a sender says this track
+				// has no art, or that the previous art should be dropped - a
+				// message that has to be acted on, not ignored, or the panel
+				// keeps showing the last track's cover. Senders also use
+				// image/png, which the old test missed for the same reason.
+				//
+				// The content type is logged either way, because the previous
+				// version of this branch could not distinguish "no image was
+				// sent" from "an image was sent in a format we do not match".
 				uint32_t timestamp = 0;
 				if ((p = kd_lookup(headers, "RTP-Info")) != NULL) sscanf(p, "%*[^=]=%lu", (unsigned long*)&timestamp);
-				if (body) {
-						LOG_INFO("[%p]: received JPEG image of %d bytes (ts:%d)", ctx, len, timestamp);
+				char *ctype = kd_lookup(headers, "Content-Type");
+				if (ctype != NULL && strcasestr(ctype, "image/none")) {
+						LOG_INFO("[%p]: sender reports no artwork for this track (ts:%d)", ctx, timestamp);
+						ctx->cmd_cb(RAOP_INT_ARTWORK, NULL, 0, timestamp);
+				} else if (body) {
+						LOG_INFO("[%p]: received %s image of %d bytes (ts:%d)",
+								 ctx, ctype ? ctype : "image", len, timestamp);
 						ctx->cmd_cb(RAOP_INT_ARTWORK, body, len, timestamp);
 				} else {
-						LOG_INFO("[%p]: JPEG image discarded (too large: %d bytes)", ctx, len);
+						// util.c only returns a null body now when the length
+						// exceeded kMaxBodyBytes, and it logs the real size when
+						// it does - so this no longer hides the figure the way
+						// "too large: 0 bytes" did.
+						LOG_INFO("[%p]: %s image not buffered (%d bytes)",
+								 ctx, ctype ? ctype : "image", len);
 				}
 		} else {
 			char *dump = kd_dump(headers);
@@ -603,6 +754,12 @@ void cleanup_rtsp(raop_ctx_t *ctx, bool abort) {
 		if (ctx->active_remote.xTaskBuffer) free(ctx->active_remote.xTaskBuffer);
 		vSemaphoreDelete(ctx->active_remote.destroy_mutex);
 		memset(&ctx->active_remote, 0, sizeof(ctx->active_remote));
+		// Cleared with it: a session that ends before search_remote() ever
+		// finds a remote (or that never runs at all - a very short session)
+		// must not leave the *previous* sender's name sitting in g_remote_
+		// hostname for the next one to inherit until its own search happens
+		// to catch up.
+		g_remote_hostname[0] = '\0';
 		LOG_INFO("[%p]: Remote search thread aborted", ctx);
 	}
 
@@ -618,6 +775,10 @@ void cleanup_rtsp(raop_ctx_t *ctx, bool abort) {
 static void search_remote(void *args) {
 	raop_ctx_t *ctx = (raop_ctx_t*) args;
 	bool found = false;
+	// Not resized (see SEARCH_STACK_SIZE comment above) but instrumented
+	// anyway per the same provisional-pending-measurement plan - see
+	// UPSTREAM.md. Logged only on a new minimum.
+	UBaseType_t stack_min = (UBaseType_t) -1;
 
 	LOG_INFO("starting remote search");
 
@@ -625,6 +786,12 @@ static void search_remote(void *args) {
 		mdns_result_t *results = NULL;
 		mdns_result_t *r;
 		mdns_ip_addr_t *a;
+
+		UBaseType_t stack_now = uxTaskGetStackHighWaterMark(NULL);
+		if (stack_now < stack_min) {
+			stack_min = stack_now;
+			LOG_INFO("[%p]: search-remote task stack high water mark %u bytes free (new minimum)", ctx, (unsigned) stack_min);
+		}
 
 		if (mdns_query_ptr("_dacp", "_tcp", 3000, 32,  &results)) {
 			LOG_ERROR("mDNS active remote query Failed");
@@ -638,7 +805,28 @@ static void search_remote(void *args) {
 				found = true;
 				ctx->active_remote.host.s_addr = a->addr.u_addr.ip4.addr;
 				ctx->active_remote.port = r->port;
-				LOG_INFO("found remote %s %s:%hu", r->instance_name, inet_ntoa(ctx->active_remote.host), ctx->active_remote.port);
+				// hostname is printed alongside instance_name because it is
+				// the only human-readable name of the sender available
+				// anywhere in this protocol: instance_name is
+				// iTunes_Ctrl_<hex>, DACP-ID and Active-Remote are opaque
+				// ids, and no RTSP header carries one. If this reads as
+				// something like "Birdyos-iPhone" it is what the now-playing
+				// page should show instead of the literal "AIRPLAY". Logged
+				// before being wired to anything, because a field that turns
+				// out to be NULL or an IP literal is worth knowing about
+				// before building on it.
+				LOG_INFO("found remote %s hostname='%s' %s:%hu", r->instance_name,
+						 r->hostname ? r->hostname : "(null)",
+						 inet_ntoa(ctx->active_remote.host), ctx->active_remote.port);
+				// Remembered here so airplay.cpp's publish() can show it
+				// instead of the literal "AIRPLAY" - see
+				// raop_get_remote_hostname()'s own comment below for why
+				// this lives here rather than in raop_core.c (which owns
+				// the public API's implementation for every other getter)
+				// and why a plain global rather than a ctx field is the
+				// right shape for it.
+				snprintf(g_remote_hostname, sizeof(g_remote_hostname), "%s",
+						 r->hostname ? r->hostname : "");
 			}
 		}
 
@@ -648,6 +836,18 @@ static void search_remote(void *args) {
 	// can't use xNotifyGive as it seems LWIP is using it as well
 	xSemaphoreGive(ctx->active_remote.destroy_mutex);
 	vTaskSuspend(NULL);
+}
+
+/*----------------------------------------------------------------------------*/
+// Declared in the public esp_raop_receiver.h, defined here rather than in
+// raop_core.c (which implements every sibling getter - raop_get_volume() and
+// friends) - see g_remote_hostname's own comment above for why. Never
+// returns NULL, matching raop_get_device_name()'s contract: "" (the empty
+// string this buffer starts as, and is reset back to on TEARDOWN) is
+// airplay.cpp's own signal for "nothing found yet, keep showing the
+// protocol's name instead".
+const char *raop_get_remote_hostname(void) {
+	return g_remote_hostname;
 }
 
 /*----------------------------------------------------------------------------*/

@@ -41,9 +41,11 @@
 #include <assert.h>
 
 #include "platform.h"
+#include "esp_heap_caps.h"
 #include "rtp.h"
 #include "log_util.h"
 #include "util.h"
+#include "audio_buffer.h"
 
 #ifdef WIN32
 #include <openssl/aes.h>
@@ -67,14 +69,31 @@ extern log_level 	raop_loglevel;
 
 //#define __RTP_STORE
 
-// default buffer size
-#define BUFFER_FRAMES_MAX 	((RAOP_SAMPLE_RATE * 10) / 352 )
+// BUFFER_FRAMES_MAX sizes audio_buffer[] below, the abuf_t bookkeeping array
+// embedded in rtp_t (MALLOC_CAP_INTERNAL). Upstream sized it for a 10s
+// ceiling ((RAOP_SAMPLE_RATE*10)/352 = 1252 frames), but buffer_alloc() below
+// only ever fills entries for as long as the PSRAM frame-data buffer passed
+// into it (raop_core.c's RAOP_INT_SETUP allocation, RAOP_BUFFER_FRAMES frames
+// - see audio_buffer.h) has bytes left, so anything beyond RAOP_BUFFER_FRAMES
+// was dead descriptors: 1252-384 = 868 abuf_t entries (17 bytes each,
+// packed - ~14.4KB) that could never be reached. Deriving this from
+// RAOP_BUFFER_FRAMES instead of a second
+// hardcoded number means the two can't drift apart - whichever way
+// RAOP_BUFFER_FRAMES is retuned, this array is sized to match exactly.
+#define BUFFER_FRAMES_MAX 	RAOP_BUFFER_FRAMES
 #define BUFFER_FRAMES_MIN 	( (150 * RAOP_SAMPLE_RATE * 2) / (352 * 100) )
 #define MAX_PACKET       1408
 #define MIN_LATENCY		11025
 #define MAX_LATENCY   	( (120 * RAOP_SAMPLE_RATE * 2) / 100 )
 
-#define RTP_STACK_SIZE	(4*1024)
+// MEASURED, was 4*1024. uxTaskGetStackHighWaterMark() reported 1,556 bytes
+// free at 4 KB. This task parses every RTP packet and calls data_cb all the
+// way down into the audio sink, so its depth follows the sink, not this
+// file - a change three modules away can eat that margin without anything
+// here changing. 6 KB leaves the measured peak at under half. The stack lives
+// in .bss (s_rtp_stack, above rtp_init) rather than on the heap, so this size
+// is reserved at link time and costs nothing at runtime to obtain.
+#define RTP_STACK_SIZE	(6*1024)
 
 #define RTP_SYNC	(0x01)
 #define NTP_SYNC	(0x02)
@@ -135,8 +154,6 @@ typedef struct rtp_s {
 	pthread_t thread;
 #else
 	TaskHandle_t thread, joiner;
-	StaticTask_t *xTaskBuffer;
-    StackType_t xStack[RTP_STACK_SIZE] __attribute__ ((aligned (4)));
 #endif
 
 	struct alac_codec_s *alac_codec;
@@ -204,6 +221,29 @@ static struct alac_codec_s* alac_init(int fmtp[12]) {
 }
 
 /*---------------------------------------------------------------------------*/
+// One RAOP session exists at a time - raop.c holds a single raop_ctx_s, and
+// cleanup_rtsp() calls rtp_end() (which joins the RTP thread via
+// ulTaskNotifyTake before deleting it) before another session can start. So
+// this context, its task stack and its TCB are reserved once at link time
+// instead of being allocated and freed per session.
+//
+// Why: as heap allocations these needed 6,752 + 6,144 bytes of *contiguous*
+// internal RAM on every SETUP, and internal RAM on this board fragments
+// enough that the request fails while total free space is ample - measured
+// "could not allocate 6752 bytes ... largest block 6144" with over 40 KB
+// free. That is the identical failure that made audio_buffer.c's 8 KiB task
+// stack fail five sessions in a row on one boot and succeed five in a row on
+// the next; see audio_buffer_start(). Same total memory, in .bss, where it
+// cannot fail at runtime. Only compiled when CONFIG_AIRPLAY_ENABLE=y, so a
+// build without AirPlay pays nothing.
+//
+// StackType_t is uint8_t on Xtensa, so s_rtp_stack is RTP_STACK_SIZE bytes
+// and the depth argument passed to xTaskCreateStatic is in bytes too.
+static rtp_t        s_rtp_ctx;
+static StackType_t  s_rtp_stack[RTP_STACK_SIZE] __attribute__((aligned(4)));
+static StaticTask_t s_rtp_tcb;
+static bool         s_rtp_ctx_in_use = false;
+
 rtp_resp_t rtp_init(struct in_addr host, int latency, char *aeskey, char *aesiv, char *fmtpstr,
 								short unsigned pCtrlPort, short unsigned pTimingPort,
 								uint8_t *buffer, size_t size,
@@ -213,10 +253,21 @@ rtp_resp_t rtp_init(struct in_addr host, int latency, char *aeskey, char *aesiv,
 	char *arg;
 	int fmtp[12];
 	bool rc = true;
-	rtp_t *ctx = heap_caps_calloc(1, sizeof(rtp_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 	rtp_resp_t resp = { 0, 0, 0, NULL };
 
-	if (!ctx) return resp;
+	// A second SETUP arriving before the first session was torn down would
+	// previously overwrite raop.c's ctx->rtp and leak the old rtp_t; with one
+	// shared context it would corrupt a session that is still running. Refuse
+	// instead - the caller already reports a zero-port return as "cannot
+	// start session", and a sender doing this is misbehaving.
+	if (s_rtp_ctx_in_use) {
+		LOG_ERROR("SETUP while a session is still active - refusing");
+		return resp;
+	}
+	s_rtp_ctx_in_use = true;
+
+	rtp_t *ctx = &s_rtp_ctx;
+	memset(ctx, 0, sizeof(*ctx));
 
 	ctx->host = host;
 	ctx->decrypt = false;
@@ -237,7 +288,41 @@ rtp_resp_t rtp_init(struct in_addr host, int latency, char *aeskey, char *aesiv,
 	ctx->rtp_sockets[CONTROL].rport = pCtrlPort;
 	ctx->rtp_sockets[TIMING].rport = pTimingPort;
 
+	// A sender that sent one of these sent both: an SDP carries "rsaaeskey"
+	// and "aesiv" together or neither. Seeing exactly one means the RSA
+	// decrypt of the session key failed (raop.c's rsa_apply(RSA_MODE_KEY)
+	// returns NULL and logs why), and upstream's `aesiv && aeskey` then
+	// quietly left ctx->decrypt false - so the receiver fed AES ciphertext
+	// straight into the ALAC decoder and produced noise or a decoder abort,
+	// with nothing anywhere saying the stream was still encrypted. Refuse the
+	// session instead; the caller already reports a zero-port return as
+	// "cannot start session".
+	if ((aesiv != NULL) != (aeskey != NULL)) {
+		LOG_ERROR("[%p]: sender asked for an encrypted stream and the session "
+				  "key is unusable (aeskey %s, aesiv %s) - refusing rather than "
+				  "playing ciphertext as audio",
+				  ctx, aeskey ? "ok" : "MISSING", aesiv ? "ok" : "MISSING");
+		s_rtp_ctx_in_use = false;
+		return resp;
+	}
+
 	if (aesiv && aeskey) {
+		// Allocated before the context is marked decrypting. Upstream set
+		// ctx->decrypt = true first and never checked this malloc, so an
+		// out-of-memory here left every packet running mbedtls_aes_crypt_cbc()
+		// into a NULL output pointer. Internal RAM is the scarcest memory on
+		// this board and this is a per-session allocation, which is exactly
+		// the shape of the two allocation failures already found in this file.
+		ctx->decrypt_buf = malloc(MAX_PACKET);
+		if (!ctx->decrypt_buf) {
+			LOG_ERROR("[%p]: could not allocate %d bytes for the decrypt "
+					  "buffer (free %u) - refusing the session",
+					  ctx, MAX_PACKET,
+					  (unsigned) heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+			s_rtp_ctx_in_use = false;
+			return resp;
+		}
+
 		memcpy(ctx->aesiv, aesiv, 16);
 #ifdef WIN32
 		AES_set_decrypt_key((unsigned char*) aeskey, 128, &ctx->aes);
@@ -246,7 +331,6 @@ rtp_resp_t rtp_init(struct in_addr host, int latency, char *aeskey, char *aesiv,
 		mbedtls_aes_setkey_dec(&ctx->aes, (unsigned char*) aeskey, 128);
 #endif
 		ctx->decrypt = true;
-		ctx->decrypt_buf = malloc(MAX_PACKET);
 	}
 
 	memset(fmtp, 0, sizeof(fmtp));
@@ -278,11 +362,18 @@ rtp_resp_t rtp_init(struct in_addr host, int latency, char *aeskey, char *aesiv,
 #ifdef WIN32
 	pthread_create(&ctx->thread, NULL, rtp_thread_func, (void *) ctx);
 #else
-	ctx->xTaskBuffer = (StaticTask_t*) heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 	BaseType_t core_id = (CONFIG_PTHREAD_TASK_CORE_DEFAULT == -1) ? tskNO_AFFINITY : CONFIG_PTHREAD_TASK_CORE_DEFAULT;
 	ctx->thread = xTaskCreateStaticPinnedToCore( (TaskFunction_t) rtp_thread_func, "RTP_thread", RTP_STACK_SIZE, ctx,
-																							CONFIG_ESP32_PTHREAD_TASK_PRIO_DEFAULT + 1, ctx->xStack, ctx->xTaskBuffer,
+																							CONFIG_ESP32_PTHREAD_TASK_PRIO_DEFAULT + 1, s_rtp_stack, &s_rtp_tcb,
 																							core_id);
+	// Static storage, so this cannot fail for want of memory. It is still
+	// checked because a NULL handle here is the failure that used to be
+	// silent: no RTP thread, no audio, and nothing said so.
+	if (!ctx->thread) {
+		LOG_ERROR("[%p]: cannot create the RTP task", ctx);
+		ctx->running = false;
+		rc = false;
+	}
 #endif
 
 	// cleanup everything if we failed
@@ -313,7 +404,6 @@ void rtp_end(rtp_t *ctx)
 #else
 		ulTaskNotifyTake(pdFALSE, portMAX_DELAY);
 		vTaskDelete(ctx->thread);
-		SAFE_PTR_FREE(ctx->xTaskBuffer);
 #endif
 	}
 
@@ -327,7 +417,10 @@ void rtp_end(rtp_t *ctx)
 
 	if (ctx->user_buffer) free(ctx->user_buffer);
 
-	free(ctx);
+	// The context is static; releasing it means letting the next SETUP claim
+	// it, not returning memory. Last, so nothing above can run against a
+	// context another session already believes it owns.
+	s_rtp_ctx_in_use = false;
 
 #ifdef __RTP_STORE
 	fclose(ctx->rtpIN);
@@ -461,7 +554,25 @@ static void buffer_put_packet(rtp_t *ctx, seq_t seqno, unsigned rtptime, bool fi
         	LOG_INFO("[%p]: 1st accepted packet:%d, now playing", ctx, seqno);
 			ctx->state = RTP_PLAY;
 			ctx->first_seqno = -1;
-            u32_t playtime = ctx->synchro.time + ((rtptime - ctx->synchro.rtp) * 10) / (RAOP_SAMPLE_RATE / 100);
+            // ctx->synchro.{time,rtp} are only meaningful once a sync (0x54)
+            // packet has actually been processed (sets RTP_SYNC below) - and
+            // DATA and CONTROL arrive on separate UDP sockets with no
+            // ordering guarantee between them, so the first DATA packet can
+            // legitimately land here before that has happened (measured: a
+            // sync packet that arrived first was discarded by the
+            // remote_gap > 10000 sanity check below, so RTP_SYNC was still
+            // unset when this ran). Computing playtime from zero-valued
+            // synchro fields then produced rtptime*10/441 - here,
+            // 6,364,753 ms, 106 minutes in the future - which the audio
+            // buffer's consumer duly waited for forever, well past the
+            // point where the ring filled and every frame started being
+            // dropped. Fall back to "now" (play immediately) instead of a
+            // garbage far-future timestamp; a real sync packet arriving
+            // moments later corrects ctx->synchro for every subsequent
+            // frame's playtime as it already did before this fix.
+            u32_t playtime = (ctx->synchro.status & RTP_SYNC)
+                ? ctx->synchro.time + ((rtptime - ctx->synchro.rtp) * 10) / (RAOP_SAMPLE_RATE / 100)
+                : gettime_ms();
             ctx->cmd_cb(RAOP_INT_PLAY, playtime);
 		} else {
             ctx->state = RTP_STREAM;
@@ -477,7 +588,12 @@ static void buffer_put_packet(rtp_t *ctx, seq_t seqno, unsigned rtptime, bool fi
         LOG_INFO("[%p]: done waiting for FLUSH with packet:%d, now playing starting:%hu", ctx, seqno, ctx->ab_read);
 		ctx->state = RTP_PLAY;
 		ctx->first_seqno = -1;
-        u32_t playtime = ctx->synchro.time + ((rtptime - ctx->synchro.rtp) * 10) / (RAOP_SAMPLE_RATE / 100);
+        // Same guard as the RTP_WAIT branch above, and the same reason: this
+        // transition is driven by a DATA packet's seqno, not by whether a
+        // sync packet has landed yet.
+        u32_t playtime = (ctx->synchro.status & RTP_SYNC)
+            ? ctx->synchro.time + ((rtptime - ctx->synchro.rtp) * 10) / (RAOP_SAMPLE_RATE / 100)
+            : gettime_ms();
 		ctx->cmd_cb(RAOP_INT_PLAY, playtime);
 	}
 
@@ -628,6 +744,13 @@ static void rtp_thread_func(void *arg) {
 	bool ntp_sent;
 	char *packet = malloc(MAX_PACKET);
 	rtp_t *ctx = (rtp_t*) arg;
+#ifndef WIN32
+	// Provisional RTP_STACK_SIZE (4*1024) instrumentation pending hardware
+	// measurement - see UPSTREAM.md. Logged only on a new minimum (this loop
+	// wakes on every ~100ms select() timeout even when idle, so logging every
+	// iteration would spam the log without adding information).
+	UBaseType_t stack_min = (UBaseType_t) -1;
+#endif
 
 	for (i = 0; i < 3; i++) {
 		if (ctx->rtp_sockets[i].sock > sock) sock = ctx->rtp_sockets[i].sock;
@@ -642,6 +765,14 @@ static void rtp_thread_func(void *arg) {
 		int idx = 0;
 		char *pktp = packet;
 		struct timeval timeout = {0, 100*1000};
+
+#ifndef WIN32
+		UBaseType_t stack_now = uxTaskGetStackHighWaterMark(NULL);
+		if (stack_now < stack_min) {
+			stack_min = stack_now;
+			LOG_INFO("[%p]: RTP task stack high water mark %u bytes free (new minimum)", ctx, (unsigned) stack_min);
+		}
+#endif
 
 		FD_ZERO(&fds);
 		for (i = 0; i < 3; i++)	{ FD_SET(ctx->rtp_sockets[i].sock, &fds); }
@@ -712,7 +843,17 @@ static void rtp_thread_func(void *arg) {
 				u64_t remote = (((u64_t) ntohl(*(u32_t*)(pktp+8))) << 32) + ntohl(*(u32_t*)(pktp+12));
 				u32_t rtp_now = ntohl(*(u32_t*)(pktp+16));
 				u16_t flags = ntohs(*(u16_t*)(pktp+2));
-				u32_t remote_gap = NTP2MS(remote - ctx->timing.remote);
+				// remote (this sync packet's NTP) and ctx->timing.remote (the
+				// last 0x53 timing exchange's NTP) arrive on two different UDP
+				// sockets with no ordering guarantee. When this sync packet is
+				// a few ms OLDER than the stored timing reference - ordinary
+				// reordering, not corruption - the unsigned subtraction used
+				// to underflow to ~4.29e9 ms and trip the sanity check below,
+				// discarding the entire sync round (measured: 4294967295,
+				// once per lost round, ~800 ms of backlog each time). Do the
+				// subtraction as signed 64-bit NTP so a small negative gap
+				// stays small and negative instead of wrapping.
+				s64_t remote_gap = NTP2MS((s64_t) remote - (s64_t) ctx->timing.remote);
 
 				// try to get NTP every 3 sec or every time if we are not synced
 				if (!count-- || !(ctx->synchro.status & NTP_SYNC)) {
@@ -720,10 +861,13 @@ static void rtp_thread_func(void *arg) {
 					count = 3;
 				}
 
-				// something is wrong, we should not have such gap
-				if (remote_gap > 10000) {
-					LOG_WARN("discarding remote timing information %u", remote_gap);
+				// genuinely corrupt timing data - reject it. A small negative
+				// gap is ordinary reordering and is absorbed below instead.
+				if (remote_gap > 10000 || remote_gap < -10000) {
+					LOG_WARN("[%p]: rejecting remote timing information %lld ms (out of range)", ctx, (long long) remote_gap);
 					break;
+				} else if (remote_gap < 0) {
+					LOG_DEBUG("[%p]: sync packet %lld ms behind stored timing reference - reordered, absorbed", ctx, (long long) remote_gap);
 				}
 
 				pthread_mutex_lock(&ctx->ab_mutex);
@@ -776,12 +920,33 @@ static void rtp_thread_func(void *arg) {
 				*/
 
 				ctx->timing.remote = remote;
-				ctx->timing.local = reference;
+				// `reference` is when we SENT the request; `remote` is the
+				// sender's clock when it ANSWERED, which happened roughly
+				// half a roundtrip later. Pairing the two as-is claims the
+				// remote timestamp belongs to an instant that had not
+				// arrived yet, so every playtime derived from this pair
+				// (synchro.time = timing.local + remote_gap) comes out half
+				// a roundtrip early - and buffer_push_packet() discards any
+				// frame whose playtime has already passed, with no
+				// tolerance at all on that side.
+				//
+				// Measured on this board: roundtrips of 21-50 ms, and frames
+				// discarded starting at "missed by 17 ms". That is the same
+				// number. The standard NTP correction - assume the request
+				// and the reply each took half the roundtrip - removes it.
+				ctx->timing.local = reference + roundtrip / 2;
 
 				// now we are synced on NTP (mutex not needed)
 				ctx->synchro.status |= NTP_SYNC;
 
-				LOG_DEBUG("[%p]: Timing references local:%llu, remote:%llx (delta:%lld, sum:%lld, adjust:%lld, gaps:%d)",
+				// Upstream's format string named delta/sum/adjust/gaps but passed
+				// no arguments for them, so those four printed whatever happened
+				// to be in the varargs registers - values like
+				// delta:4756359895849107456 that read as a broken clock and are
+				// not clock data at all. Reading absent varargs is undefined
+				// behaviour, not merely misleading output. Format now matches
+				// what is actually passed.
+				LOG_DEBUG("[%p]: Timing references local:%llu, remote:%llx",
 						  ctx, ctx->timing.local, ctx->timing.remote);
 
 				break;

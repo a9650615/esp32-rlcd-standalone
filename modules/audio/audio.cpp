@@ -1,5 +1,7 @@
 #include "audio.hpp"
 
+#include "ota_quiesce.hpp"
+
 #ifdef ESP_PLATFORM
 
 #include <algorithm>
@@ -50,6 +52,23 @@ constexpr int kChannels = 2;
 // use case" - audio_set_volume(), or /beep's ?vol= query parameter, is the
 // cheap way to do that without a rebuild.
 constexpr int kOutputVolumePercent = 50;
+
+// Streams open the codec here instead of at kOutputVolumePercent - see
+// audio_stream_open() for why attenuating a remote-controlled stream locally
+// is wrong.
+//
+// Not 100%, which is where this landed first and was wrong. The speaker is a
+// coin-sized MX1.25 (see kSweepSteps, whose ceiling was itself brought down
+// from 80% after a hardware run, and kToneAmplitude, capped at half of int16
+// full scale because a full-scale drive into this speaker is the harshest
+// thing the chain can produce). At 100% a phone sitting at -4.1 dB was
+// reported as audibly distorted. 60% puts a phone at maximum just under that
+// level, so the sender's slider covers a range that stays clean end to end
+// rather than one whose top third is unusable.
+//
+// This is a property of the speaker, not of the code. If a different one is
+// fitted, re-measure it rather than trusting this number.
+constexpr int kStreamVolumePercent = 80;
 
 // 50% of int16 full scale - the same ceiling /beep-sweep's diagnostic
 // staircase is capped at. A full-scale square wave into a coin-sized
@@ -131,67 +150,18 @@ int g_volume_percent = kOutputVolumePercent;
 // repeated i2c_master_probe() calls already share the bus with everyone else.
 i2c_master_dev_handle_t g_diag_i2c_device = nullptr;
 
-// This module's own tray icon, registered once with app_core's registry
-// (see tray_registry.hpp) and never referred to by name anywhere in core -
-// core only ever sees the bytes below, not "audio" or "speaker". 16x12,
-// 1 bit/pixel, row-major MSB-first, each row padded to a whole byte
-// (stride = (kIconWidth+7)/8 = 2 bytes) - see TrayIndicatorBitmap's own
-// comment in tray_registry.hpp for why this exact layout.
-//
-// Built once at runtime, in audio_init(), rather than hand-encoded as a
-// byte literal: this is the same body-plus-two-concentric-arcs design the
-// old hand-drawn LVGL speaker icon used (see this file's git history),
-// just rasterized into bits instead of LVGL sub-objects - a plain
-// distance-from-centre test per pixel needs a loop, not a lookup table, and
-// this runs exactly once. This is also what "supplies its own icon as
-// data, not code" means in practice: this module includes nothing
-// LVGL-specific to draw itself with any more.
-constexpr int kIconWidth = 16;
-constexpr int kIconHeight = 12;
-constexpr int kIconStride = (kIconWidth + 7) / 8;
-uint8_t g_icon_bitmap[kIconStride * kIconHeight];
+// Regenerate exactly with: python3 scripts/svg-to-bitmap.py components/ui/assets/speaker-high-bold.svg --width 20 --height 20 --fit viewbox --threshold 0.35 --min-stroke 1 --emit-bytes kSpeakerHighBoldBitmap
+constexpr uint8_t kSpeakerHighBoldBitmap[] = {
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x38, 0x00, 0x00, 0x78, 0x00,
+    0x00, 0xf8, 0x00, 0x03, 0xd8, 0x40, 0x7f, 0x18, 0xe0, 0x7e, 0x19, 0x60,
+    0x66, 0x1b, 0x70, 0x66, 0x1b, 0xb0, 0x66, 0x1b, 0xb0, 0x66, 0x1b, 0x70,
+    0x7e, 0x1b, 0x60, 0x7f, 0x18, 0xe0, 0x03, 0xd8, 0x40, 0x00, 0xf8, 0x00,
+    0x00, 0x78, 0x00, 0x00, 0x38, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+};
+static_assert(sizeof(kSpeakerHighBoldBitmap) ==
+                  app_core::kTrayIconBitmapBytes,
+              "speaker-high-bold bitmap must be 60 tight-packed bytes");
 app_core::TrayIndicatorHandle g_tray_indicator;
-
-void set_icon_pixel(int x, int y) {
-  if (x < 0 || x >= kIconWidth || y < 0 || y >= kIconHeight) return;
-  g_icon_bitmap[y * kIconStride + x / 8] |=
-      static_cast<uint8_t>(0x80 >> (x % 8));
-}
-
-void build_icon_bitmap() {
-  std::fill(g_icon_bitmap, g_icon_bitmap + sizeof(g_icon_bitmap), uint8_t{0});
-  // Body: left ~40% of width, ~5/7 of height, vertically centred - the same
-  // proportions the old hand-drawn icon's rectangle used.
-  const int body_width = std::max(3, kIconWidth * 2 / 5);
-  const int body_height = std::max(4, kIconHeight * 5 / 7);
-  const int body_y = (kIconHeight - body_height) / 2;
-  for (int y = body_y; y < body_y + body_height; ++y) {
-    for (int x = 0; x < body_width; ++x) set_icon_pixel(x, y);
-  }
-  // Two concentric arcs to the right of the body ("sound waves"): a plain
-  // distance-from-centre band test per pixel, since a raw bitmap has no
-  // LVGL clip container to lean on for the "only draw the right half"
-  // trick the old LVGL-object version used.
-  const int centre_x = body_width + 1;
-  const int centre_y = kIconHeight / 2;
-  const int max_radius = std::min(kIconWidth - centre_x, centre_y);
-  constexpr int kWaveCount = 2;
-  constexpr int kStrokeWidth = 1;  // pixels; this bitmap is tiny, keep it thin
-  for (int i = 0; i < kWaveCount; ++i) {
-    const int radius = max_radius * (i + 1) / kWaveCount;
-    const int inner = std::max(0, radius - kStrokeWidth);
-    for (int y = 0; y < kIconHeight; ++y) {
-      for (int x = centre_x; x < kIconWidth; ++x) {
-        const int dx = x - centre_x;
-        const int dy = y - centre_y;
-        const int dist_sq = dx * dx + dy * dy;
-        if (dist_sq <= radius * radius && dist_sq > inner * inner) {
-          set_icon_pixel(x, y);
-        }
-      }
-    }
-  }
-}
 
 void configure_amp_gpio() {
   // Write the level before switching the pin to an output driver, and again
@@ -478,6 +448,36 @@ bool write_tone_step(int frequency_hz, int duration_ms,
 
 }  // namespace
 
+// Registered with components/ota and called on the writer's task immediately
+// before esp_ota_begin(). See ota_quiesce.hpp for the contract and
+// docs/design/2026-08-20-quiescing-modules-before-an-ota-write.md for the
+// incident: a push sent during playback produced loud noise from the speaker
+// and then failed, because the amplifier was left enabled with an undriven
+// input.
+//
+// It calls audio_stream_close() and nothing else on purpose. That function
+// already sequences the teardown the right way round - trailing silence, one
+// I2S drain wait, GPIO46 low, tray indicator cleared, codec closed - and the
+// order is the entire mechanism. A hook that merely stopped feeding the codec
+// would leave the amplifier live and reproduce the fault it exists to prevent.
+//
+// Idle and repeat calls are both fine: audio_stream_close() is a no-op when no
+// stream is open, and a retried push runs every hook again.
+// Unconditional rather than gated on whether a stream is open. audio_stream_close()
+// is already total - it returns immediately when the mutex was never created,
+// and close_stream_locked() checks for an open stream - and reading the state
+// here would mean either moving this below the stream globals or forward
+// declaring them, for a log line.
+//
+// It does take g_stream_mutex with portMAX_DELAY, so in principle this waits
+// for whoever holds it. In practice that is one audio_stream_write() call,
+// which is a codec write and returns in single-digit milliseconds; the whole
+// quiesce budget is 500.
+void quiesce_for_ota() {
+  ESP_LOGW(kTag, "OTA quiesce: closing any open stream before the write");
+  audio_stream_close();
+}
+
 esp_err_t audio_init() {
   if (g_codec_dev != nullptr) return ESP_OK;
 
@@ -490,13 +490,21 @@ esp_err_t audio_init() {
   // app_core::set_tray_indicator_active() is already a documented no-op
   // for an invalid handle, so nothing later needs its own extra check.
   if (!g_tray_indicator.valid()) {
-    build_icon_bitmap();
     g_tray_indicator = app_core::register_tray_indicator(
-        {g_icon_bitmap, static_cast<uint8_t>(kIconWidth),
-         static_cast<uint8_t>(kIconHeight)});
+        {kSpeakerHighBoldBitmap, app_core::kTrayIconSize,
+         app_core::kTrayIconSize, sizeof(kSpeakerHighBoldBitmap)});
     if (!g_tray_indicator.valid()) {
-      ESP_LOGW(kTag, "tray indicator registration failed: registry full");
+      ESP_LOGW(kTag,
+               "tray indicator registration failed: invalid bitmap or registry full");
     }
+  }
+
+  // Registered here rather than at first use, so the hook exists even if no
+  // stream is ever opened - an OTA write during silence must still be allowed
+  // to find it. Logged on failure for the same reason register_tray_indicator
+  // is: a module whose quiesce never runs is the state this prevents.
+  if (!ota::register_quiesce_hook(&quiesce_for_ota)) {
+    ESP_LOGW(kTag, "OTA quiesce hook registration failed: registry full");
   }
 
   // GPIO46 goes to a known-low output before anything else touches it - if
@@ -749,11 +757,18 @@ uint32_t g_stream_sample_rate = 0;
 
 // A stream is "abandoned" - the writer task died, or simply stopped
 // calling audio_stream_write() without ever calling audio_stream_close() -
-// rather than merely idle: real audio (AirPlay included) does not have
-// multi-second gaps between chunks in normal operation, so this is
-// generous against a genuine network hiccup while still bounding how long
-// the amplifier can be left on by something that is never coming back.
-constexpr uint32_t kStreamWatchdogTimeoutMs = 2000;
+// rather than merely idle.
+//
+// The longest legitimate gap is not between two chunks mid-stream, it is
+// between open() and the FIRST chunk. RAOP opens the sink as soon as the
+// sender says RECORD, then holds every frame until its scheduled playtime
+// arrives; that hold is the sender's declared latency, capped at
+// MAX_LATENCY = 120 * 44100 * 2 / 100 = 105,840 frames = 2.4 s (see
+// rtp.c). At 2000 ms this watchdog fired during that hold on every single
+// AirPlay session, closed the stream before one sample was written, and
+// made a working receiver look like a silent one. Anything below ~2.4 s is
+// not a tuning choice, it is a guaranteed failure.
+constexpr uint32_t kStreamWatchdogTimeoutMs = 5000;
 
 // Ends the session: trailing silence, the same drain wait
 // write_tone_step() uses (here at whatever rate the stream opened at, via
@@ -966,10 +981,21 @@ esp_err_t audio_stream_open(int sample_rate) {
     xSemaphoreGive(g_playback_busy);
     return ESP_FAIL;
   }
-  // Re-applied on every open, same as audio_play_tone(): nothing here
-  // assumes the codec remembers a volume from a previous, since-closed
-  // session.
-  esp_codec_dev_set_out_vol(g_codec_dev, g_volume_percent);
+  // Unity, not g_volume_percent - a stream's volume belongs to whoever is
+  // sending it.
+  //
+  // AirPlay senders carry their own volume control and apply it before the
+  // samples ever get here (RAOP SET_PARAMETER -> the software scaling in
+  // audio_buffer.c). Opening the codec at the local 50% then attenuated a
+  // second time, so a phone sitting at a perfectly ordinary -12.5 dB
+  // measured rms=1400 out of 32767 at the sink - roughly 40 dB below the
+  // /beep tone, which is to say inaudible across a room - and the phone's
+  // slider at maximum still could not reach full output, because half of it
+  // had already been spent locally.
+  //
+  // Tones and the diagnostic sweep keep g_volume_percent: those are the
+  // device's own sounds, with no remote to ask.
+  esp_codec_dev_set_out_vol(g_codec_dev, kStreamVolumePercent);
   g_stream_sample_rate = static_cast<uint32_t>(sample_rate);
   g_stream_amp_active = false;
   g_stream_open = true;
@@ -1007,6 +1033,34 @@ esp_err_t audio_stream_write(const void* data, size_t length_bytes) {
     return ESP_ERR_INVALID_STATE;
   }
   arm_stream_watchdog();
+
+  // Gap between writes, because a stutter the listener hears and a stutter
+  // the RTP layer sees are different faults with the same symptom. rtp.c's
+  // inserted silence frames show up in audio_buffer's content check; an I2S
+  // underrun - the codec running dry because nothing fed it in time - shows
+  // up nowhere at all. This is the missing half.
+  //
+  // A chunk here is 352 frames, 8 ms of audio. A gap materially longer than
+  // that means the codec had nothing to play and the listener heard it.
+  {
+    static int64_t last_write_us = 0;
+    static int64_t worst_gap_us = 0;
+    static uint32_t late_writes = 0, total_writes = 0;
+    const int64_t now_us = esp_timer_get_time();
+    if (last_write_us != 0) {
+      const int64_t gap_us = now_us - last_write_us;
+      if (gap_us > worst_gap_us) worst_gap_us = gap_us;
+      if (gap_us > 20000) late_writes++;
+      if ((++total_writes % 128) == 0) {
+        ESP_LOGW(kTag,
+                 "stream write gap: worst %lld us, %u of %u writes over 20 ms",
+                 worst_gap_us, static_cast<unsigned>(late_writes),
+                 static_cast<unsigned>(total_writes));
+        worst_gap_us = 0;
+      }
+    }
+    last_write_us = now_us;
+  }
 
   if (!g_stream_amp_active) {
     std::vector<int16_t> lead = make_silence(kSilenceLeadMs, g_stream_sample_rate);
