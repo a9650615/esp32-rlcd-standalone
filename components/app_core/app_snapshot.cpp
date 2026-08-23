@@ -259,6 +259,30 @@ bool voltage_suggests_charging(const int* recent_millivolts, int count) {
   return true;
 }
 
+bool ChargeDetector::update(int millivolts) {
+  if (!seeded) {
+    seeded = true;
+    extreme_millivolts = millivolts;
+    return charging;
+  }
+  if (charging) {
+    if (millivolts > extreme_millivolts) {
+      extreme_millivolts = millivolts;
+    } else if (extreme_millivolts - millivolts >= kBatteryChargeStepMillivolts) {
+      charging = false;
+      extreme_millivolts = millivolts;
+    }
+  } else {
+    if (millivolts < extreme_millivolts) {
+      extreme_millivolts = millivolts;
+    } else if (millivolts - extreme_millivolts >= kBatteryChargeStepMillivolts) {
+      charging = true;
+      extreme_millivolts = millivolts;
+    }
+  }
+  return charging;
+}
+
 bool battery_overvoltage_warning(int millivolts) {
   return millivolts >= kBatteryOvervoltageWarningMillivolts;
 }

@@ -290,6 +290,54 @@ int smoothed_battery_millivolts(const int* recent_millivolts, int count);
 inline constexpr int kChargingVoltageThresholdMillivolts = 4150;
 bool voltage_suggests_charging(const int* recent_millivolts, int count);
 
+// How far the terminal voltage has to reverse off its running extreme before
+// ChargeDetector below believes the cable state changed. Sized above the
+// worst ADC jitter observed on hardware (a ~30 mV spread between consecutive
+// samples) and above a plausible load step, below the step a charger makes.
+inline constexpr int kBatteryChargeStepMillivolts = 60;
+
+// Charge/discharge detection by hysteresis on the raw reading, fed one sample
+// at a time on the sampler's own cadence.
+//
+// This is the signal that actually answers "is it charging"; the other two
+// are anchors. voltage_suggests_charging() above catches the case with no
+// step to see (a board that booted already sitting on a finished charger),
+// and PowerTrend::Charging (history.hpp) confirms it over hours.
+//
+// Why hysteresis and not a threshold: below full, a charging cell's terminal
+// voltage is nowhere near kChargingVoltageThresholdMillivolts - a cell at
+// half charge sits around 3.85 V on the charger - so a fixed high-water mark
+// cannot see charging at all until the cell is nearly full, which is the one
+// moment it matters least. What a charger does at *every* state of charge is
+// push the terminal voltage up: the charge current across the cell's internal
+// resistance steps it up tens of millivolts the moment the cable lands, and
+// it climbs from there. Unplugging steps it back down by the same mechanism.
+//
+// So track the running extreme in the direction currently believed - the
+// valley while discharging, the peak while charging - and flip when a reading
+// reverses off that extreme by kBatteryChargeStepMillivolts or more. The
+// running extreme is what makes ADC noise harmless: noise cannot accumulate,
+// because every reading in the believed direction takes the extreme with it.
+//
+// Ceiling, stated rather than hidden: a big load dropping off (the panel or
+// the radio going idle) lets the terminal voltage rebound, and a rebound past
+// the threshold reads as a charger until the cell falls that far again.
+// Sizing the threshold above a plausible load step is the whole defence -
+// there is no charge-detect line on this board to do better, see
+// BatteryData::charging.
+struct ChargeDetector {
+  bool charging = false;
+  // Peak seen since charging began, or valley seen since it ended.
+  int extreme_millivolts = 0;
+  // First reading only seeds the extreme; one sample is not a direction.
+  bool seeded = false;
+
+  // Feeds one raw (unsmoothed) reading and returns the current belief.
+  // Smoothed input would lag the step this exists to catch by most of the
+  // smoothing window, the same reason voltage_suggests_charging() takes raw.
+  bool update(int millivolts);
+};
+
 // Overvoltage thresholds for a single-cell Li-ion pack, above a normal
 // 4200 mV CC/CV termination plus typical charger/ADC tolerance. These are
 // meaningless before CONFIG_BATTERY_CALIBRATION_PERMILLE has been tuned per

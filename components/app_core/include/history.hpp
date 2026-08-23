@@ -77,13 +77,35 @@ struct RuntimeEstimate {
 // battery_percent() already carries the discharge curve; fitting downstream of
 // it makes the straight line a reasonable model.
 //
-// `samples` is oldest-first. Slots with no battery reading are skipped rather
-// than interpolated, so a gap costs precision and never invents a measurement.
+// `samples` is oldest-first, and only the newest kEstimateWindowSlots of them
+// are fitted - see that constant for why a longer window cannot answer this
+// question. Slots with no battery reading are skipped rather than
+// interpolated, so a gap costs precision and never invents a measurement.
+//
+// Slots recorded before a reboot are the caller's problem, not this
+// function's: the ring stores a fixed interval per slot and knows nothing
+// about the hours a board spent powered off, so the slot before a power cut
+// sits five minutes from the slot after it. Passing a window that straddles
+// one asks this to fit a discontinuity - see the recorder in app_main.cpp for
+// the tail it passes instead.
 //
 // `interval_minutes` is the spacing between adjacent slots.
 RuntimeEstimate estimate_runtime(const HistorySample* samples,
                                  std::size_t count,
                                  uint32_t interval_minutes);
+
+// How many of the newest slots the fit uses, however many are handed in.
+//
+// Two hours. A least-squares line over the whole 48-hour ring answers "what
+// has this cell been doing for two days", which is not the question anyone
+// asks it: plug a charger into a board that has been discharging since
+// yesterday and the two-day slope stays negative for hours, so the trend
+// keeps reporting Discharging while the cell visibly fills - and the same in
+// reverse for hours after the cable comes out. Short enough to follow a
+// change of state within a few slots of it happening, long enough (24 slots
+// against a 12-slot minimum) that the fit still has an hour of real movement
+// in it rather than ADC noise.
+inline constexpr std::size_t kEstimateWindowSlots = 24;
 
 // Below this the fit is dominated by ADC noise rather than by discharge, and
 // the honest answer is Steady. A cell that genuinely empties in a day moves at

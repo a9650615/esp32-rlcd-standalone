@@ -25,11 +25,15 @@ RuntimeEstimate estimate_runtime(const HistorySample* samples,
   double last_percent = 0.0;
 
   const double hours_per_slot = static_cast<double>(interval_minutes) / 60.0;
-  for (std::size_t index = 0; index < count; ++index) {
+  // Only the newest kEstimateWindowSlots are fitted, however many arrived -
+  // see that constant for why the whole ring answers a different question.
+  const std::size_t begin =
+      count > kEstimateWindowSlots ? count - kEstimateWindowSlots : 0;
+  for (std::size_t index = begin; index < count; ++index) {
     if (!samples[index].has_battery()) continue;
     // Time measured from the start of the window; only the slope is used, so
     // the origin does not matter, but keeping it small keeps the sums small.
-    const double t = static_cast<double>(index) * hours_per_slot;
+    const double t = static_cast<double>(index - begin) * hours_per_slot;
     const double p = static_cast<double>(
         battery_percent(static_cast<int>(samples[index].battery_millivolts)));
     sum_t += t;

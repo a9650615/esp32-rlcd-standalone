@@ -150,6 +150,62 @@ HOST_TEST(voltage_suggests_charging_honest_false_positive_a_full_cell_just_unplu
   EXPECT_TRUE(app_core::voltage_suggests_charging(full_cell_off_charger, 3));
 }
 
+// --- ChargeDetector -------------------------------------------------------
+//
+// The signal voltage_suggests_charging() above cannot produce: whether a
+// charger is attached at a state of charge nowhere near full.
+
+HOST_TEST(charge_detector_sees_a_charger_at_any_state_of_charge) {
+  app_core::ChargeDetector detector;
+  // Half charge, on nothing. 3.85 V is 300 mV below
+  // kChargingVoltageThresholdMillivolts, so the high-water rule is blind here.
+  for (const int mv : {3850, 3845, 3852, 3848}) {
+    EXPECT_TRUE(!detector.update(mv));
+    EXPECT_TRUE(!app_core::voltage_suggests_charging(&mv, 1));
+  }
+  // The cable lands: charge current across the cell's internal resistance
+  // steps the terminal voltage up off the valley.
+  EXPECT_TRUE(detector.update(3845 + app_core::kBatteryChargeStepMillivolts));
+}
+
+HOST_TEST(charge_detector_ignores_jitter_and_a_slow_discharge) {
+  app_core::ChargeDetector detector;
+  // The spread observed on hardware (4078/4050/4069 mV between consecutive
+  // samples), riding a cell that is genuinely draining. Every upward sample
+  // here is noise off a falling valley and must not read as a charger.
+  for (const int mv : {4078, 4050, 4069, 4040, 4061, 4030, 4051, 4020}) {
+    EXPECT_TRUE(!detector.update(mv));
+  }
+}
+
+HOST_TEST(charge_detector_lets_go_when_the_cable_comes_out) {
+  app_core::ChargeDetector detector;
+  // First reading only seeds the extreme - one sample is not a direction, and
+  // this is what voltage_suggests_charging() is the anchor for.
+  EXPECT_TRUE(!detector.update(3900));
+  EXPECT_TRUE(detector.update(3900 + app_core::kBatteryChargeStepMillivolts));
+
+  // Climbing, then a dip short of the threshold: still charging. A charging
+  // cell's voltage is not monotonic at this resolution.
+  EXPECT_TRUE(detector.update(4000));
+  EXPECT_TRUE(
+      detector.update(4000 - app_core::kBatteryChargeStepMillivolts + 1));
+  // The load pulling the terminal voltage down off the peak is an unplug.
+  EXPECT_TRUE(!detector.update(4000 - app_core::kBatteryChargeStepMillivolts));
+  // ...and it stays that way as the cell drains rather than flapping back.
+  for (const int mv : {3930, 3925, 3931, 3920}) {
+    EXPECT_TRUE(!detector.update(mv));
+  }
+}
+
+HOST_TEST(charge_detector_threshold_clears_the_jitter_it_has_to_clear) {
+  // The two numbers this detector lives between, asserted rather than
+  // trusted: the step has to be bigger than the ADC spread seen on hardware
+  // and smaller than what a charger does to the terminal voltage.
+  EXPECT_TRUE(app_core::kBatteryChargeStepMillivolts > 30);
+  EXPECT_TRUE(app_core::kBatteryChargeStepMillivolts < 150);
+}
+
 // Locks down the ownership split app_snapshot.hpp documents on
 // AppSnapshot::battery_runtime: wifi_provision's set_battery() (every ~30 s,
 // a different task than the ~5 min history/runtime estimator) does exactly

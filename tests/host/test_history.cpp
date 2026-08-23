@@ -45,7 +45,9 @@ HOST_TEST(runtime_estimate_projects_a_falling_cell_to_empty) {
   EXPECT_TRUE(estimate.trend == app_core::PowerTrend::Discharging);
   EXPECT_TRUE(estimate.known);
   EXPECT_TRUE(estimate.percent_per_hour < 0.0f);
-  EXPECT_EQ(static_cast<int>(estimate.samples_used), 48);
+  // Fitted on the newest window, not on all 48 slots handed in.
+  EXPECT_EQ(static_cast<int>(estimate.samples_used),
+            static_cast<int>(app_core::kEstimateWindowSlots));
 
   // The projection has to be consistent with its own slope rather than with a
   // number pinned here: percent left divided by percent lost per hour.
@@ -68,6 +70,43 @@ HOST_TEST(runtime_estimate_reports_charging_rather_than_a_negative_runtime) {
   EXPECT_TRUE(estimate.trend == app_core::PowerTrend::Charging);
   EXPECT_TRUE(!estimate.known);
   EXPECT_EQ(static_cast<int>(estimate.minutes_remaining), 0);
+}
+
+HOST_TEST(runtime_estimate_ignores_history_older_than_its_window) {
+  // Two days of discharge, then a charger. The stale slope must not outvote
+  // what the cell is doing now: fitting the whole ring kept reporting
+  // Discharging for hours after the cable landed, which is the bug this
+  // window exists to close.
+  auto samples = ramp(4100, 3600, 200);
+  const auto recent = ramp(3600, 3900, app_core::kEstimateWindowSlots);
+  for (std::size_t i = 0; i < recent.size(); ++i) {
+    samples[samples.size() - recent.size() + i] = recent[i];
+  }
+  const auto estimate = app_core::estimate_runtime(
+      samples.data(), samples.size(), kIntervalMinutes);
+
+  EXPECT_TRUE(estimate.trend == app_core::PowerTrend::Charging);
+  EXPECT_TRUE(estimate.percent_per_hour > 0.0f);
+  EXPECT_EQ(static_cast<int>(estimate.samples_used),
+            static_cast<int>(app_core::kEstimateWindowSlots));
+}
+
+HOST_TEST(runtime_estimate_projects_from_the_recent_rate_not_the_two_day_mean) {
+  // Flat all day, then a real discharge. A whole-ring fit averages the two
+  // into a slope that is neither, and projects a runtime from it.
+  auto samples = ramp(3900, 3900, 300);
+  const auto recent = ramp(3900, 3700, app_core::kEstimateWindowSlots);
+  for (std::size_t i = 0; i < recent.size(); ++i) {
+    samples[samples.size() - recent.size() + i] = recent[i];
+  }
+  const auto estimate = app_core::estimate_runtime(
+      samples.data(), samples.size(), kIntervalMinutes);
+
+  EXPECT_TRUE(estimate.trend == app_core::PowerTrend::Discharging);
+  EXPECT_TRUE(estimate.known);
+  // 3900 -> 3700 mV over the two-hour window is a steep, real rate; the
+  // two-day mean would have been a fraction of it.
+  EXPECT_TRUE(estimate.percent_per_hour < -5.0f);
 }
 
 HOST_TEST(runtime_estimate_calls_a_flat_cell_steady_rather_than_eternal) {

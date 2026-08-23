@@ -578,6 +578,17 @@ app_core::HistorySample take_slot() {
   return sample;
 }
 
+// Slots recorded since this boot. The ring that survives a reboot has no
+// notion of a power-off: it stores one fixed-interval slot per record, so the
+// slot written before the cable came out sits five minutes from the slot
+// written after the board came back, however many hours passed in between.
+// Fitting across that boundary reads a cell that was charged (or drained)
+// while powered off as a violent slope in the last few minutes, so the
+// estimator is only ever shown this boot's tail. The charts still read the
+// whole ring - a gap in a temperature line is honest, a fabricated trend is
+// not.
+uint16_t g_slots_this_boot = 0;
+
 [[noreturn]] void history_recorder_task(void*) {
   for (;;) {
     vTaskDelay(pdMS_TO_TICKS(app_core::kHistoryIntervalMinutes * 60'000));
@@ -592,12 +603,16 @@ app_core::HistorySample take_slot() {
                esp_err_to_name(result));
       continue;
     }
+    const app_core::HistoryBlob& blob = history_store::current();
+    if (g_slots_this_boot < blob.count) ++g_slots_this_boot;
     const app_core::RuntimeEstimate estimate = app_core::estimate_runtime(
-        history_store::current().samples, history_store::current().count,
+        blob.samples + blob.count - g_slots_this_boot, g_slots_this_boot,
         app_core::kHistoryIntervalMinutes);
     ESP_LOGI(kTag,
-             "history: %u slots, trend=%d %.2f%%/h known=%d minutes=%u",
-             static_cast<unsigned>(history_store::current().count),
+             "history: %u slots (%u this boot), trend=%d %.2f%%/h known=%d "
+             "minutes=%u",
+             static_cast<unsigned>(blob.count),
+             static_cast<unsigned>(g_slots_this_boot),
              static_cast<int>(estimate.trend),
              static_cast<double>(estimate.percent_per_hour), estimate.known,
              static_cast<unsigned>(estimate.minutes_remaining));
@@ -619,6 +634,13 @@ constexpr int kBatteryRecentWindow = 4;
 int g_battery_recent_mv[kBatteryRecentWindow] = {};
 int g_battery_recent_count = 0;
 int g_battery_recent_next = 0;
+
+// The primary charging signal. app_core::voltage_suggests_charging() above it
+// only ever fires within ~50 mV of a full cell, which is the one state of
+// charge where the answer matters least; the detector sees the step a charger
+// makes at any state of charge. Both are consulted - see ChargeDetector's own
+// comment for the split.
+app_core::ChargeDetector g_charge_detector;
 
 // Samples the battery divider roughly every 30 s and publishes it through
 // wifi_provision's existing snapshot owner; never touches lv_* directly.
@@ -673,8 +695,10 @@ int g_battery_recent_next = 0;
         g_battery_recent_next = (g_battery_recent_next + 1) % kBatteryRecentWindow;
         if (g_battery_recent_count < kBatteryRecentWindow) ++g_battery_recent_count;
 
-        battery.charging = app_core::voltage_suggests_charging(
-            g_battery_recent_mv, g_battery_recent_count);
+        battery.charging =
+            g_charge_detector.update(raw_mv) ||
+            app_core::voltage_suggests_charging(g_battery_recent_mv,
+                                               g_battery_recent_count);
         const int smoothed_mv = app_core::smoothed_battery_millivolts(
             g_battery_recent_mv, g_battery_recent_count);
         battery.millivolts = smoothed_mv;

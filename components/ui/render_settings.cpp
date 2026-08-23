@@ -26,6 +26,14 @@ std::string row_value(SettingsItem item, const app_core::BatteryData& battery,
       // The explicit return is what stops it.
       return {};
     case SettingsItem::Runtime: {
+      // The fast voltage signal is asked first, before the trend: it sees a
+      // charger within a sample or two, where the slope needs the best part of
+      // an hour of history to turn around, and a runtime printed in that gap
+      // is the number someone plans their afternoon around while the cell is
+      // in fact filling.
+      if (battery_is_charging(battery, runtime.trend)) {
+        return text(Text::StatusCharging);
+      }
       // Every branch that is not a measured projection says so rather than
       // printing a number. A runtime figure is the kind of thing that gets
       // believed and planned around, so the only case that produces one is
