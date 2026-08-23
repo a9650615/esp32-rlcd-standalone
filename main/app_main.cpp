@@ -651,12 +651,6 @@ app_core::ChargeDetector g_charge_detector;
   for (;;) {
     app_core::BatteryData battery;
     if (board::battery_read(battery)) {
-      // The screen shows percent only, but CONFIG_BATTERY_CALIBRATION_PERMILLE
-      // is tuned by comparing millivolts against a multimeter, so the raw
-      // figure has to be reachable somewhere.
-      ESP_LOGI(kTag, "battery valid=%d mV=%d percent=%u", battery.valid,
-               battery.millivolts, battery.percent);
-
       // Raw, not smoothed: overvoltage detection must not wait out a
       // smoothing window before flagging a real condition, and history
       // (accumulate_battery below) already does its own 5-minute averaging
@@ -704,6 +698,17 @@ app_core::ChargeDetector g_charge_detector;
         battery.millivolts = smoothed_mv;
         battery.percent = app_core::battery_percent(smoothed_mv);
       }
+
+      // Logged here rather than at the top of the loop so it can carry the
+      // charging decision: with no charge-detect line and no cable, the log
+      // is the only place that signal can be checked against what the panel
+      // is drawing. The raw figure travels alongside the smoothed one because
+      // CONFIG_BATTERY_CALIBRATION_PERMILLE is tuned against a multimeter and
+      // the detector's step is a raw-millivolts threshold.
+      ESP_LOGI(kTag,
+               "battery valid=%d mV=%d raw=%d percent=%u charging=%d peak=%d",
+               battery.valid, battery.millivolts, raw_mv, battery.percent,
+               battery.charging, g_charge_detector.extreme_millivolts);
 
       wifi_provision::set_battery(battery);
     } else {
