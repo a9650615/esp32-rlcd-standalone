@@ -19,7 +19,18 @@ namespace board {
 namespace {
 
 constexpr char kTag[] = "board_lvgl";
-constexpr uint32_t kTickPeriodMs = 5;
+// 25 ms, not 5. This timer exists only to advance LVGL's clock, and nothing
+// downstream can use a finer granularity than it asks for: lv_timer_handler()
+// is called from lvgl_task below, whose delay never drops under
+// kTaskMinDelayMs, so a refresh could not happen more often than every 50 ms
+// even when the tick was five times finer than that. What the 5 ms period did
+// buy was 200 wakeups a second on an idle board, which is what a standby
+// measurement of -2.9 %/h was mostly paying for - see sdkconfig.defaults.
+//
+// The floor on how coarse this can go is LVGL's own timing, not the refresh:
+// press/long-press thresholds are hundreds of milliseconds, so 25 ms is still
+// an order of magnitude finer than the shortest thing measured through it.
+constexpr uint32_t kTickPeriodMs = 25;
 constexpr uint32_t kTaskMaxDelayMs = 500;
 constexpr uint32_t kTaskMinDelayMs = 50;
 constexpr size_t kBufferBytes =

@@ -102,3 +102,33 @@ CONFIG_BATTERY_CALIBRATION_PERMILLE=1030
 # is half a second, which is longer than any stall seen here, and costs one
 # pointer each.
 CONFIG_LWIP_UDP_RECVMBOX_SIZE=64
+
+# Standby power. Measured before this: -40 mV/h with the cable out, about
+# -2.9 %/h against the discharge curve, so roughly 34 hours from full. The
+# panel was not the cause - f98824f took idle down to a handful of flushes a
+# minute - the CPU was: 160 MHz pinned with no DFS, a 1000 Hz tick that was
+# never skipped, and a 5 ms LVGL tick timer, which together left the longest
+# idle window on the board at one millisecond.
+#
+# DFS only. PM_DFS_INIT_AUTO configures max = the default CPU frequency and
+# min = the 40 MHz crystal, with light sleep off, which is the whole reason
+# this is a config change and not a project: nothing has to hold a power
+# lock it does not already hold, and no peripheral can be caught mid-transfer
+# by a sleep. APB stays at 80 MHz on the S3 regardless of CPU frequency, so
+# SPI and I2C timing do not move.
+#
+# Tickless idle is what makes DFS worth anything: without it the 1 ms tick
+# wakes the CPU 1000 times a second whether or not there is work, and the
+# frequency it wakes at is the only thing DFS could have changed.
+#
+# Automatic light sleep - esp_pm_configure(light_sleep_enable = true) - is the
+# larger win and deliberately not taken here. It needs the octal PSRAM, the
+# SPI panel and Wi-Fi DTIM wakeups reasoned about together.
+#
+# If CONFIG_AIRPLAY_ENABLE is ever switched on, re-check this: a frequency
+# transition costs tens of microseconds, and the I2S path is the one thing
+# here that would hear it. The driver takes an APB lock, so the expectation is
+# that it is fine - but that is an expectation, not a measurement.
+CONFIG_PM_ENABLE=y
+CONFIG_PM_DFS_INIT_AUTO=y
+CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
