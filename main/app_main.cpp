@@ -36,6 +36,8 @@
 #include <esp_err.h>
 #include <esp_heap_caps.h>
 #include <esp_log.h>
+#include <esp_pm.h>
+#include <esp_sleep.h>
 #include <esp_system.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/idf_additions.h>
@@ -735,6 +737,21 @@ int g_battery_recent_next = 0;
 
       accumulate_battery(raw_mv);
 
+      // Whether the core is actually sleeping, which is a different question
+      // from whether sleep was configured - and the one that has no other
+      // answer from here. esp_sleep_get_wakeup_cause() reports what ended the
+      // last sleep, so ESP_SLEEP_WAKEUP_UNDEFINED (0) after minutes of uptime
+      // means no sleep has ever happened: something is holding a power lock,
+      // or nothing ever blocks long enough to be worth sleeping through.
+      //
+      // Printed every publish rather than once on the first success, on
+      // purpose: a zero has to be visible as a zero. The failure mode being
+      // guarded against is exactly the one the slope window had - a value
+      // that is quietly always the same, with nothing on screen or in the log
+      // to say so. Retire this once the standby figure is trusted.
+      ESP_LOGI(kTag, "power: last sleep wakeup cause %d (0 = never slept)",
+               static_cast<int>(esp_sleep_get_wakeup_cause()));
+
       // A read that came back implausible (battery.valid false) must not
       // pollute the smoothing/charging window with a reading nobody trusts -
       // skipped entirely, same reasoning history.hpp's samples give a gap
@@ -1216,6 +1233,37 @@ extern "C" void app_main() {
   } else {
     ESP_LOGI(kTag, "previous boot ended in %s (reason %d)", reset_text,
              static_cast<int>(reset_reason));
+  }
+
+  // Automatic light sleep. DFS alone - which is what PM_DFS_INIT_AUTO gave -
+  // only chose the frequency the core woke at; measured, it took standby from
+  // about -2.9 %/h to -1.97 %/h over 13.7 hours, because the core was still
+  // awake essentially all of the time. This is the part that lets it stop.
+  //
+  // Configured here, before display_init(), so the policy is in force for
+  // every peripheral that comes up after it rather than for whatever happens
+  // to initialise last. Nothing in this firmware holds a power management
+  // lock of its own: the panel goes through esp_lcd_panel_io_spi, which takes
+  // the APB lock per transaction inside the driver and releases it, and the
+  // sensor bus does the same. That is the property light sleep depends on,
+  // and it is why this is a call rather than a project.
+  //
+  // Failure is logged and not fatal. A board that will not idle down is a
+  // board with short battery life, which is the state it was in before this
+  // line existed; refusing to boot over it would trade a real display for a
+  // power saving.
+  esp_pm_config_t pm_config{};
+  pm_config.max_freq_mhz = CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ;
+  pm_config.min_freq_mhz = CONFIG_XTAL_FREQ;
+  pm_config.light_sleep_enable = true;
+  const esp_err_t pm_result = esp_pm_configure(&pm_config);
+  if (pm_result == ESP_OK) {
+    ESP_LOGI(kTag, "power: DFS %d-%d MHz, automatic light sleep enabled",
+             pm_config.min_freq_mhz, pm_config.max_freq_mhz);
+  } else {
+    ESP_LOGW(kTag, "power: esp_pm_configure failed: %s; the CPU will not idle "
+                   "down and standby will be short",
+             esp_err_to_name(pm_result));
   }
 
   esp_err_t result = board::display_init();
