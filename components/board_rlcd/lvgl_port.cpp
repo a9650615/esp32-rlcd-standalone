@@ -19,25 +19,12 @@ namespace board {
 namespace {
 
 constexpr char kTag[] = "board_lvgl";
-// 25 ms, not 5. This timer exists only to advance LVGL's clock, and nothing
-// downstream can use a finer granularity than it asks for: lv_timer_handler()
-// is called from lvgl_task below, whose delay never drops under
-// kTaskMinDelayMs, so a refresh could not happen more often than every 50 ms
-// even when the tick was five times finer than that. What the 5 ms period did
-// buy was 200 wakeups a second on an idle board, which is what a standby
-// measurement of -2.9 %/h was mostly paying for - see sdkconfig.defaults.
-//
-// The floor on how coarse this can go is LVGL's own timing, not the refresh:
-// press/long-press thresholds are hundreds of milliseconds, so 25 ms is still
-// an order of magnitude finer than the shortest thing measured through it.
-constexpr uint32_t kTickPeriodMs = 25;
 constexpr uint32_t kTaskMaxDelayMs = 500;
 constexpr uint32_t kTaskMinDelayMs = 50;
 constexpr size_t kBufferBytes =
     static_cast<size_t>(kWidth) * static_cast<size_t>(kHeight) * sizeof(uint16_t);
 
 SemaphoreHandle_t lvgl_mutex = nullptr;
-esp_timer_handle_t lvgl_tick_timer = nullptr;
 lv_display_t* display_handle = nullptr;
 uint8_t* buffer_1 = nullptr;
 uint8_t* buffer_2 = nullptr;
@@ -47,7 +34,21 @@ uint8_t* buffer_2 = nullptr;
 // that the value moved, not which pass it landed on.
 std::atomic<uint32_t> lvgl_loops{0};
 
-void increase_lvgl_tick(void*) { lv_tick_inc(kTickPeriodMs); }
+// LVGL reads the clock through this instead of being told the time by a
+// periodic timer. The timer it replaces fired every 25 ms - 40 wakeups a
+// second on a board whose panel changes about once a minute - purely to add a
+// constant to LVGL's own counter, and on an idle board that was the shortest
+// interval anything asked to be woken at. esp_timer_get_time() is a read of
+// the 64-bit system counter, so the value is exactly as accurate on demand as
+// it was when pushed, at no standing cost: the wakeup is now caused by the
+// work rather than by the bookkeeping about it.
+//
+// Truncating to 32 bits is what LVGL's own counter did too - lv_tick_inc()
+// accumulates into a uint32_t - so the wrap at 49.7 days is not new here, and
+// lv_tick_elaps() is written to survive it.
+uint32_t lvgl_tick_from_esp_timer() {
+  return static_cast<uint32_t>(esp_timer_get_time() / 1000);
+}
 
 #ifndef NDEBUG
 // A copy of what was drawn, in plain raster order - one bit per pixel, rows
@@ -183,11 +184,6 @@ void lvgl_task(void*) {
 }
 
 void cleanup_lvgl() {
-  if (lvgl_tick_timer != nullptr) {
-    (void)esp_timer_stop(lvgl_tick_timer);
-    (void)esp_timer_delete(lvgl_tick_timer);
-    lvgl_tick_timer = nullptr;
-  }
   if (display_handle != nullptr) {
     lv_display_delete(display_handle);
     display_handle = nullptr;
@@ -259,21 +255,10 @@ esp_err_t lvgl_init() {
   lv_display_set_buffers(display_handle, buffer_1, buffer_2, kBufferBytes,
                           LV_DISPLAY_RENDER_MODE_FULL);
 
-  esp_timer_create_args_t tick_args{};
-  tick_args.callback = increase_lvgl_tick;
-  tick_args.name = "lvgl_tick";
-  esp_err_t result = esp_timer_create(&tick_args, &lvgl_tick_timer);
-  if (result != ESP_OK) {
-    ESP_LOGE(kTag, "LVGL tick timer creation failed: %s", esp_err_to_name(result));
-    cleanup_lvgl();
-    return result;
-  }
-  result = esp_timer_start_periodic(lvgl_tick_timer, kTickPeriodMs * 1000U);
-  if (result != ESP_OK) {
-    ESP_LOGE(kTag, "LVGL tick timer start failed: %s", esp_err_to_name(result));
-    cleanup_lvgl();
-    return result;
-  }
+  // Must come before the task below takes its first lv_timer_handler() pass:
+  // until this is set, lv_tick_get() reads the counter nothing increments any
+  // more, so every LVGL timer would believe no time had passed.
+  lv_tick_set_cb(lvgl_tick_from_esp_timer);
 
   const BaseType_t task_result = xTaskCreatePinnedToCore(
       lvgl_task, "LVGL", 8 * 1024, nullptr, 5, nullptr, 0);
