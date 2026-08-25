@@ -580,16 +580,50 @@ app_core::HistorySample take_slot() {
   return sample;
 }
 
-// Slots recorded since this boot. The ring that survives a reboot has no
-// notion of a power-off: it stores one fixed-interval slot per record, so the
-// slot written before the cable came out sits five minutes from the slot
-// written after the board came back, however many hours passed in between.
-// Fitting across that boundary reads a cell that was charged (or drained)
-// while powered off as a violent slope in the last few minutes, so the
-// estimator is only ever shown this boot's tail. The charts still read the
-// whole ring - a gap in a temperature line is honest, a fabricated trend is
-// not.
+// How many of the stored slots the estimator is allowed to fit.
+//
+// The ring that survives a reboot has no notion of elapsed time: it stores one
+// fixed-interval slot per record, so the slot written before power was lost
+// sits five minutes from the slot written after it came back, however many
+// hours passed in between. Fitting across that boundary reads a cell that was
+// charged or drained while powered off as a violent slope in the last few
+// minutes.
+//
+// But the boundary that matters is a *power* loss, not a reboot. A firmware
+// push restarts in about ten seconds, and throwing away two days of history to
+// avoid a ten-second gap is what made the runtime projection read "Collecting"
+// after every push - the estimator needs an hour of slots and never got one.
+//
+// esp_reset_reason() already answers the real question, and app_main already
+// reads it: a software restart, a panic, a watchdog or an external reset all
+// happen with the rail up, so every stored slot is still contiguous in time.
+// Only a power-on or a brownout means the board was off for an unknown while.
+// Seeded from that in app_main() below, which is why this is not const.
+//
+// The charts are unaffected either way - they read the whole ring, because a
+// gap in a temperature line is honest where a fabricated trend is not.
 uint16_t g_slots_this_boot = 0;
+
+// True when the board never lost power, so the slots from before the restart
+// are still five minutes apart from the ones after it.
+//
+// ESP_RST_EXT is on this side deliberately: the reset line was pulled with the
+// rail up. ESP_RST_UNKNOWN and anything new are on the cautious side by
+// omission - a reason this cannot account for must not license fitting across
+// a gap it knows nothing about.
+bool power_was_maintained(esp_reset_reason_t reason) {
+  switch (reason) {
+    case ESP_RST_SW:
+    case ESP_RST_PANIC:
+    case ESP_RST_INT_WDT:
+    case ESP_RST_TASK_WDT:
+    case ESP_RST_WDT:
+    case ESP_RST_EXT:
+      return true;
+    default:
+      return false;
+  }
+}
 
 [[noreturn]] void history_recorder_task(void*) {
   for (;;) {
@@ -1427,6 +1461,23 @@ extern "C" void app_main() {
   // filling in over the next hour.
   if (history_store::init() != ESP_OK) {
     ESP_LOGW(kTag, "history storage unavailable; charts start empty");
+  }
+
+  // Hand the estimator the slots it is entitled to fit - see
+  // g_slots_this_boot. Logged rather than silent, because "the projection
+  // says Collecting" and "the projection is fitting two days of history" look
+  // identical from outside, and the difference is this line.
+  if (power_was_maintained(reset_reason)) {
+    g_slots_this_boot = history_store::current().count;
+    ESP_LOGI(kTag,
+             "history: power was maintained across the restart (%s); %u "
+             "stored slot(s) stay eligible for the runtime fit",
+             reset_text, static_cast<unsigned>(g_slots_this_boot));
+  } else {
+    ESP_LOGI(kTag,
+             "history: power was lost (%s); the runtime fit starts from this "
+             "boot's own slots",
+             reset_text);
   }
 
   ui::set_language(load_language());
