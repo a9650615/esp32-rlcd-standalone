@@ -44,6 +44,33 @@ esp_err_t Session::open_slot() {
     ESP_LOGE(kTag, "no OTA slot available to write into");
     return ESP_ERR_NOT_FOUND;
   }
+  // Asked before the quiesce, not left to esp_ota_begin() below.
+  //
+  // With rollback enabled, esp_ota_begin() refuses while the running image is
+  // still pending verification - and it refuses *after* run_quiesce_hooks()
+  // has already torn modules down, spending the quiesce on a write that never
+  // starts. Observed: a push sent within the verification window returned
+  // ESP_ERR_OTA_ROLLBACK_INVALID_STATE, and airplay's hook had already freed
+  // the receiver, which does not come back until a reboot. A refusal this
+  // routine must not cost a working AirPlay.
+  //
+  // Same error code as esp_ota_begin() would have returned, deliberately: the
+  // caller and scripts/remote.sh see no difference, the difference is only
+  // that nothing was dismantled first.
+  if (CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE) {
+    const esp_partition_t* running = esp_ota_get_running_partition();
+    esp_ota_img_states_t running_state = ESP_OTA_IMG_UNDEFINED;
+    if (running != nullptr &&
+        esp_ota_get_state_partition(running, &running_state) == ESP_OK &&
+        running_state == ESP_OTA_IMG_PENDING_VERIFY) {
+      ESP_LOGW(kTag,
+               "refusing to write: the running image is still pending "
+               "verification, so esp_ota_begin() would reject this anyway. "
+               "Nothing was quiesced. Retry once the guard has confirmed it.");
+      return ESP_ERR_OTA_ROLLBACK_INVALID_STATE;
+    }
+  }
+
   // Before the first erase, and on this task, so a module can put its
   // hardware somewhere safe. A push sent during playback produced loud noise
   // from the speaker and then failed; the amplifier was left enabled with an

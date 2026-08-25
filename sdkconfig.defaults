@@ -125,3 +125,32 @@ CONFIG_LWIP_UDP_RECVMBOX_SIZE=64
 # that it is fine - but that is an expectation, not a measurement.
 CONFIG_PM_ENABLE=y
 CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
+
+# --- internal RAM budget, so an optional AirPlay receiver can actually start
+#
+# raop_create() needs 13,468 bytes of *contiguous internal* RAM, and on this
+# board that is close to all of what is left once PM_ENABLE (above) has taken
+# its ~9.9 KB. Without the two settings below the receiver came up on some
+# boots and not others - same firmware, different heap layout - which is worse
+# than failing, because it looks fixed.
+#
+# The mDNS task's stack was the specific culprit: it is created immediately
+# before raop_create() and, from internal RAM, split the one block raop needed.
+# Its own component offers SPIRAM instead, and the prerequisites
+# (FREERTOS_TASK_CREATE_ALLOW_EXT_MEM, SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY) were
+# already on.
+CONFIG_MDNS_TASK_CREATE_FROM_SPIRAM=y
+
+# Wi-Fi buffers are heap-allocated at esp_wifi_init(), so `idf.py size` shows
+# no change from this and only the board does: measured, internal RAM free
+# after startup went 42,759 -> 49,435 with the largest block unchanged at
+# 31,744, and AirPlay then started on three consecutive boots instead of
+# roughly every other one.
+#
+# The cost is Wi-Fi throughput under sustained load, which this board has
+# little of - its network work is a handful of TLS fetches an hour, a portal
+# request, and an OTA push. Raise them back if a push starts taking
+# noticeably longer, and expect that to trade against AirPlay starting.
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=16
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=16

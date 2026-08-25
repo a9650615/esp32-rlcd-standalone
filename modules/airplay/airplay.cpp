@@ -1,5 +1,7 @@
 #include "airplay.hpp"
 
+#include "ota_quiesce.hpp"
+
 #include "artwork.hpp"
 
 #ifdef CONFIG_AIRPLAY_ENABLE
@@ -223,6 +225,36 @@ void restore_wifi_power_save() {
            static_cast<int>(g_saved_wifi_ps_mode), esp_err_to_name(result));
 }
 
+// Everything that has to come back to rest when a session ends, whichever
+// way it ends: a sender disconnecting, or a firmware write taking the module
+// away underneath one. Extracted rather than written twice, because the two
+// paths drifting apart is the failure that would not show up until the day
+// somebody pushes firmware mid-song and the panel keeps claiming AirPlay is
+// playing with the radio still pinned awake.
+//
+// Safe when no session is open and safe to call twice, which the OTA contract
+// requires: audio_stream_close() is a documented no-op on a closed stream,
+// set_tray_indicator_active(false) on an inactive slot is idempotent, and
+// restoring the saved power-save mode over itself is a write of the same
+// value.
+void release_session() {
+  audio::audio_stream_close();
+  ESP_LOGI(kTag, "tray indicator: requesting slot %d active=false",
+           static_cast<int>(g_tray_indicator.slot));
+  app_core::set_tray_indicator_active(g_tray_indicator, false);
+  restore_wifi_power_save();
+  {
+    std::lock_guard<std::mutex> lock(g_state_mutex);
+    g_now_playing = app_core::NowPlaying{};
+    g_elapsed = app_core::ElapsedTracker{};
+  }
+  app_core::clear_media_session(g_media_source);
+}
+
+// Defined after airplay_deinit() so there is one teardown path rather than a
+// copy; declared here because airplay_init() registers it.
+void quiesce_for_ota();
+
 // --- RAOP callbacks ---------------------------------------------------
 
 // Real audio, straight into modules/audio's streaming sink - no format
@@ -348,17 +380,7 @@ void handle_event(raop_event_t event, void *event_data,
       break;
     }
     case RAOP_EVENT_DISCONNECTED:
-      audio::audio_stream_close();
-      ESP_LOGI(kTag, "tray indicator: requesting slot %d active=false",
-               static_cast<int>(g_tray_indicator.slot));
-      app_core::set_tray_indicator_active(g_tray_indicator, false);
-      restore_wifi_power_save();
-      {
-        std::lock_guard<std::mutex> lock(g_state_mutex);
-        g_now_playing = app_core::NowPlaying{};
-        g_elapsed = app_core::ElapsedTracker{};
-      }
-      app_core::clear_media_session(g_media_source);
+      release_session();
       break;
     case RAOP_EVENT_METADATA: {
       const auto *meta = static_cast<const raop_metadata_t *>(event_data);
@@ -609,6 +631,18 @@ esp_err_t airplay_init() {
              static_cast<unsigned>(
                  heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)));
     g_handle = nullptr;
+    return err;
+  }
+
+  // Only once a receiver actually exists: a hook whose whole job is to free
+  // the receiver's memory has nothing to do when raop_init() is what failed,
+  // and registering it anyway would spend one of four fixed slots on a no-op.
+  // Logged on failure for the same reason audio's is - a module whose quiesce
+  // never runs is precisely the state components/ota exists to prevent, and
+  // here it would mean a firmware write competing with 13.5 KB of internal
+  // RAM it cannot see.
+  if (!ota::register_quiesce_hook(&quiesce_for_ota)) {
+    ESP_LOGW(kTag, "OTA quiesce hook registration failed: registry full");
   }
   return err;
 }
@@ -621,6 +655,56 @@ esp_err_t airplay_deinit() {
   g_handle = nullptr;
   return err;
 }
+
+namespace {
+
+// Registered with components/ota and called on the writer's task immediately
+// before esp_ota_begin(). See ota_quiesce.hpp for the contract.
+//
+// Unlike audio's hook, which exists to stop a noise, this one exists to give
+// back memory. raop_create() takes 13,468 bytes of *contiguous internal* RAM
+// for its context, and on this board that is most of what is left: with
+// automatic light sleep compiled in, the receiver starts with about 14 KB free
+// and a 7.7 KB largest block behind it. A firmware write needs internal RAM of
+// its own, and the write is the recovery path for broken firmware - it is the
+// one thing that must not fail for want of a few kilobytes. So AirPlay gets
+// out of the way first: raop_deinit() frees the context, the RTSP task and the
+// mDNS responder.
+//
+// It does not come back afterwards. That is deliberate and costs nothing real:
+// a successful write reboots, and a failed one is already a situation where
+// somebody is looking at the log rather than at a speaker.
+//
+// release_session() first, so a write that arrives mid-song leaves the panel,
+// the amplifier and Wi-Fi power save where a normal disconnect would - not
+// showing a track that stopped playing, with the radio still pinned awake.
+// audio's own hook has already closed the stream by then (it registers first,
+// during audio_init), which is the order the amplifier needs: GPIO46 drops
+// before anything stops feeding the codec.
+//
+// The hazard worth naming: raop_deinit() stops the RTSP task, and that task is
+// what calls handle_event() -> release_session(), which briefly takes
+// g_state_mutex. Killed at exactly the wrong instant it would leave that mutex
+// held and any later publish() blocked. Bounded in practice by a reboot
+// following within seconds; making it airtight means task-shutdown handshaking
+// inside vendored upstream code, which is a bigger change than this hazard is
+// worth.
+void quiesce_for_ota() {
+  if (g_handle == nullptr) {
+    return;  // never started, or a retried push calling every hook again
+  }
+  release_session();
+  const esp_err_t err = airplay_deinit();
+  ESP_LOGW(kTag,
+           "quiesced for OTA: receiver torn down (%s); internal RAM free=%u "
+           "largest_free_block=%u",
+           airplay_err_to_name(err),
+           static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+           static_cast<unsigned>(
+               heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)));
+}
+
+}  // namespace
 
 }  // namespace airplay
 

@@ -70,6 +70,10 @@ idf_component_register(
         lwip
         pthread
         esp_wifi
+        # For ota::register_quiesce_hook() - AirPlay holds 13.5 KB of
+        # *internal* RAM that a firmware write needs back. Private: nothing in
+        # airplay.hpp mentions it.
+        ota
         # The allowed direction (modules/README.md rule 4): this module
         # feeds decoded PCM into modules/audio's streaming sink and
         # registers its own tray icon directly with app_core's registry,
