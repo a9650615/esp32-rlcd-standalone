@@ -150,12 +150,20 @@ assumed.
 - Remote log, screenshot and OTA push all still work through light sleep.
   `reachable=1`, `image marked valid; rollback cancelled`.
 
-### The instrument it carries
+### The instrument it carries, and why it stays
 
 The battery task logs `esp_sleep_get_wakeup_cause()` every publish, where 0
 means no sleep has ever ended. Printed every time rather than once on first
-success, because **a zero has to be visible as a zero**. Retire it once the
-standby figure is trusted.
+success, because **a zero has to be visible as a zero**.
+
+Written first as "retire it once the standby figure is trusted", then kept
+deliberately once it was. The reasoning that changed: the figure being trusted
+is exactly what makes the instrument cheap to keep and expensive to lose. One
+line per 30 s against a board that now discharges at -0.30 %/h costs nothing
+measurable, and it is the first thing anyone would want to read the day light
+sleep stops working - which is a silent failure, with no symptom other than a
+battery that empties in hours again. Recording the decision rather than the
+default, per this repo's own rule about instruments.
 
 Expected costs, so they are not a surprise: downlink latency grows to about the
 Wi-Fi listen interval (~400 ms at this AP's DTIM), and the RTC slow clock is
@@ -181,8 +189,9 @@ pipeline, which buffers and loses the race more often.
    baseline, with the estimator reading Steady because the drain is now under
    its detection floor. Eight hours of uptime across the measurement with no
    reboot, no watchdog, and the panel, portal and OTA push all still working,
-   which is the stability half of the same check. **The wakeup-cause
-   instrument can now be retired.**
+   which is the stability half of the same check. The wakeup-cause instrument
+   stays - see above for why the decision went the other way once the number
+   was in.
 2. **Wi-Fi `MAX_MODEM` with a longer listen interval.** This was not worth
    doing while the CPU was awake regardless. It is now: one of the two observed
    wakeup causes is the radio. Costs roughly another second of downlink
@@ -193,7 +202,8 @@ pipeline, which buffers and loses the race more often.
    the current change bought.
 
 **Done looks like:** ~~a standby figure measured with the cable out that is
-clearly better than -1.97 %/h~~, and the wakeup-cause instrument removed.
+clearly better than -1.97 %/h, and the wakeup-cause instrument removed.~~
+Both settled: -0.30 %/h measured, and the instrument kept on purpose.
 
 Worth saying plainly before anyone spends more on this: at -0.30 %/h the
 remaining items are optimising something that is no longer the constraint.
