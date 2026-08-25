@@ -222,6 +222,17 @@ struct BatteryData {
   // A caller wanting the fuller picture reads both; this field alone
   // answers "should the percentage be trusted right now".
   bool charging = false;
+  // Whether `charging` above was decided from a measurement or from nothing.
+  //
+  // False only while the slope window has not yet spanned
+  // kChargingSlopeMinSpanSeconds - the first eleven minutes of a boot - where
+  // voltage_is_falling() and voltage_is_rising() are both false for want of
+  // data rather than because the cell is flat. Those two bools cannot tell
+  // those apart, and a renderer that treats "no data" as "not charging"
+  // silently outranks the only signal that does know: see
+  // ui::battery_is_charging(), which uses this to decide whether the
+  // two-hour trend still gets a say.
+  bool direction_known = false;
   // No RuntimeEstimate here on purpose - see AppSnapshot::battery_runtime
   // below for where it lives and why. This struct is republished wholesale
   // every ~30 s by the battery sampler; a field belonging to a different

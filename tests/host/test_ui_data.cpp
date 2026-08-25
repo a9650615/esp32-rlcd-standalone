@@ -406,7 +406,41 @@ HOST_TEST(battery_percent_is_trustworthy_only_when_valid_and_not_charging) {
 // icon now also calls on its own (it needs to know "charging" independent
 // of "valid", unlike the settings row and Home tile, which only ever need
 // the combined trustworthy answer).
-HOST_TEST(battery_is_charging_is_the_or_of_the_fast_and_slow_signals) {
+HOST_TEST(a_measured_direction_outranks_a_two_hour_old_trend) {
+  // The regression test for a bolt that stayed on the tray for up to two
+  // hours after the cable came out. The voltage signal had already said no
+  // within one 30 s publish; the trend was still fitting the charge that had
+  // just ended, and an OR let it win.
+  app_core::BatteryData battery;
+  battery.valid = true;
+  battery.charging = false;
+  battery.direction_known = true;
+  EXPECT_TRUE(
+      !ui::battery_is_charging(battery, app_core::PowerTrend::Charging));
+  // ...and the percentage is trustworthy again the moment it is not
+  // charging, rather than being withheld for the same two hours.
+  EXPECT_TRUE(ui::battery_percent_trustworthy(
+      battery, app_core::PowerTrend::Charging));
+
+  // The trend still answers while nothing else can: the first eleven minutes
+  // of a boot, before the slope window has spanned enough to be fitted.
+  // "No data" must not read as "not charging" - a board that booted on a
+  // charger would show a discharging icon.
+  battery.direction_known = false;
+  EXPECT_TRUE(ui::battery_is_charging(battery, app_core::PowerTrend::Charging));
+
+  // And a measured yes is still a yes regardless of the trend.
+  battery.direction_known = true;
+  battery.charging = true;
+  EXPECT_TRUE(
+      ui::battery_is_charging(battery, app_core::PowerTrend::Discharging));
+}
+
+HOST_TEST(the_trend_is_the_fallback_while_no_direction_has_been_measured) {
+  // Every case here leaves direction_known false, which is the only state in
+  // which the trend still has a say - see the test above for what happens
+  // once the voltage signal has measured something. Named for that rather
+  // than for the OR it used to be, because the OR is now half the rule.
   app_core::BatteryData battery;
   battery.charging = false;
   EXPECT_TRUE(!ui::battery_is_charging(battery, app_core::PowerTrend::Steady));

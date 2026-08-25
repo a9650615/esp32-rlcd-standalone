@@ -674,6 +674,38 @@ int g_battery_slope_mv[app_core::kChargingSlopeWindow] = {};
 int g_battery_slope_count = 0;
 int g_battery_recent_next = 0;
 
+// The cable event itself, which neither window above can see quickly enough.
+//
+// A charger changes the terminal voltage the instant it is attached or
+// removed - its current across the cell's internal resistance - and that step
+// is the one piece of evidence about the cable that does not need a span of
+// time to become visible. Measured on this board, unplugging a full cell:
+// 4202 -> 4140 mV between two consecutive publishes, 62 mV in one step.
+//
+// The slope signals are what decide steady state, and they are right, but
+// they need eleven minutes of samples to say anything - so plugging in showed
+// a discharging icon for eleven minutes, which is the whole span in which
+// somebody is standing there having just plugged it in and looking at the
+// screen.
+//
+// kCableStepMillivolts is set well above jitter rather than close to the
+// measured step, on purpose: consecutive raw readings have been seen 31 mV
+// apart with nothing happening, and the cost of missing a real step is that
+// the icon reverts to the eleven-minute behaviour it had before this existed,
+// while the cost of inventing one is an icon that is wrong for eleven
+// minutes. Graceful in one direction, not the other.
+constexpr int kCableStepMillivolts = 50;
+// The step's verdict outranks the slope for exactly as long as it takes the
+// slope window to refill with samples from after the event - written as the
+// window itself so the two cannot drift apart. After that the normal rule
+// takes over, which is what makes a false step self-healing rather than
+// sticky.
+constexpr int kCableHoldTicks = app_core::kChargingSlopeWindow;
+int g_previous_tick_mv = 0;
+bool g_previous_tick_valid = false;
+bool g_cable_step_charging = false;
+int g_cable_hold_ticks = 0;
+
 // Samples the battery divider roughly every 30 s and publishes it through
 // wifi_provision's existing snapshot owner; never touches lv_* directly.
 [[noreturn]] void battery_monitor_task(void*) {
@@ -686,6 +718,7 @@ int g_battery_recent_next = 0;
     if (board::battery_read(battery)) {
       // Every tick: feed the slope window and re-evaluate direction. This is
       // the only work that happens at kBatterySlopePeriodMs.
+      bool cable_event = false;
       if (battery.valid) {
         const int slope_mv = battery.millivolts;
         if (g_battery_slope_count < app_core::kChargingSlopeWindow) {
@@ -695,9 +728,35 @@ int g_battery_recent_next = 0;
                        sizeof(int) * (app_core::kChargingSlopeWindow - 1));
           g_battery_slope_mv[app_core::kChargingSlopeWindow - 1] = slope_mv;
         }
-      }
 
-      if (++tick < kBatteryTicksPerPublish) {
+        // Compared against the previous 5 s reading rather than the previous
+        // published one: the step is over in a single sample, and looking for
+        // it at the publish cadence would both blur it against 30 s of drift
+        // and be unable to react any faster than the thing it is trying to
+        // beat.
+        if (g_previous_tick_valid) {
+          const int step = slope_mv - g_previous_tick_mv;
+          if (step >= kCableStepMillivolts || step <= -kCableStepMillivolts) {
+            cable_event = true;
+            g_cable_step_charging = step > 0;
+            g_cable_hold_ticks = kCableHoldTicks;
+            ESP_LOGI(kTag, "battery cable event: %+d mV in %u s -> %s",
+                     step, static_cast<unsigned>(kBatterySlopePeriodMs / 1000),
+                     g_cable_step_charging ? "plugged in" : "unplugged");
+          }
+        }
+        g_previous_tick_mv = slope_mv;
+        g_previous_tick_valid = true;
+      }
+      if (g_cable_hold_ticks > 0) --g_cable_hold_ticks;
+
+      // A cable event publishes now instead of waiting out the rest of the
+      // 30 s period. That is the difference between an icon that changes
+      // while somebody is still holding the plug and one that changes after
+      // they have walked away. Every other tick still falls through, because
+      // set_battery() repaints the panel and a repaint is expensive - see
+      // kBatterySamplePeriodMs above.
+      if (++tick < kBatteryTicksPerPublish && !cable_event) {
         vTaskDelay(pdMS_TO_TICKS(kBatterySlopePeriodMs));
         continue;
       }
@@ -761,8 +820,12 @@ int g_battery_recent_next = 0;
         g_battery_recent_next = (g_battery_recent_next + 1) % kBatteryRecentWindow;
         if (g_battery_recent_count < kBatteryRecentWindow) ++g_battery_recent_count;
 
-        // Two ways to be charging, and the level-based one only ever sees
-        // the last few percent.
+        // Three ways to know, in order of how fast they can say it.
+        //
+        // The cable step is the only one that answers within a sample, and
+        // while its hold lasts it outranks the rest - it saw the event
+        // itself, where they are still inferring one from a window that is
+        // half pre-event.
         //
         // level_high && !falling is the cell parked at the charger's CV
         // setpoint: the level rules out a cell that is simply discharged, the
@@ -776,14 +839,32 @@ int g_battery_recent_next = 0;
         // the entire hours-long climb - the whole span where someone actually
         // wants to know a charger is attached. Nothing but a charger makes a
         // cell gain that much voltage; see voltage_is_rising().
+        // The fit is taken once and thresholded here rather than through
+        // voltage_is_falling()/voltage_is_rising(), which are the same two
+        // comparisons wrapped for callers that only want an answer. This one
+        // needs two things a bool cannot carry: the third state, "the window
+        // has not spanned enough to have an opinion" - which is what
+        // direction_known publishes, so a renderer can tell it apart from
+        // "flat" - and the number itself, which goes in the log. Two bools
+        // are what let a window that could never be fitted look exactly like
+        // a cell that was not moving, for weeks.
         const int slope_seconds = static_cast<int>(kBatterySlopePeriodMs / 1000);
-        const bool falling = app_core::voltage_is_falling(
-            g_battery_slope_mv, g_battery_slope_count, slope_seconds);
-        const bool rising = app_core::voltage_is_rising(
-            g_battery_slope_mv, g_battery_slope_count, slope_seconds);
+        float slope_mv_per_hour = 0.0f;
+        const bool direction_known = app_core::battery_voltage_slope(
+            g_battery_slope_mv, g_battery_slope_count, slope_seconds,
+            &slope_mv_per_hour);
+        const bool falling =
+            direction_known &&
+            slope_mv_per_hour < app_core::kDischargeSlopeMillivoltsPerHour;
+        const bool rising =
+            direction_known &&
+            slope_mv_per_hour > app_core::kChargingRiseMillivoltsPerHour;
         const bool level_high = app_core::voltage_suggests_charging(
             g_battery_recent_mv, g_battery_recent_count);
-        battery.charging = rising || (level_high && !falling);
+        const bool measured = rising || (level_high && !falling);
+        battery.direction_known = direction_known || g_cable_hold_ticks > 0;
+        battery.charging =
+            g_cable_hold_ticks > 0 ? g_cable_step_charging : measured;
         // Logged here rather than beside the raw reading above, because that
         // log runs before this assignment - a first attempt printed the
         // default-constructed false for every sample and read as "the fix
@@ -791,10 +872,12 @@ int g_battery_recent_next = 0;
         // "not high", and "climbing from half charge" are different states,
         // and the first two produce the same icon.
         ESP_LOGI(kTag,
-                 "battery charging=%d (level_high=%d falling=%d rising=%d, "
-                 "%d of %d slope samples)",
+                 "battery charging=%d (level_high=%d slope=%.1f mV/h known=%d "
+                 "falling=%d rising=%d, cable hold %d, %d of %d slope samples)",
                  static_cast<int>(battery.charging), static_cast<int>(level_high),
-                 static_cast<int>(falling), static_cast<int>(rising),
+                 static_cast<double>(slope_mv_per_hour),
+                 static_cast<int>(direction_known), static_cast<int>(falling),
+                 static_cast<int>(rising), g_cable_hold_ticks,
                  g_battery_slope_count, app_core::kChargingSlopeWindow);
         const int smoothed_mv = app_core::smoothed_battery_millivolts(
             g_battery_recent_mv, g_battery_recent_count);

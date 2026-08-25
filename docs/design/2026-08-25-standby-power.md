@@ -21,7 +21,7 @@ and the differences matter.
 | Before any change | 69 samples over 34.5 min, cable out, near 4.2 V | -40 mV/h -> **-2.9 %/h**, ~34 h | Weakest |
 | DFS only, 1 h in | estimator's 2-hour window, 3.85 V plateau | **-2.48 %/h**, ~40 h | Low |
 | DFS only, 13.7 h | end to end, 60% -> 33% on one boot | **-1.97 %/h**, ~51 h | Best |
-| Light sleep | not yet measured | - | - |
+| Light sleep, 6.6 h | end to end from 4140 mV, cable out, top of curve | **-3.6 mV/h = -0.30 %/h** | Good |
 
 **Why the first is weakest.** It is a 34-minute voltage capture converted to
 percent through the steepest part of the discharge curve, where 4060-4200 mV
@@ -37,7 +37,23 @@ while a wait loop polled the log every five minutes, and every poll replays a
 
 **Why the third is the one to use.** 27 percentage points across 13.7 hours of
 a single boot, so it averages over everything and does not care where the
-curve's breakpoints fall. **-1.97 %/h is the baseline light sleep has to beat.**
+curve's breakpoints fall. **-1.97 %/h is the baseline light sleep had to beat.**
+
+**The fourth beat it by about a factor of ten, and the instrument stopped
+being able to see it.** 4140 -> 4116 mV over 6.6 hours with the cable out, in
+the same 4.2 V region both the -2.9 %/h baseline and this were measured in:
+-3.6 mV/h against -40 mV/h. The estimator, independently, reported
+`trend=3 0.00%/h known=0` - `PowerTrend::Steady`, meaning the fit came in
+under its own 0.4 %/h threshold. Two instruments, one saying -0.30 %/h and the
+other saying "below 0.4", agreeing.
+
+Two honest limits on that number. Percent has 1-point resolution, so -2 points
+over 6.6 hours carries about +/-0.15 %/h. And every sample is from the top 6%
+of the discharge curve, so turning -0.30 %/h into a full-charge-to-empty
+figure is an extrapolation across regions this has not been measured in. **The
+ratio is the solid part; the right summary is that standby went from hours to
+days.** Measuring the total honestly would take a week of running and would
+not change any decision.
 
 ### The estimator is the instrument, with one caveat
 
@@ -146,14 +162,27 @@ Wi-Fi listen interval (~400 ms at this AP's DTIM), and the RTC slow clock is
 the internal RC rather than a crystal, so the sleep guard windows are wider
 than they would be with one - it works, it just saves less.
 
+One unexpected cost, which changes how the board is operated: **`remote.sh
+logs` is roughly fifteen times slower to reach live.** The retained ring is
+replayed over TCP on connect, and TCP throughput is now bounded by how often
+the radio wakes. Before, an 8-12 second capture reached the live tail; now it
+takes 150-200 s, and a shorter one silently returns *old* lines - the newest
+entry it shows is simply wherever the replay got to. That is a measurement
+trap in its own right: two consecutive short captures returned tails at
+different, non-monotonic uptimes, which looks like a board that has stopped
+logging. It has not. Capture for 200 s, and prefer `tail -n` over a `grep`
+pipeline, which buffers and loses the race more often.
+
 ---
 
 ## 4. What is left, in order
 
-1. **Measure it.** Cable out, a few hours, one reading of `history: ... %/h`.
-   Beat -1.97 %/h or the third commit is not worth its risk. The same reading
-   doubles as the stability check light sleep needs - a rare failure to wake,
-   or Wi-Fi dropping after hours of sleep cycles, only shows up over time.
+1. ~~**Measure it.**~~ Done: -0.30 %/h, about ten times better than the
+   baseline, with the estimator reading Steady because the drain is now under
+   its detection floor. Eight hours of uptime across the measurement with no
+   reboot, no watchdog, and the panel, portal and OTA push all still working,
+   which is the stability half of the same check. **The wakeup-cause
+   instrument can now be retired.**
 2. **Wi-Fi `MAX_MODEM` with a longer listen interval.** This was not worth
    doing while the CPU was awake regardless. It is now: one of the two observed
    wakeup causes is the radio. Costs roughly another second of downlink
@@ -163,8 +192,14 @@ than they would be with one - it works, it just saves less.
    missed invalidation, and pointless to attempt before item 1 says how much
    the current change bought.
 
-**Done looks like:** a standby figure measured with the cable out that is
-clearly better than -1.97 %/h, and the wakeup-cause instrument removed.
+**Done looks like:** ~~a standby figure measured with the cable out that is
+clearly better than -1.97 %/h~~, and the wakeup-cause instrument removed.
+
+Worth saying plainly before anyone spends more on this: at -0.30 %/h the
+remaining items are optimising something that is no longer the constraint.
+Item 2 and item 3 are worth doing if standby matters again for a reason that
+does not exist today. The cell, at this rate, is now out-lived by almost
+nothing else on the board.
 
 ---
 

@@ -1249,17 +1249,37 @@ constexpr bool home_battery_notable(const app_core::BatteryData& battery) {
                            battery.percent <= kHomeLowBatteryPercent);
 }
 
-// True when either the fast voltage-based signal (BatteryData::charging) or
-// the slow slope-based one (PowerTrend::Charging) thinks the cell is on a
-// charger. The two are read from different tasks/cadences (see
-// BatteryData::charging's own comment on why they stay separate fields) but
-// combining them here, at render time, is just reading two already-valid
-// snapshot fields - not the cross-task overwrite hazard that comment warns
-// against. Shared by every caller that needs "is this charging" as its own
-// answer (the tray icon's charging-vs-level choice) as well as by
-// battery_percent_trustworthy() below (which needs its negation).
+// Whether the cell is on a charger, from the two signals that have an
+// opinion - preferring the one that measured recently over the one that
+// fitted a long time ago.
+//
+// This used to be a plain OR of the two, and an OR is wrong here for a
+// reason worth stating: the operands have very different latencies.
+// BatteryData::charging is decided from about eleven minutes of voltage;
+// PowerTrend::Charging is a least-squares fit over two hours. OR lets the
+// slower one *extend* a charging claim and never lets it *end* one, so
+// unplugging a full board left the bolt on the tray for up to two hours
+// while the fast signal had already said no within one 30 s publish. That
+// was observed - see docs/design/2026-08-25-the-charging-icon-outlives-the-
+// cable.md for the log of the trend decaying 11.45 -> 2.89 %/h with the
+// cable already out.
+//
+// So the trend is now the fallback rather than a peer: it answers only when
+// the voltage signal has no data to answer with, which is the first eleven
+// minutes of a boot, before the slope window has spanned enough to be fitted
+// at all (BatteryData::direction_known). Everywhere else, eleven minutes of
+// direct measurement beats a two-hour fit.
+//
+// The two are read from different tasks/cadences (see BatteryData::charging's
+// own comment on why they stay separate fields) but combining them here, at
+// render time, is just reading two already-valid snapshot fields - not the
+// cross-task overwrite hazard that comment warns against. Shared by every
+// caller that needs "is this charging" as its own answer (the tray icon's
+// charging-vs-level choice) as well as by battery_percent_trustworthy()
+// below (which needs its negation).
 constexpr bool battery_is_charging(const app_core::BatteryData& battery,
                                    app_core::PowerTrend trend) {
+  if (battery.direction_known) return battery.charging;
   return battery.charging || trend == app_core::PowerTrend::Charging;
 }
 
