@@ -179,8 +179,28 @@ image; no movement means roll back and reboot deliberately.
 
 - `sdkconfig.defaults` applies only when `sdkconfig` is first generated. Adding
   an option to an existing project does nothing and the build still succeeds —
-  `CONFIG_LV_USE_QRCODE` was silently off while a QR feature "shipped". Delete
-  `sdkconfig`, rebuild, and diff to confirm the value landed.
+  `CONFIG_LV_USE_QRCODE` was silently off while a QR feature "shipped". Edit the
+  option in `sdkconfig` directly, rebuild, and diff to confirm the value landed;
+  add it to `sdkconfig.defaults` as well so a fresh checkout gets it.
+- **Never delete `sdkconfig` to make the above apply.** It is untracked and
+  holds settings that exist nowhere else, so the loss is unrecoverable by git,
+  by merging, or by rebuilding — and the build still succeeds afterwards.
+  Deleting it once dropped `CONFIG_AIRPLAY_ENABLE=y`, and the only symptom was
+  that the board stopped appearing in AirPlay for a day. The same class of loss
+  has taken Wi-Fi credentials and endpoint tokens before, restored by hand from
+  another worktree. If a regeneration is genuinely unavoidable, `cp sdkconfig
+  sdkconfig.bak` first and diff the *whole* file after — checking a list of
+  options taken from `sdkconfig.defaults` proves nothing, because every option
+  on that list is guaranteed to survive and the ones that can be lost are
+  precisely the ones absent from it.
+- A worktree does not carry `sdkconfig` or gitignored secrets. A fresh worktree
+  therefore builds a *quietly different firmware* than the checkout it came
+  from: `CONFIG_AIRPLAY_ENABLE` reverts to `n` and
+  `modules/airplay/secrets/raop_private_key.pem` is absent. That gap is
+  deliberate — the key must not be committed — so treat supplying both as a
+  setup step for any worktree that will flash the board, and compare
+  `comm -23` on the two sorted `^CONFIG_` sets before believing a build is
+  equivalent.
 - `version.txt` is read only at CMake configure time. An existing `build/`
   keeps the old version through a successful build and a verified flash.
 - Never build or flash while `partitions.csv` may be mid-edit. `app-flash`
