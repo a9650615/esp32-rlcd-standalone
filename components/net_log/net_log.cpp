@@ -10,6 +10,7 @@
 
 #include <esp_heap_caps.h>
 #include <esp_log.h>
+#include <esp_pm.h>
 #include <esp_netif.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
@@ -104,6 +105,52 @@ int net_vprintf(const char* format, va_list args) {
   listen(listen_fd, 1);
 
   int client_fd = -1;
+
+  // Observing this board must not be what makes it unobservable.
+  //
+  // With automatic light sleep the core sleeps between beacons, and this
+  // task's outbound sends wait for a wake window each time. Measured: a
+  // 400-second capture delivered 103 lines and reached the 11th second of the
+  // log - about a quarter of a line per second. Shrinking the replay ring
+  // first was the wrong guess; the live stream is what crawls. On a board with
+  // no cable that is not a slow log, it is no log.
+  //
+  // So the lock is held exactly while somebody is connected, which is the
+  // whole cost model: watching costs power, and nobody watches an idle clock
+  // for days. Idle standby - the number all of this power work exists for - is
+  // untouched, because with no client the lock is not held.
+  //
+  // Not a blanket "no light sleep when net_log is compiled in": that would
+  // spend the saving permanently to make a facility that is used minutes a day
+  // fast.
+#if CONFIG_PM_ENABLE
+  esp_pm_lock_handle_t no_light_sleep = nullptr;
+  bool holding_lock = false;
+  if (esp_pm_lock_create(ESP_PM_NO_LIGHT_SLEEP, 0, "net_log",
+                         &no_light_sleep) != ESP_OK) {
+    // Logged, not fatal, and deliberately not retried: the streaming path
+    // still works without it, just slowly. A board that refuses to serve logs
+    // because it could not create a power lock is strictly worse.
+    ESP_LOGW(kTag, "no-light-sleep lock unavailable; streaming will be slow");
+    no_light_sleep = nullptr;
+  }
+  const auto hold_for_client = [&](bool wanted) {
+    if (no_light_sleep == nullptr || wanted == holding_lock) return;
+    const esp_err_t err = wanted ? esp_pm_lock_acquire(no_light_sleep)
+                                 : esp_pm_lock_release(no_light_sleep);
+    if (err != ESP_OK) {
+      ESP_LOGW(kTag, "no-light-sleep lock %s failed: %s",
+               wanted ? "acquire" : "release", esp_err_to_name(err));
+      return;
+    }
+    holding_lock = wanted;
+    ESP_LOGI(kTag, "light sleep %s while an operator is %s",
+             wanted ? "held off" : "allowed again",
+             wanted ? "connected" : "gone");
+  };
+#else
+  const auto hold_for_client = [](bool) {};
+#endif
   std::uint64_t send_cursor = 0;
 
   for (;;) {
@@ -131,6 +178,7 @@ int net_vprintf(const char* format, va_list args) {
         setsockopt(accepted, SOL_SOCKET, SO_SNDTIMEO, &send_timeout,
                    sizeof(send_timeout));
         client_fd = accepted;
+        hold_for_client(true);
         send_cursor = 0;
         char banner[96];
         const int banner_len = std::snprintf(
@@ -145,6 +193,7 @@ int net_vprintf(const char* format, va_list args) {
       if (recv(client_fd, scratch, sizeof(scratch), 0) <= 0) {
         close(client_fd);
         client_fd = -1;
+        hold_for_client(false);
       }
     }
 

@@ -83,7 +83,13 @@ CONFIG_OTA_ALLOW_UNCONFIRMED_PUSH=y
 # 32 KiB holds barely one 400x300 frame (~23 KiB once base64'd and prefixed),
 # so a second page would evict the first before anyone connected. PSRAM, and
 # there are 8 MB of it.
-CONFIG_NET_LOG_RING_BYTES=131072
+# 16 KiB, not 128. The ring is replayed to whoever connects before live lines
+# start, and automatic light sleep (PM_ENABLE below) throttles TCP hard enough
+# that replaying 128 KiB took tens of minutes: a 340-second capture reached the
+# 58th second of the log and never caught up. On a board with no cable that is
+# not a slow log, it is no log. 16 KiB still holds the whole boot sequence,
+# which is what the ring exists for.
+CONFIG_NET_LOG_RING_BYTES=16384
 
 # Battery divider trim for this specific board, from its own readings rather
 # than a multimeter: 44 samples across several hours on USB spanned 4071-4092
