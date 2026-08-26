@@ -22,6 +22,7 @@ and the differences matter.
 | DFS only, 1 h in | estimator's 2-hour window, 3.85 V plateau | **-2.48 %/h**, ~40 h | Low |
 | DFS only, 13.7 h | end to end, 60% -> 33% on one boot | **-1.97 %/h**, ~51 h | Best |
 | Light sleep, 6.6 h | end to end from 4140 mV, cable out, top of curve | **-3.6 mV/h = -0.30 %/h** | Good |
+| Light sleep + AirPlay resident | estimator, whole-run fit, 513 slots | **-0.63 +/- 0.01 %/h**, ~4.7 days | Best |
 
 **Why the first is weakest.** It is a 34-minute voltage capture converted to
 percent through the steepest part of the discharge curve, where 4060-4200 mV
@@ -158,6 +159,15 @@ not a slower clock.
   for wakeups that did not have to be spent at all.
 - `8033366` - `esp_pm_configure()` with `light_sleep_enable`, called before
   `display_init()`.
+- `bb4172f` - the internal-RAM budget that lets an AirPlay receiver exist at
+  all beside light sleep, plus an OTA quiesce hook so a firmware write is not
+  competing with it. See
+  `2026-08-26-airplay-and-light-sleep-on-one-board.md`.
+- `81b84fa` - net_log holds off light sleep while an operator is connected,
+  because sleep had made the log unreadable. See section 3's costs below.
+- `bae43c7` - the estimator rebuilt around its own standard error and the
+  length of the current run, after this work walked out from under both of its
+  constants.
 
 The property that made the last one a call rather than a project: **nothing in
 this firmware holds a power management lock of its own.** The panel goes
@@ -199,16 +209,35 @@ Wi-Fi listen interval (~400 ms at this AP's DTIM), and the RTC slow clock is
 the internal RC rather than a crystal, so the sleep guard windows are wider
 than they would be with one - it works, it just saves less.
 
-One unexpected cost, which changes how the board is operated: **`remote.sh
-logs` is roughly fifteen times slower to reach live.** The retained ring is
-replayed over TCP on connect, and TCP throughput is now bounded by how often
-the radio wakes. Before, an 8-12 second capture reached the live tail; now it
-takes 150-200 s, and a shorter one silently returns *old* lines - the newest
-entry it shows is simply wherever the replay got to. That is a measurement
-trap in its own right: two consecutive short captures returned tails at
-different, non-monotonic uptimes, which looks like a board that has stopped
-logging. It has not. Capture for 200 s, and prefer `tail -n` over a `grep`
-pipeline, which buffers and loses the race more often.
+**The unexpected cost was the log, and it was nearly fatal** (fixed in
+`81b84fa`). Measured at its worst: a 400-second `remote.sh logs` capture
+delivered 103 lines and reached the *eleventh second* of the log. About a
+quarter of a line per second. On a board with no cable since 2026-08-16, where
+`scripts/remote.sh` is the whole operating surface, that is not a slow log - it
+is no log, and it silently took the board's diagnosability with it.
+
+Three things about how it hid, all worth remembering:
+
+- **The direction that broke is the one nothing else uses.** Inbound was fine,
+  so OTA pushes kept working at normal speed and gave no hint. Only the board's
+  own outbound sends wait for a wake window.
+- **A short capture returns *old* lines rather than failing.** The newest entry
+  shown is simply wherever the replay got to, so two consecutive captures
+  returned tails at different, non-monotonic uptimes - which reads as a board
+  that has stopped logging. It had not.
+- **The obvious fix was the wrong one.** Shrinking the replay ring 128 KiB ->
+  16 KiB changed nothing measurable, because the live stream is what crawls,
+  not the backlog. Kept anyway on its own merits; not mistaken for the fix.
+
+What worked is the operator's own suggestion pointed at the subsystem that
+needed it: net_log takes an `ESP_PM_NO_LIGHT_SLEEP` lock on accept and releases
+it when the client goes. Watching costs power, nobody watches an idle clock for
+days, and with no client the lock is not held - so the idle figure this whole
+effort exists for is untouched. Measured after: a 60-second capture spans 81
+seconds of log, replaying the ring and catching up to live.
+
+Deliberately not a blanket "no light sleep when net_log is compiled in": that
+spends the saving permanently to make a facility used minutes a day fast.
 
 ---
 
@@ -269,3 +298,26 @@ sampler feeds. That covers this instance. The general shape - **two constants
 that must agree, each individually plausible, failing into silence** - does
 not have a general guard, and is worth suspecting whenever a feature seems
 present in the code and absent in behaviour.
+
+### The wider family: correct when written, silently wrong later
+
+Three instances turned up inside a week, and none of them involved anyone
+editing the broken line:
+
+- **655 against 660** above: two constants that had to agree, and stopped.
+- **`kTrendThresholdPercentPerHour = 0.4 %/h`**: a noise floor sized when the
+  board drained at 2.9 %/h. Power work took the board to 0.30 %/h and the
+  threshold, unchanged and still looking reasonable, swallowed the real
+  signal. Fixed by measuring against the fit's own standard error instead of a
+  number - see section 1.
+- **`battery.charging || trend == Charging`**: an OR that added real
+  information while the fast signal was blind below 4150 mV. Adding
+  `voltage_is_rising()` removed the blindness and left the OR with only its
+  cost - a two-hour-old fit outvoting an eleven-minute measurement. See
+  `2026-08-25-the-charging-icon-outlives-the-cable.md`.
+
+The common thread is that **each was correct against the world as it was, and
+the world moved.** The lesson is not "avoid constants", it is that a change
+which improves the hardware or adds a signal has to go looking for whatever
+was calibrated against the old state - and that the symptom is always silence,
+never an error.
