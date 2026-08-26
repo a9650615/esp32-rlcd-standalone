@@ -83,13 +83,18 @@ CONFIG_OTA_ALLOW_UNCONFIRMED_PUSH=y
 # 32 KiB holds barely one 400x300 frame (~23 KiB once base64'd and prefixed),
 # so a second page would evict the first before anyone connected. PSRAM, and
 # there are 8 MB of it.
-# 16 KiB, not 128. The ring is replayed to whoever connects before live lines
-# start, and automatic light sleep (PM_ENABLE below) throttles TCP hard enough
-# that replaying 128 KiB took tens of minutes: a 340-second capture reached the
-# 58th second of the log and never caught up. On a board with no cable that is
-# not a slow log, it is no log. 16 KiB still holds the whole boot sequence,
-# which is what the ring exists for.
-CONFIG_NET_LOG_RING_BYTES=16384
+# 128 KiB, and it was briefly 16 KiB by mistake - recorded so the mistake is
+# not repeated. The reasoning was that replaying a big ring was what made
+# net_log unusable under light sleep. It was not: the live stream is what
+# crawled, and the fix was the PM lock in net_log.cpp. Shrinking the ring
+# changed nothing measurable and cost real diagnosability - 821 lines dropped
+# in one boot, and the lines that get dropped are exactly the ones nobody was
+# connected to see, which is the only reason the ring exists.
+#
+# It costs nothing worth saving either: the buffer is MALLOC_CAP_SPIRAM, so it
+# comes out of 8 MB of PSRAM, not out of the contiguous internal RAM that
+# AirPlay and a firmware write actually compete for. Two different pools.
+CONFIG_NET_LOG_RING_BYTES=131072
 
 # Battery divider trim for this specific board, from its own readings rather
 # than a multimeter: 44 samples across several hours on USB spanned 4071-4092
