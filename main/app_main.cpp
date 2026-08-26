@@ -645,12 +645,14 @@ bool power_was_maintained(esp_reset_reason_t reason) {
         blob.samples + blob.count - g_slots_this_boot, g_slots_this_boot,
         app_core::kHistoryIntervalMinutes);
     ESP_LOGI(kTag,
-             "history: %u slots (%u this boot), trend=%d %.2f%%/h known=%d "
-             "minutes=%u",
+             "history: %u slots (%u this boot), trend=%d %.2f+/-%.2f%%/h "
+             "known=%d fitted=%u minutes=%u",
              static_cast<unsigned>(blob.count),
              static_cast<unsigned>(g_slots_this_boot),
              static_cast<int>(estimate.trend),
-             static_cast<double>(estimate.percent_per_hour), estimate.known,
+             static_cast<double>(estimate.percent_per_hour),
+             static_cast<double>(estimate.percent_per_hour_stderr),
+             estimate.known, static_cast<unsigned>(estimate.samples_used),
              static_cast<unsigned>(estimate.minutes_remaining));
     wifi_provision::set_runtime_estimate(estimate);
   }

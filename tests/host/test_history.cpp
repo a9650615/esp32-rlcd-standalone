@@ -45,9 +45,10 @@ HOST_TEST(runtime_estimate_projects_a_falling_cell_to_empty) {
   EXPECT_TRUE(estimate.trend == app_core::PowerTrend::Discharging);
   EXPECT_TRUE(estimate.known);
   EXPECT_TRUE(estimate.percent_per_hour < 0.0f);
-  // Fitted on the newest window, not on all 48 slots handed in.
-  EXPECT_EQ(static_cast<int>(estimate.samples_used),
-            static_cast<int>(app_core::kEstimateWindowSlots));
+  // All 48, not a fixed window: one uninterrupted discharge is one run, and
+  // fitting the whole of it is what makes a long observation more precise
+  // than a short one.
+  EXPECT_EQ(static_cast<int>(estimate.samples_used), 48);
 
   // The projection has to be consistent with its own slope rather than with a
   // number pinned here: percent left divided by percent lost per hour.
@@ -72,13 +73,13 @@ HOST_TEST(runtime_estimate_reports_charging_rather_than_a_negative_runtime) {
   EXPECT_EQ(static_cast<int>(estimate.minutes_remaining), 0);
 }
 
-HOST_TEST(runtime_estimate_ignores_history_older_than_its_window) {
-  // Two days of discharge, then a charger. The stale slope must not outvote
-  // what the cell is doing now: fitting the whole ring kept reporting
-  // Discharging for hours after the cable landed, which is the bug this
-  // window exists to close.
+HOST_TEST(a_charge_ends_the_run_so_the_discharge_before_it_is_not_fitted) {
+  // Two days of discharge, then a charger. Fitting the whole ring kept
+  // reporting Discharging for hours after the cable landed; the run boundary
+  // is what closes that, and it has to close it from either side - here the
+  // newest reading belongs to the charge, so the discharge before it is out.
   auto samples = ramp(4100, 3600, 200);
-  const auto recent = ramp(3600, 3900, app_core::kEstimateWindowSlots);
+  const auto recent = ramp(3600, 3900, 24);
   for (std::size_t i = 0; i < recent.size(); ++i) {
     samples[samples.size() - recent.size() + i] = recent[i];
   }
@@ -87,15 +88,28 @@ HOST_TEST(runtime_estimate_ignores_history_older_than_its_window) {
 
   EXPECT_TRUE(estimate.trend == app_core::PowerTrend::Charging);
   EXPECT_TRUE(estimate.percent_per_hour > 0.0f);
-  EXPECT_EQ(static_cast<int>(estimate.samples_used),
-            static_cast<int>(app_core::kEstimateWindowSlots));
+  // The rising tail and nothing like the 200 slots of discharge under it.
+  // Asserted as a bound rather than an exact count on purpose: the boundary
+  // lands wherever the margin trips, which is a property of the data, and
+  // pinning it exactly would test the fixture instead of the rule.
+  EXPECT_TRUE(estimate.samples_used >= 20 && estimate.samples_used < 60);
 }
 
-HOST_TEST(runtime_estimate_projects_from_the_recent_rate_not_the_two_day_mean) {
-  // Flat all day, then a real discharge. A whole-ring fit averages the two
-  // into a slope that is neither, and projects a runtime from it.
+HOST_TEST(a_load_change_is_averaged_over_the_run_rather_than_ending_it) {
+  // Flat all day, then a real discharge - a load starting, not a cable.
+  //
+  // This is the deliberate limit of a run-based window, written down as a
+  // test so it is a decision rather than a surprise: nothing here is a
+  // direction change, so it is all one run and the reported rate is the
+  // average over the whole of it, not the last two hours. It converges as the
+  // new load keeps running.
+  //
+  // The alternative - detecting a change in slope as well as in sign - is a
+  // change-point detector, which this board does not need: its load is a
+  // clock that draws the same current all day. If that stops being true, this
+  // test is where to start.
   auto samples = ramp(3900, 3900, 300);
-  const auto recent = ramp(3900, 3700, app_core::kEstimateWindowSlots);
+  const auto recent = ramp(3900, 3700, 24);
   for (std::size_t i = 0; i < recent.size(); ++i) {
     samples[samples.size() - recent.size() + i] = recent[i];
   }
@@ -104,9 +118,53 @@ HOST_TEST(runtime_estimate_projects_from_the_recent_rate_not_the_two_day_mean) {
 
   EXPECT_TRUE(estimate.trend == app_core::PowerTrend::Discharging);
   EXPECT_TRUE(estimate.known);
-  // 3900 -> 3700 mV over the two-hour window is a steep, real rate; the
-  // two-day mean would have been a fraction of it.
-  EXPECT_TRUE(estimate.percent_per_hour < -5.0f);
+  // Every slot handed in - the tail overwrites the last 24 of the 300 rather
+  // than extending them - so the whole flat stretch is in the fit and the rate
+  // is far gentler than the -18 %/h the last two hours alone would show.
+  EXPECT_EQ(static_cast<int>(estimate.samples_used), 300);
+  EXPECT_TRUE(estimate.percent_per_hour < 0.0f);
+  EXPECT_TRUE(estimate.percent_per_hour > -5.0f);
+}
+
+HOST_TEST(the_same_slow_drain_becomes_callable_once_there_is_enough_history) {
+  // The property the whole redesign exists for, and the failure it replaced:
+  // a fixed 0.4 %/h threshold went blind the day power work took the board
+  // under 0.4 %/h, and reported Steady forever.
+  //
+  // Same drain rate and same noise in both windows below - only the length
+  // differs. The short one honestly cannot tell it from flat; the long one
+  // can, because the standard error of a slope shrinks with both the sample
+  // count and the span.
+  const auto drain = [](std::size_t count) {
+    std::vector<app_core::HistorySample> samples(count);
+    for (std::size_t i = 0; i < count; ++i) {
+      // About -0.3 %/h near the top of the curve, where 14 mV is a point:
+      // -0.35 mV per five-minute slot, plus the +/-1 point of quantisation
+      // noise a real reading carries.
+      const double mv = 4180.0 - 0.35 * static_cast<double>(i);
+      const int wobble = (static_cast<int>(i) % 3 - 1) * 6;
+      samples[i].battery_millivolts =
+          static_cast<uint16_t>(mv + wobble);
+    }
+    return samples;
+  };
+
+  const auto brief = drain(24);  // two hours
+  const auto brief_estimate = app_core::estimate_runtime(
+      brief.data(), brief.size(), kIntervalMinutes);
+  EXPECT_TRUE(brief_estimate.trend == app_core::PowerTrend::Steady);
+  EXPECT_TRUE(!brief_estimate.known);
+
+  const auto lengthy = drain(576);  // the whole ring, 48 hours
+  const auto lengthy_estimate = app_core::estimate_runtime(
+      lengthy.data(), lengthy.size(), kIntervalMinutes);
+  EXPECT_TRUE(lengthy_estimate.trend == app_core::PowerTrend::Discharging);
+  EXPECT_TRUE(lengthy_estimate.known);
+
+  // And the reason it became callable is the error, not the rate: the slope
+  // is the same drain either way, but it is pinned down far better.
+  EXPECT_TRUE(lengthy_estimate.percent_per_hour_stderr <
+              brief_estimate.percent_per_hour_stderr);
 }
 
 HOST_TEST(runtime_estimate_calls_a_flat_cell_steady_rather_than_eternal) {

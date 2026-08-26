@@ -63,6 +63,13 @@ struct RuntimeEstimate {
   // Percent per hour, negative while discharging. Reported even when `known`
   // is false so a caller can show the rate without the projection.
   float percent_per_hour = 0.0f;
+  // The standard error of that slope, in the same units. This is what makes
+  // "how sure" answerable rather than implied: a rate of -0.3 %/h means
+  // something different beside an error of 0.02 than beside one of 0.4, and
+  // it is the number the Steady/Discharging decision is actually made on.
+  // Shrinks as history accumulates, which is the whole design - see
+  // kSlopeSignificanceSigmas.
+  float percent_per_hour_stderr = 0.0f;
   // How many slots carried a battery reading. A projection from four samples
   // and one from four hundred are not the same claim.
   uint16_t samples_used = 0;
@@ -77,10 +84,25 @@ struct RuntimeEstimate {
 // battery_percent() already carries the discharge curve; fitting downstream of
 // it makes the straight line a reasonable model.
 //
-// `samples` is oldest-first, and only the newest kEstimateWindowSlots of them
-// are fitted - see that constant for why a longer window cannot answer this
-// question. Slots with no battery reading are skipped rather than
-// interpolated, so a gap costs precision and never invents a measurement.
+// `samples` is oldest-first. The window fitted is this discharge and only
+// this discharge: the fit walks back from the newest reading for as long as
+// the cell was only ever losing charge, and stops where a reading sits more
+// than kDirectionChangeMarginPercent below a later one, which is a charger.
+// So the window grows for as long as the board keeps running and resets when
+// it is charged - the estimate gets more precise the longer it is left alone,
+// and never averages a charge together with a discharge.
+//
+// This replaced a fixed two-hour window. That window existed because one fit
+// was answering two questions at once - which direction, and how fast - and
+// direction needs a short window while rate needs a long one. Direction is now
+// answered far better and far sooner by the voltage signals in
+// app_snapshot.hpp (eleven minutes, not two hours), which frees this to do the
+// thing it is actually good at.
+//
+// Slots with no battery reading are skipped rather than interpolated, so a gap
+// costs precision and never invents a measurement - and it extends the window
+// rather than ending it, because a boot where the divider was unreadable is a
+// hole in the evidence, not evidence of a charger.
 //
 // Slots recorded before a reboot are the caller's problem, not this
 // function's: the ring stores a fixed interval per slot and knows nothing
@@ -94,25 +116,31 @@ RuntimeEstimate estimate_runtime(const HistorySample* samples,
                                  std::size_t count,
                                  uint32_t interval_minutes);
 
-// How many of the newest slots the fit uses, however many are handed in.
+// How far a reading may sit below a later one before the fit treats it as a
+// different discharge and stops walking back.
 //
-// Two hours. A least-squares line over the whole 48-hour ring answers "what
-// has this cell been doing for two days", which is not the question anyone
-// asks it: plug a charger into a board that has been discharging since
-// yesterday and the two-day slope stays negative for hours, so the trend
-// keeps reporting Discharging while the cell visibly fills - and the same in
-// reverse for hours after the cable comes out. Short enough to follow a
-// change of state within a few slots of it happening, long enough (24 slots
-// against a 12-slot minimum) that the fit still has an hour of real movement
-// in it rather than ADC noise.
-inline constexpr std::size_t kEstimateWindowSlots = 24;
+// Three points. Percent carries one-point resolution and the ADC noise under
+// it is worth a point or two, so a cell sitting still produces a sawtooth
+// that must not read as a charger; a real charge moves far more than this
+// within a slot or two.
+inline constexpr int kDirectionChangeMarginPercent = 3;
 
-// Below this the fit is dominated by ADC noise rather than by discharge, and
-// the honest answer is Steady. A cell that genuinely empties in a day moves at
-// about 4%/h, so this rejects roughly the bottom tenth of real rates - which
-// is the right trade, since the alternative is projecting "9 days remaining"
-// from noise.
-inline constexpr float kTrendThresholdPercentPerHour = 0.4f;
+// How many standard errors a slope must clear to be called a direction rather
+// than noise.
+//
+// This replaced a fixed 0.4 %/h threshold, and the reason is worth keeping:
+// that constant was sized when the board drained at 2.9 %/h, and power work
+// later took it to 0.30 %/h - underneath the threshold's own floor - so the
+// estimator reported Steady permanently and the panel showed no runtime at
+// all. Making the hardware better had made the instrument blind, which a
+// constant sized against one era's noise will always eventually do.
+//
+// Three sigma against a least-squares slope is the ordinary bar, and it moves
+// on its own: the error shrinks with the square root of the sample count and
+// with the spread of the time axis, so an hour of history resolves only a
+// fast drain while two days resolves a slow one. That is what "gets more
+// accurate the longer it runs" means mechanically.
+inline constexpr float kSlopeSignificanceSigmas = 3.0f;
 
 // One hour of slots at the recording interval. Fewer than this and a fit is
 // reading the noise: a single ADC excursion across four samples produces a

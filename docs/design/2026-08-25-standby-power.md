@@ -55,19 +55,48 @@ ratio is the solid part; the right summary is that standby went from hours to
 days.** Measuring the total honestly would take a week of running and would
 not change any decision.
 
-### The estimator is the instrument, with one caveat
+### The estimator is the instrument
 
-`estimate_runtime()` fits the newest two hours and is handed only the slots
-recorded since boot, so the `history: ... %/h` log line an hour after
-unplugging is a direct readout. It replaced guessing, and it is what any
-future power change should be judged by.
+`estimate_runtime()` is what any future power change should be judged by, and
+the `history: ... %/h` log line is the direct readout. It replaced guessing.
 
-The caveat is real and was seen: four consecutive readings went -1.62, -1.78,
--1.91, -2.01 %/h over twenty minutes at constant load. That is not noise. The
-cell was crossing from the 3790-3820 mV segment (3 mV per percent) into
-3700-3790 (9 mV per percent), and a piecewise-linear curve makes the fitted
-%/h move as its breakpoints pass through the window. **A single window reading
-is not the number.** Percent measured end to end over hours is.
+It was rebuilt on 2026-08-26 after this very work broke it, twice over, in
+ways worth remembering because both were self-inflicted:
+
+- **A fixed 0.4 %/h threshold went blind.** That constant was sized when the
+  board drained at 2.9 %/h. Taking the board to 0.30 %/h put the real rate
+  *underneath the threshold*, so the fit reported `Steady` permanently and the
+  panel showed no runtime at all. Making the hardware better made the
+  instrument useless - which any constant sized against one era's noise will
+  eventually do. It now compares the slope against **its own standard error**
+  (three sigma), which shrinks with the sample count and the span, so the
+  estimator gets more sensitive exactly as more history accumulates.
+- **A fixed two-hour window could not get more precise.** That window existed
+  because one fit was answering two questions - which direction, and how fast -
+  and direction needs a short window while rate needs a long one. Direction is
+  now answered far better and eleven minutes sooner by the voltage signals
+  (`voltage_is_rising`/`voltage_is_falling`), so the fit was freed to use the
+  whole of the current run: it walks back from the newest reading until a
+  charge, and fits everything after that.
+
+Measured on hardware right after: `-0.63 +/- 0.01 %/h`, `fitted=513` of 576
+stored slots - the boundary landing about five hours back, where the last
+charge was. The uncertainty is now stated rather than implied, and at
++/-0.01 %/h a 0.30 %/h drain is thirty sigma from flat, so the blindness above
+cannot recur at this board's power level.
+
+The old caveat is worth keeping as history, because it is what a short window
+does: four consecutive readings once went -1.62, -1.78, -1.91, -2.01 %/h over
+twenty minutes at constant load. Not noise - the cell was crossing from the
+3790-3820 mV segment of the discharge curve (3 mV per percent) into 3700-3790
+(9 mV per percent), and a piecewise-linear curve makes a short fit wander as
+its breakpoints pass through. A run-length window averages that out instead.
+
+The deliberate limit, recorded as a host test rather than left to be
+rediscovered: a *load* change is not a direction change, so a flat stretch
+followed by a real drain is fitted as one run and reported as the average over
+both. It converges as the new load keeps running. Detecting that too would need
+a change-point detector, which a board whose load is a clock does not need.
 
 ---
 

@@ -2,6 +2,7 @@
 
 #include "app_snapshot.hpp"
 
+#include <cmath>
 #include <cstddef>
 
 namespace app_core {
@@ -14,6 +15,57 @@ RuntimeEstimate estimate_runtime(const HistorySample* samples,
     return estimate;
   }
 
+  // Where the run the newest reading belongs to began.
+  //
+  // Fitting a line across a charge and a discharge together fits two
+  // different things at once, so the window has to stop at the boundary. Found
+  // by walking back from the newest reading for as long as the readings stay
+  // consistent with one direction: through a discharge, older readings are
+  // higher; through a charge, older readings are lower.
+  //
+  // Both directions are tried and the longer run wins, rather than guessing
+  // the direction first from the last few samples. Guessing needs a
+  // tie-break for a flat cell and gets it wrong exactly when the readings are
+  // quietest; running the same loop twice costs nothing and has no such case.
+  // Both matter: a board that booted onto a charger has nothing but the rising
+  // run, and it is the only thing that can tell the panel so for the first
+  // eleven minutes (see ui::battery_is_charging).
+  //
+  // The margin is what keeps quantisation from ending a run early: percent
+  // has one-point resolution and the ADC noise under it is worth a point or
+  // two, so a cell sitting still produces a sawtooth that is not a direction
+  // change.
+  //
+  // Slots with no reading extend the run rather than ending it. A boot where
+  // the divider was unreadable is a hole in the evidence, not evidence of a
+  // charger.
+  const auto run_start = [&](bool rising) {
+    std::size_t begin = count;
+    int extreme = -1;
+    for (std::size_t i = count; i > 0; --i) {
+      const HistorySample& sample = samples[i - 1];
+      if (sample.has_battery()) {
+        const int percent =
+            battery_percent(static_cast<int>(sample.battery_millivolts));
+        if (extreme >= 0) {
+          const bool broke = rising
+                                 ? percent > extreme + kDirectionChangeMarginPercent
+                                 : percent < extreme - kDirectionChangeMarginPercent;
+          if (broke) break;
+        }
+        if (extreme < 0 || (rising ? percent < extreme : percent > extreme)) {
+          extreme = percent;
+        }
+      }
+      begin = i - 1;
+    }
+    return begin;
+  };
+  const std::size_t falling_begin = run_start(false);
+  const std::size_t rising_begin = run_start(true);
+  const std::size_t begin =
+      falling_begin < rising_begin ? falling_begin : rising_begin;
+
   // Accumulated in double rather than float: over a week of five-minute slots
   // the sum of t squared reaches the low millions, where float has already
   // lost the resolution that separates one slot from the next.
@@ -21,14 +73,11 @@ RuntimeEstimate estimate_runtime(const HistorySample* samples,
   double sum_p = 0.0;
   double sum_tp = 0.0;
   double sum_tt = 0.0;
+  double sum_pp = 0.0;
   uint16_t used = 0;
   double last_percent = 0.0;
 
   const double hours_per_slot = static_cast<double>(interval_minutes) / 60.0;
-  // Only the newest kEstimateWindowSlots are fitted, however many arrived -
-  // see that constant for why the whole ring answers a different question.
-  const std::size_t begin =
-      count > kEstimateWindowSlots ? count - kEstimateWindowSlots : 0;
   for (std::size_t index = begin; index < count; ++index) {
     if (!samples[index].has_battery()) continue;
     // Time measured from the start of the window; only the slope is used, so
@@ -40,6 +89,7 @@ RuntimeEstimate estimate_runtime(const HistorySample* samples,
     sum_p += p;
     sum_tp += t * p;
     sum_tt += t * t;
+    sum_pp += p * p;
     last_percent = p;
     ++used;
   }
@@ -48,23 +98,56 @@ RuntimeEstimate estimate_runtime(const HistorySample* samples,
   if (used < kMinimumSamplesForEstimate) return estimate;
 
   const double n = static_cast<double>(used);
-  const double denominator = n * sum_tt - sum_t * sum_t;
+  // Centred sums. Written this way rather than as the raw-moment formulas
+  // because the residual sum of squares below needs all three, and computing
+  // them once keeps the slope and its uncertainty provably consistent.
+  const double s_tt = sum_tt - sum_t * sum_t / n;
+  const double s_tp = sum_tp - sum_t * sum_p / n;
+  const double s_pp = sum_pp - sum_p * sum_p / n;
   // Zero when every retained sample landed in the same slot, which cannot
   // happen through the recorder but can through a hand-built array. Guarding
   // it here rather than trusting the caller keeps this function total.
-  if (denominator == 0.0) return estimate;
+  if (s_tt <= 0.0) return estimate;
 
-  const double slope = (n * sum_tp - sum_t * sum_p) / denominator;
+  const double slope = s_tp / s_tt;
   estimate.percent_per_hour = static_cast<float>(slope);
 
-  if (slope > kTrendThresholdPercentPerHour) {
+  // How well this slope is actually pinned down, which is the whole reason a
+  // fixed threshold was the wrong instrument.
+  //
+  // kTrendThresholdPercentPerHour used to be 0.4 %/h, chosen when the board
+  // drained at 2.9 %/h. Power work then took it to 0.30 %/h - underneath the
+  // threshold's own floor - so the estimator reported Steady forever and the
+  // panel showed no runtime at all. A constant sized against one era's noise
+  // cannot follow the hardware.
+  //
+  // The standard error of a least-squares slope does follow it: it shrinks
+  // with the square root of the sample count and with the spread of the time
+  // axis, so an hour of history resolves only a fast drain while two days
+  // resolves a slow one. Comparing the slope against a multiple of its own
+  // error asks the only question worth asking - "is this distinguishable from
+  // flat, given how much was actually measured" - and gets stricter or looser
+  // on its own as the evidence does.
+  const double residual_sum_squares = s_pp - slope * s_tp;
+  const double stderr_slope =
+      residual_sum_squares > 0.0
+          ? std::sqrt(residual_sum_squares / (n - 2.0) / s_tt)
+          : 0.0;
+  estimate.percent_per_hour_stderr = static_cast<float>(stderr_slope);
+
+  // A perfect fit has no residual and therefore no error, which makes any
+  // non-zero slope significant - correct, and only reachable from synthetic
+  // data, since real readings always carry noise.
+  const double magnitude = slope < 0.0 ? -slope : slope;
+  if (magnitude <= kSlopeSignificanceSigmas * stderr_slope) {
+    estimate.trend = PowerTrend::Steady;
+    return estimate;
+  }
+
+  if (slope > 0.0) {
     // Rising charge with no charge-detect line to confirm it. Nothing else
     // makes a cell gain voltage, so this is as certain as this hardware gets.
     estimate.trend = PowerTrend::Charging;
-    return estimate;
-  }
-  if (slope > -kTrendThresholdPercentPerHour) {
-    estimate.trend = PowerTrend::Steady;
     return estimate;
   }
 
