@@ -262,24 +262,12 @@ void render_home_tile(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
   switch (kind) {
     case HomeTileKind::Battery:
       title = text(Text::TileBattery);
-      // battery_percent_trustworthy(), the same gate the tray icon and the
-      // settings row use: this tile is otherwise the third place on the
-      // same screen a charging cell's percentage would have read as a
-      // confident, wrong number while those two already said "Charging".
-      //
-      // choose_home_tile()/home_battery_notable() are unchanged in this
-      // pass on purpose - only what this tile prints once chosen. Whether
-      // an untrustworthy percentage should still be able to make the tile
-      // flap in as "notable" while sagging past kHomeLowBatteryPercent
-      // right after being unplugged is a real question, but there is no
-      // evidence yet that it actually happens, and changing tile-priority
-      // behaviour on a hunch risks trading this defect for a different one.
-      if (battery_percent_trustworthy(snapshot.battery,
-                                      snapshot.battery_runtime.trend)) {
-        std::snprintf(value, sizeof(value), "%u%%", snapshot.battery.percent);
-      } else {
-        std::snprintf(value, sizeof(value), "%s", text(Text::StatusCharging));
-      }
+      // A percentage whether or not a charger is attached: the charger's own
+      // contribution is subtracted upstream now, so this tile no longer has
+      // to choose between a wrong number and no number (see ui_data.hpp,
+      // where battery_percent_trustworthy() used to be). The tile is only
+      // ever chosen when the reading is valid - see choose_home_tile().
+      std::snprintf(value, sizeof(value), "%u%%", snapshot.battery.percent);
       std::snprintf(detail, sizeof(detail), "%s",
                     snapshot.battery.overvoltage_warning
                         ? text(Text::StatusOvervoltage)
@@ -434,11 +422,9 @@ void render_tray(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
   const WifiIconParts wifi =
       wifi_icon(parent, cells.network, snapshot.setup.connected);
   // valid and charging passed separately, not collapsed into one bool: an
-  // invalid reading draws an empty body (nothing measured); charging covers
-  // the level bar with a solid field with the bolt knocked out of it (a
-  // real reading exists, it is just not necessarily a trustworthy level,
-  // which is also why the level is not worth showing alongside the bolt) -
-  // see battery_icon()'s own comment.
+  // invalid reading draws an empty body (nothing measured); charging draws
+  // the level bar with the bolt XOR'd over it, so a charging cell still
+  // shows how full it is - see battery_icon()'s own comment.
   const BatteryIconParts battery = battery_icon(
       parent, cells.battery, snapshot.battery.percent, snapshot.battery.valid,
       battery_is_charging(snapshot.battery, snapshot.battery_runtime.trend));

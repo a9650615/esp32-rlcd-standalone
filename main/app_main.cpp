@@ -742,6 +742,15 @@ bool g_previous_tick_valid = false;
 bool g_cable_step_charging = false;
 int g_cable_hold_ticks = 0;
 
+// The same step, kept for a second purpose: it is also the charger's own
+// contribution to the terminal voltage, which is what has to come back out
+// before the percentage means the cell rather than the charger. See
+// app_core::charge_offset_from_cable_step() for why the cable event is the
+// one place this is measurable on a board with no fuel gauge, and what this
+// single scalar does not model. Zero until a cable event happens, which
+// leaves the percentage uncorrected rather than corrected by a guess.
+int g_charge_offset_mv = 0;
+
 // Samples the battery divider roughly every 30 s and publishes it through
 // wifi_provision's existing snapshot owner; never touches lv_* directly.
 [[noreturn]] void battery_monitor_task(void*) {
@@ -776,9 +785,19 @@ int g_cable_hold_ticks = 0;
             cable_event = true;
             g_cable_step_charging = step > 0;
             g_cable_hold_ticks = kCableHoldTicks;
-            ESP_LOGI(kTag, "battery cable event: %+d mV in %u s -> %s",
+            // Both edges measure the same offset - plugging in adds it,
+            // unplugging removes it - so both update it rather than only
+            // the plug-in edge. An unplug is in fact the better of the two
+            // measurements: it is taken against the cell's settled
+            // open-circuit voltage rather than against a reading the
+            // charger was already holding up.
+            g_charge_offset_mv = app_core::charge_offset_from_cable_step(step);
+            ESP_LOGI(kTag,
+                     "battery cable event: %+d mV in %u s -> %s (charge "
+                     "offset now %d mV)",
                      step, static_cast<unsigned>(kBatterySlopePeriodMs / 1000),
-                     g_cable_step_charging ? "plugged in" : "unplugged");
+                     g_cable_step_charging ? "plugged in" : "unplugged",
+                     g_charge_offset_mv);
           }
         }
         g_previous_tick_mv = slope_mv;
@@ -918,7 +937,24 @@ int g_cable_hold_ticks = 0;
         const int smoothed_mv = app_core::smoothed_battery_millivolts(
             g_battery_recent_mv, g_battery_recent_count);
         battery.millivolts = smoothed_mv;
-        battery.percent = app_core::battery_percent(smoothed_mv);
+        // millivolts stays the measured figure - that is the number a
+        // multimeter is compared against for
+        // CONFIG_BATTERY_CALIBRATION_PERMILLE, and correcting it would
+        // corrupt the one reading that calibration depends on. Only the
+        // percentage gets the charger's contribution taken back out, because
+        // the percentage is a claim about the cell, not about the divider.
+        // The two therefore stop agreeing via the discharge curve while a
+        // charger is attached; that is the point, not a defect.
+        const int open_circuit_mv = app_core::battery_open_circuit_millivolts(
+            smoothed_mv, g_charge_offset_mv, battery.charging);
+        battery.percent = app_core::battery_percent(open_circuit_mv);
+        if (open_circuit_mv != smoothed_mv) {
+          ESP_LOGI(kTag,
+                   "battery percent from %d mV (%d measured - %d mV charger "
+                   "offset) = %u%%",
+                   open_circuit_mv, smoothed_mv, g_charge_offset_mv,
+                   battery.percent);
+        }
       }
 
       wifi_provision::set_battery(battery);

@@ -42,6 +42,51 @@ HOST_TEST(battery_percent_is_monotonic_across_the_full_range) {
   }
 }
 
+// The charger offset, which is what lets a percentage be shown during a
+// charge at all instead of being withheld for hours.
+HOST_TEST(charge_offset_takes_either_cable_edge_and_clamps_a_glitch) {
+  // The measured step on this board, both ways round: 4202 -> 4140 mV
+  // unplugging a full cell. Sign carries which edge it was; the offset is
+  // the same 62 mV either way.
+  EXPECT_EQ(app_core::charge_offset_from_cable_step(62), 62);
+  EXPECT_EQ(app_core::charge_offset_from_cable_step(-62), 62);
+  // Not a cable: an ADC glitch or a brownout must not be able to subtract
+  // an arbitrary amount from the displayed level.
+  EXPECT_EQ(app_core::charge_offset_from_cable_step(900),
+            app_core::kChargeOffsetMaxMillivolts);
+  EXPECT_EQ(app_core::charge_offset_from_cable_step(-900),
+            app_core::kChargeOffsetMaxMillivolts);
+  EXPECT_EQ(app_core::charge_offset_from_cable_step(0), 0);
+}
+
+HOST_TEST(open_circuit_voltage_is_corrected_only_while_charging) {
+  // Not charging: the reading is the cell's own voltage already, and
+  // subtracting anything from it would invent a discharge nobody measured.
+  EXPECT_EQ(app_core::battery_open_circuit_millivolts(3850, 62, false), 3850);
+  // Charging: the charger's contribution comes back out.
+  EXPECT_EQ(app_core::battery_open_circuit_millivolts(3850, 62, true), 3788);
+  // Booted already sitting on a charger, so no cable event was ever seen:
+  // nothing measured, nothing subtracted. The percentage reads a few points
+  // high, which is the honest outcome, not a guessed constant.
+  EXPECT_EQ(app_core::battery_open_circuit_millivolts(3850, 0, true), 3850);
+  // Never negative, whatever the offset and reading are.
+  EXPECT_EQ(app_core::battery_open_circuit_millivolts(40, 120, true), 0);
+}
+
+// The point of the whole correction, stated in the units the panel shows:
+// through the knee of the discharge curve, a charger's offset is worth
+// double-digit percentage points, which is why the uncorrected number was
+// judged not worth showing at all.
+HOST_TEST(the_charge_offset_is_worth_double_digit_percentage_points) {
+  const int measured_mv = 3850;   // on the charger
+  const int offset_mv = 62;       // this board's measured cable step
+  const uint8_t uncorrected = app_core::battery_percent(measured_mv);
+  const uint8_t corrected = app_core::battery_percent(
+      app_core::battery_open_circuit_millivolts(measured_mv, offset_mv, true));
+  EXPECT_TRUE(corrected < uncorrected);
+  EXPECT_TRUE(uncorrected - corrected >= 10);
+}
+
 HOST_TEST(battery_reading_valid_gates_implausible_readings) {
   EXPECT_TRUE(!app_core::battery_reading_valid(0));
   EXPECT_TRUE(!app_core::battery_reading_valid(2499));

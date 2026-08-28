@@ -471,6 +471,15 @@ namespace {
 alignas(LV_DRAW_BUF_ALIGN) uint8_t
     g_charging_bolt_bitmap[i1_canvas_pixel_offset() + 8 * 16];
 
+// The `filled` value the buffer above currently holds, so a publish that
+// did not move the level does not rewrite and invalidate the canvas. On a
+// reflective panel an invalidate is a real repaint, and the battery
+// publishes every 30 s whether or not the percentage moved - which is the
+// exact repaint-per-tick pattern f98824f went and removed. -1 means
+// "nothing built yet", which is also what battery_icon() resets it to so a
+// rebuilt page never inherits the previous page's cached answer.
+int g_charging_overlay_filled = -1;
+
 // Proves "generous headroom" above rather than asserting it in prose: the
 // tray's battery cell (kTrayBatteryIconWidth x kTrayBatteryIconHeight,
 // ui_data.hpp)
@@ -492,20 +501,15 @@ static_assert(
 }  // namespace
 
 // Outline plus a terminal nub, with an inner bar whose width tracks the
-// charge when not charging. While charging, the level bar is covered by an
-// opaque overlay - a solid field with the bolt knocked out of it - rather
-// than shown alongside the bolt: see build_battery_charging_composite()'s
-// own comment for why every design that tried to show both a boundary-
-// dependent level and the bolt in the same overlay was rejected on real
-// hardware. An invalid reading leaves the body empty rather than drawing
-// 0%, which would be a number nobody measured.
+// charge. While charging that bar is drawn by the overlay canvas instead of
+// by the `fill` object - same rectangle, same width, with the bolt XOR'd
+// over it - because compositing the two against each other requires them to
+// be one bitmap. An invalid reading leaves the body empty rather than
+// drawing 0%, which would be a number nobody measured.
 //
-// The charging overlay is one canvas, opaque over the whole fill rect, its
-// buffer built once, here, rather than recomputed on every level update:
-// build_battery_charging_composite()'s output no longer depends on charge
-// level at all, so unlike an earlier version of this function, there is
-// nothing left for a level update to change about it - only whether it is
-// shown, which set_battery_icon_level() still toggles.
+// The charging overlay is one canvas, opaque over the whole fill rect. Its
+// content depends on the level, so set_battery_icon_level() rebuilds it -
+// but only when the level actually moved, see g_charging_overlay_filled.
 //
 // Both the fill bar and the overlay are positioned from
 // battery_fill_rect(bounds) - the same call, not two copies of the same
@@ -532,23 +536,21 @@ BatteryIconParts battery_icon(lv_obj_t* parent, Rect bounds, uint8_t percent,
       line_segment(parent, fill_rect.x, fill_rect.y, 1, fill_rect.height, false);
   parts.body_width = body_width;
 
-  // Written starting i1_canvas_pixel_offset() into the buffer, never at
-  // byte 0, and at i1_canvas_stride()'s own row pitch, never a bare
-  // (width+7)/8 - see both functions' own comments for why each of those
-  // has already cost a debugging round on real hardware.
-  build_battery_charging_composite(
-      g_charging_bolt_bitmap + i1_canvas_pixel_offset(),
-      sizeof(g_charging_bolt_bitmap) - i1_canvas_pixel_offset(),
-      fill_rect.width, fill_rect.height, i1_canvas_stride(fill_rect.width));
+  parts.overlay_width = fill_rect.width;
+  parts.overlay_height = fill_rect.height;
   // Opaque over its whole area - index 0 (background) is solid white, not
   // transparent, because this canvas is a self-contained replacement for
   // everything build_battery_charging_composite() already decided, not a
-  // partial layer relying on anything showing through it.
+  // partial layer relying on anything showing through it. Its bytes are
+  // filled in by set_battery_icon_level() below, which is the one place
+  // that knows the level; binding an as-yet-unwritten buffer here is safe
+  // because that call happens before this function returns.
   parts.charging_bolt =
       bind_i1_canvas(parent, fill_rect.x, fill_rect.y, fill_rect.width,
                     fill_rect.height, g_charging_bolt_bitmap,
                     lv_color_white(), LV_OPA_COVER, lv_color_black());
 
+  g_charging_overlay_filled = -1;
   set_battery_icon_level(parts, percent, valid, charging);
   return parts;
 }
@@ -559,20 +561,43 @@ void set_battery_icon_level(const BatteryIconParts& parts, uint8_t percent,
   if (!valid) {
     set_style_bg_opa_if_changed(parts.fill, LV_OPA_TRANSP);
     set_style_opa_if_changed(parts.charging_bolt, LV_OPA_TRANSP);
+    // So the next valid reading rebuilds rather than trusting a cached
+    // answer that was never drawn.
+    g_charging_overlay_filled = -1;
     return;
   }
-  set_style_bg_opa_if_changed(parts.fill, LV_OPA_COVER);
   const int usable = parts.body_width - 4;
   const int filled = usable * (percent > 100 ? 100 : percent) / 100;
   const int fill_width = filled < 1 ? 1 : filled;
-  set_width_if_changed(parts.fill, fill_width);
 
-  // The overlay's own content never changes (built once, in battery_icon())
-  // - charging only ever toggles whether it is shown, the same one-line
-  // pattern set_tray_indicator_icon_visible() already uses for a static
-  // bitmap that also never changes after construction.
-  set_style_opa_if_changed(parts.charging_bolt,
-                           charging ? LV_OPA_COVER : LV_OPA_TRANSP);
+  if (!charging) {
+    set_style_opa_if_changed(parts.charging_bolt, LV_OPA_TRANSP);
+    set_style_bg_opa_if_changed(parts.fill, LV_OPA_COVER);
+    set_width_if_changed(parts.fill, fill_width);
+    return;
+  }
+
+  // Charging: the overlay draws the level itself, so the `fill` object
+  // underneath it is hidden rather than left to show through - two objects
+  // drawing the same bar would be one repaint too many, and the overlay is
+  // opaque over it anyway.
+  set_style_bg_opa_if_changed(parts.fill, LV_OPA_TRANSP);
+  if (g_charging_overlay_filled != fill_width) {
+    // Written starting i1_canvas_pixel_offset() into the buffer, never at
+    // byte 0, and at i1_canvas_stride()'s own row pitch, never a bare
+    // (width+7)/8 - see both functions' own comments for why each of those
+    // has already cost a debugging round on real hardware.
+    build_battery_charging_composite(
+        g_charging_bolt_bitmap + i1_canvas_pixel_offset(),
+        sizeof(g_charging_bolt_bitmap) - i1_canvas_pixel_offset(),
+        parts.overlay_width, parts.overlay_height,
+        i1_canvas_stride(parts.overlay_width), fill_width);
+    g_charging_overlay_filled = fill_width;
+    // The canvas object is unchanged; only the bytes behind it moved, and
+    // LVGL has no way to notice that on its own.
+    if (parts.charging_bolt != nullptr) lv_obj_invalidate(parts.charging_bolt);
+  }
+  set_style_opa_if_changed(parts.charging_bolt, LV_OPA_COVER);
 }
 
 // tray_indicator_icon() repacks a module's tight I1 bytes into LVGL's

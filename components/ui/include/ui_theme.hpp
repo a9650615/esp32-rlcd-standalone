@@ -165,19 +165,21 @@ struct WifiIconParts {
 };
 
 struct BatteryIconParts {
-  // The level bar. Shown only while not charging - see charging_bolt below
-  // for what covers it while charging, and build_battery_charging_composite()
-  // (ui_theme.hpp) for why showing both at once was tried twice and
-  // rejected both times.
+  // The level bar, as a plain LVGL object. Shown only while not charging -
+  // while charging the overlay below draws the level itself, because the
+  // bolt and the bar have to be composited into one bitmap to be XOR'd
+  // against each other at all.
   lv_obj_t* fill = nullptr;
   int body_width = 0;
   // The charging overlay: one canvas, opaque, positioned exactly over
-  // `fill`'s own footprint, its content built once at construction
-  // (battery_icon(), ui_theme.cpp) rather than recomputed per level update
-  // - see build_battery_charging_composite()'s own comment for exactly
-  // what it draws (a solid field with the bolt knocked out of it) and why
-  // it no longer depends on charge level at all.
+  // `fill`'s own footprint. Its content depends on the charge level (see
+  // build_battery_charging_composite()), so unlike the previous
+  // level-independent version it is rebuilt when the level moves - which is
+  // what overlay_width/overlay_height below exist to make possible from
+  // set_battery_icon_level(), which has parts but not bounds.
   lv_obj_t* charging_bolt = nullptr;
+  int overlay_width = 0;
+  int overlay_height = 0;
 };
 
 // The nub the battery outline reserves at its right end (see battery_icon()),
@@ -276,36 +278,44 @@ static_assert(charging_bolt_rows_match_declared_width(),
 // `(width+7)/8` bytes/row (the same tightly-packed I1 layout
 // tray_indicator_icon()'s own comment documents).
 //
-// A pixel is black exactly when it is *not* part of the bolt shape: solid
-// black field, bolt knocked out of it to white. The level bar is not shown
-// while charging - no `filled`/charge-boundary concept is involved at all,
-// which is why this function does not take one.
+// A pixel is ink when exactly one of two things holds: its column is within
+// `filled` (the level bar), or it is part of the bolt shape. That XOR is
+// what keeps the bolt visible against both sides of the charge boundary -
+// black on the empty part of the cell, knocked out to white on the filled
+// part - while the level bar itself stays readable underneath it.
 //
-// Two other designs were tried on the panel first, both with a glyph
-// already verified as one connected shape (see kChargingBoltRows's own
-// provenance comment - this was not the earlier rounds' problem, both
-// alternatives below failed with a known-good glyph feeding them):
+// History, because this design was rejected twice before and is now shipping
+// anyway, which is exactly the kind of reversal that needs its reason
+// written down rather than rediscovered. Two boundary-dependent designs were
+// tried on the panel, both with a glyph already verified as one connected
+// shape (see kChargingBoltRows's provenance comment - the glyph was never
+// the problem):
 //   - Clipped (AND-NOT): ink iff a column had charged AND the pixel was not
 //     part of the bolt, nothing drawn past the charge boundary. At a
 //     realistic charge level the boundary cuts through the bolt's kink, so
 //     only one of its two strokes survives and the remainder reads as a
-//     plain wedge, not a bolt.
-//   - Inverted (XOR): ink iff exactly one of "column charged" and "part of
-//     the bolt" held, so the bolt's full silhouette stayed visible on both
-//     sides of the boundary, one half white-on-black and the other
-//     black-on-white. Still did not read as one shape: the eye segments
-//     the two halves by brightness before it can fuse them, regardless of
-//     which side of the boundary either half falls on.
-// Both failures share a cause a boundary-dependent design cannot avoid: a
-// bolt this wide, split by any boundary partway across it, reads as two
-// marks rather than one. Solid fill with the bolt knocked out avoids the
-// split entirely - there is no boundary within the overlay for the eye to
-// segment against. Losing the level bar while charging costs nothing real:
-// terminal voltage under charge is the charger's output, not the cell's
-// state, so there is no trustworthy level to show at that moment anyway -
-// which is the reason this icon exists at all. Do not re-litigate either
-// rejected alternative without a hardware screenshot of that *specific*
-// alternative against this glyph, the way both rejections above are.
+//     plain wedge, not a bolt. Still rejected - this one genuinely destroys
+//     the shape.
+//   - Inverted (XOR): this function. It was rejected on the grounds that
+//     the eye segments the bolt's two halves by brightness before it can
+//     fuse them into one shape. That criticism is fair and still true.
+// What changed is not the criticism but what it was being weighed against.
+// The solid-field version that replaced them - black field, bolt knocked
+// out, no level at all - was acceptable only while "there is no trustworthy
+// level to show anyway" held. It no longer does: the charger's contribution
+// is measured at the cable step and subtracted before the percentage is
+// published (app_core::battery_open_circuit_millivolts()), so a real level
+// exists during a charge, and the operator asked to see it. A bolt that
+// reads as two marks is a cosmetic cost; a battery icon that shows no level
+// for the entire hours-long charge is a missing reading, and the second is
+// worse. Do not restore the solid field without also restoring a place the
+// level can be read while charging.
+//
+// `filled` is the number of ink columns the level bar occupies, counted from
+// the left, in this rect's own coordinates - the caller's
+// `body_width - 4` scale (see set_battery_icon_level()), not a percentage.
+// Passing `width` reproduces the previous solid-field-with-bolt-knocked-out
+// overlay exactly, which is what a full cell on a charger now draws.
 //
 // Pure: reads only its arguments, writes only to `out` (silently does
 // nothing if `out` is too small for width x height - a canvas one pixel
@@ -327,12 +337,14 @@ static_assert(charging_bolt_rows_match_declared_width(),
 // pass whatever stride they want to prove this honours, tight or padded.
 inline void build_battery_charging_composite(uint8_t* out, std::size_t out_capacity,
                                               int width, int height,
-                                              int stride) {
+                                              int stride, int filled) {
   if (out == nullptr || stride <= 0 || stride * 8 < width || height <= 0 ||
       static_cast<std::size_t>(stride) * static_cast<std::size_t>(height) >
           out_capacity) {
     return;
   }
+  if (filled < 0) filled = 0;
+  if (filled > width) filled = width;
   std::fill(out, out + stride * height, uint8_t{0});
   const int offset_x = (width - kChargingBoltWidth) / 2;
   const int offset_y = (height - kChargingBoltHeight) / 2;
@@ -345,7 +357,8 @@ inline void build_battery_charging_composite(uint8_t* out, std::size_t out_capac
       const int col = x - offset_x;
       const bool bolt =
           row_in_bolt && col >= 0 && col < kChargingBoltWidth && line[col] == 'X';
-      if (!bolt) {
+      const bool charged = x < filled;
+      if (charged != bolt) {
         out[y * stride + x / 8] |= static_cast<uint8_t>(0x80 >> (x % 8));
       }
     }
@@ -499,10 +512,9 @@ lv_obj_t* bind_i1_canvas(lv_obj_t* parent, int x, int y, int width, int height,
                         lv_opa_t background_opa, lv_color_t ink);
 
 // `charging` is a separate flag, not folded into `valid`: an invalid
-// reading draws an empty body (nothing measured), while charging draws a
-// solid body with a bolt reversed out of it (a real reading exists, it is
-// just not a trustworthy level - see ui_data.hpp's
-// battery_percent_trustworthy()). The two must stay tellable apart.
+// reading draws an empty body (nothing measured), while charging draws the
+// level bar with the bolt XOR'd over it (a real reading exists, and there is
+// a charger on it). The two must stay tellable apart.
 BatteryIconParts battery_icon(lv_obj_t* parent, Rect bounds, uint8_t percent,
                               bool valid, bool charging);
 void set_battery_icon_level(const BatteryIconParts& parts, uint8_t percent,

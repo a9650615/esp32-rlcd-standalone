@@ -1283,16 +1283,27 @@ constexpr bool battery_is_charging(const app_core::BatteryData& battery,
   return battery.charging || trend == app_core::PowerTrend::Charging;
 }
 
-// True only when the percentage is worth showing as a number: a valid
-// reading that is not, by either signal above, being taken while the cell
-// is on a charger. While charging, the terminal voltage is the charger's
-// output, not the cell's state of charge - the percentage would read high
-// regardless of how full the cell actually is, which is confidently wrong
-// rather than merely imprecise.
-constexpr bool battery_percent_trustworthy(const app_core::BatteryData& battery,
-                                           app_core::PowerTrend trend) {
-  return battery.valid && !battery_is_charging(battery, trend);
-}
+// There is deliberately no battery_percent_trustworthy() here any more, and
+// its removal is the fix for a real complaint: while charging, the panel
+// showed no level at all - not in the tray, not on the Home tile, not on the
+// settings row. All three asked this one gate.
+//
+// The gate was not wrong about the physics. While a charger is attached the
+// terminal voltage is the charger's output plus an IR offset, and a
+// percentage read straight off it does run high. What made the gate the
+// wrong answer is that it became total: until the 2026-08-23 detection fix,
+// charging was only recognised above 4150 mV, so the level stayed visible
+// for nearly the whole charge and nobody noticed the gate existed. Once
+// charging was recognised at every state of charge, "not trustworthy"
+// covered the entire charge, and hiding a number for hours is worse than
+// showing a corrected one.
+//
+// So the offset is now measured and subtracted at the source instead - see
+// app_core::charge_offset_from_cable_step() and
+// battery_open_circuit_millivolts(), which the sampler applies before
+// BatteryData::percent is ever published. Every renderer downstream can
+// therefore treat `percent` as a level again, and the only remaining
+// question at a call site is BatteryData::valid.
 
 // Priority, highest first: a battery problem (over-voltage or low charge)
 // outranks a weather alert, which outranks a plain informative reading -

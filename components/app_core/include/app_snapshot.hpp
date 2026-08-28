@@ -265,6 +265,59 @@ bool battery_reading_valid(int millivolts);
 // mid-curve). Clamped to 0..100 at both ends.
 uint8_t battery_percent(int millivolts);
 
+// The charger's own contribution to the terminal voltage, measured rather
+// than assumed.
+//
+// While a charger is attached, what the divider sees is the cell's
+// open-circuit voltage plus the charge current across the cell's internal
+// resistance. That is tens of millivolts, and battery_percent()'s curve
+// turns tens of millivolts into a double-digit percentage error through the
+// 3.79-3.82 V knee, where 3 mV is a whole percent. It is the reason the
+// percentage used to be hidden entirely while charging.
+//
+// It does not have to be hidden, because it does not have to be guessed:
+// the cable step app_main.cpp's detector already looks for *is* this
+// offset. When the plug lands the voltage steps up by it; when the plug
+// leaves it steps back down by it. Either edge measures it on this cell, at
+// this state of charge, with no constant to pick.
+//
+// Clamped, because a step larger than this is not a cable: the biggest real
+// one measured on this board was 62 mV (4202 -> 4140 mV, unplugging a full
+// cell), and an ADC glitch or a brownout must not be able to subtract half
+// the discharge curve from the displayed level.
+//
+// ponytail: one scalar offset, held in RAM by the caller and re-measured at
+// every cable event. It is the offset at the state of charge where the
+// cable last moved, not a model of how the charge current tapers away
+// through the CV phase - so it over-corrects somewhat near full, where that
+// current has already dropped. Persist it (NVS) and make it charge-level
+// dependent only if the panel shows that error actually matters.
+inline constexpr int kChargeOffsetMaxMillivolts = 120;
+constexpr int charge_offset_from_cable_step(int step_millivolts) {
+  const int magnitude =
+      step_millivolts < 0 ? -step_millivolts : step_millivolts;
+  return magnitude > kChargeOffsetMaxMillivolts ? kChargeOffsetMaxMillivolts
+                                                : magnitude;
+}
+
+// The cell's own voltage with the charger's contribution taken back out -
+// what battery_percent() should be given while a charger is attached, so
+// the percentage on the panel is the cell's state of charge rather than the
+// charger's output voltage.
+//
+// A no-op when not charging, and a no-op when `charge_offset_mv` is still 0
+// because no cable event has been seen this boot. That second case is the
+// honest answer for a board that booted already sitting on a charger:
+// nothing was measured, so nothing is subtracted, and the percentage reads
+// a few points high rather than being corrected by a number nobody took.
+constexpr int battery_open_circuit_millivolts(int millivolts,
+                                              int charge_offset_mv,
+                                              bool charging) {
+  if (!charging) return millivolts;
+  const int corrected = millivolts - charge_offset_mv;
+  return corrected < 0 ? 0 : corrected;
+}
+
 // Plain moving average over whatever recent calibrated millivolts readings
 // the caller kept - not a fuel-gauge model, just enough smoothing that the
 // displayed value stops visibly jittering when consecutive ADC samples move

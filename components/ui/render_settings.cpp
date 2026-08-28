@@ -62,17 +62,17 @@ std::string row_value(SettingsItem item, const app_core::BatteryData& battery,
       // divider reads below a plausible cell voltage.
       if (!battery.valid) return "--";
       char buffer[24];
-      // While charging, the measured voltage is the charger's output, not
-      // the cell's state of charge - a percentage computed from it would be
-      // confidently wrong, not merely imprecise (see
-      // battery_percent_trustworthy(), ui_data.hpp). Millivolts still shown:
-      // it is real regardless of charging state, and is exactly the number
-      // a multimeter comparison needs.
-      if (!battery_percent_trustworthy(battery, runtime.trend)) {
-        std::snprintf(buffer, sizeof(buffer), "%d mV  %s", battery.millivolts,
-                      text(Text::StatusCharging));
-        return buffer;
-      }
+      // One format, charging or not. The percentage already has the
+      // charger's contribution taken out of it upstream (see ui_data.hpp
+      // where battery_percent_trustworthy() used to be), so there is nothing
+      // left for this row to withhold.
+      //
+      // No "Charging" word appended here, and that is a measured decision
+      // rather than a stylistic one: "4044 mV 100% Charging" measures 151px
+      // against kSettingsValueWidth's 150, so the row would ellipsise at
+      // exactly the state of charge someone plugs in to reach. The Runtime
+      // row directly above already says Charging, and the tray carries the
+      // bolt, so the word is repeated twice already.
       std::snprintf(buffer, sizeof(buffer), "%d mV  %u%%", battery.millivolts,
                     static_cast<unsigned>(battery.percent));
       return buffer;

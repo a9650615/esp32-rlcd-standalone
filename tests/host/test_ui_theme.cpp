@@ -252,23 +252,19 @@ static_assert(ui::battery_fill_rect(kBatteryTrayCell).height ==
               "test assumes the real tray cell's fill height equals the "
               "generated bolt's own height");
 
-// The whole contract, now: a solid field with the bolt knocked out of it,
-// unconditionally - no charge-boundary concept survives inside this
-// function at all (see its own comment for the two designs that tried to
-// have one, and why real hardware rejected both). `filled` was removed
-// from the signature entirely rather than kept and ignored: there is no
-// plausible future caller that would want to pass a charge level in here
-// again without first re-deciding this whole design, at which point the
-// signature would need to change back anyway, visibly, in the same diff -
-// a compile error is a stronger guard against silently reinstating a
-// level-dependent overlay than a runtime test asserting the parameter is
-// ignored would have been.
-HOST_TEST(battery_charging_composite_knocks_the_bolt_out_of_a_solid_field) {
+// A full cell on a charger: every column filled, so the XOR reduces to
+// "ink everywhere the bolt is not" - which is byte-for-byte the solid-field
+// overlay this function used to draw unconditionally. Kept as the first
+// test precisely because it pins that continuity: the design that shipped
+// before is now one input to the design that ships today, not something
+// thrown away.
+HOST_TEST(battery_charging_composite_knocks_the_bolt_out_of_a_full_cell) {
   const int width = ui::kChargingBoltWidth;
   const int height = ui::kChargingBoltHeight;
   const int stride = (width + 7) / 8;
   uint8_t buf[64] = {};
-  ui::build_battery_charging_composite(buf, sizeof(buf), width, height, stride);
+  ui::build_battery_charging_composite(buf, sizeof(buf), width, height, stride,
+                                       width);
 
   bool any_ink = false;
   for (int y = 0; y < height; ++y) {
@@ -291,6 +287,98 @@ HOST_TEST(battery_charging_composite_knocks_the_bolt_out_of_a_solid_field) {
   }
 }
 
+// The behaviour that came back, and the one this whole change exists for: a
+// cell that is half full on a charger shows that it is half full. Ink is the
+// XOR of "this column is within the level bar" and "this pixel is bolt", so
+// the bolt stays visible on both sides of the charge boundary - black on the
+// empty side, knocked out to white on the filled side - and the boundary
+// itself stays readable as a level.
+//
+// Also checks the two things a XOR is easy to get subtly wrong: the boundary
+// lands exactly at `filled` (column filled-1 is inside, column filled is
+// not), and away from the bolt the two sides are plain inverses of each
+// other rather than both ink or both blank.
+HOST_TEST(battery_charging_composite_shows_the_level_under_the_bolt) {
+  const int width = ui::kChargingBoltWidth;
+  const int height = ui::kChargingBoltHeight;
+  const int stride = (width + 7) / 8;
+  const int filled = width / 2;
+  uint8_t buf[64] = {};
+  ui::build_battery_charging_composite(buf, sizeof(buf), width, height, stride,
+                                       filled);
+
+  bool ink_left_of_boundary = false;
+  bool blank_right_of_boundary = false;
+  for (int y = 0; y < height; ++y) {
+    for (int x = 0; x < width; ++x) {
+      EXPECT_EQ(bit_at(buf, stride, x, y), (x < filled) != bolt_bit(x, y));
+      if (!bolt_bit(x, y)) {
+        if (x < filled) ink_left_of_boundary = ink_left_of_boundary ||
+                                               bit_at(buf, stride, x, y);
+        if (x >= filled) blank_right_of_boundary =
+            blank_right_of_boundary || !bit_at(buf, stride, x, y);
+      }
+    }
+  }
+  // Not vacuous: the level bar really is drawn on one side and really is
+  // absent on the other, rather than the whole rect coming out one colour.
+  EXPECT_TRUE(ink_left_of_boundary);
+  EXPECT_TRUE(blank_right_of_boundary);
+
+  std::printf("battery charging composite, %d of %d columns filled:\n", filled,
+              width);
+  for (int y = 0; y < height; ++y) {
+    for (int x = 0; x < width; ++x) {
+      std::putchar(bit_at(buf, stride, x, y) ? 'X' : '.');
+    }
+    std::putchar('\n');
+  }
+}
+
+// An empty cell that has just been put on a charger: no level bar at all, so
+// the XOR leaves the bolt as plain ink on a blank field. The mirror of the
+// full-cell case above, and the other end a boundary can reach - a version
+// that clamped `filled` wrongly would show a full bar here.
+HOST_TEST(battery_charging_composite_draws_a_bare_bolt_on_an_empty_cell) {
+  const int width = ui::kChargingBoltWidth;
+  const int height = ui::kChargingBoltHeight;
+  const int stride = (width + 7) / 8;
+  uint8_t buf[64] = {};
+  ui::build_battery_charging_composite(buf, sizeof(buf), width, height, stride,
+                                       0);
+
+  for (int y = 0; y < height; ++y) {
+    for (int x = 0; x < width; ++x) {
+      EXPECT_EQ(bit_at(buf, stride, x, y), bolt_bit(x, y));
+    }
+  }
+}
+
+// A `filled` past either end is clamped rather than read out of the row it
+// indexes into - the caller computes it from a percentage that has its own
+// clamp, but this function is the one holding the buffer.
+HOST_TEST(battery_charging_composite_clamps_a_filled_count_out_of_range) {
+  const int width = ui::kChargingBoltWidth;
+  const int height = ui::kChargingBoltHeight;
+  const int stride = (width + 7) / 8;
+  uint8_t past_the_end[64] = {};
+  uint8_t full[64] = {};
+  uint8_t negative[64] = {};
+  uint8_t empty[64] = {};
+  ui::build_battery_charging_composite(past_the_end, sizeof(past_the_end), width,
+                                       height, stride, width + 5);
+  ui::build_battery_charging_composite(full, sizeof(full), width, height, stride,
+                                       width);
+  ui::build_battery_charging_composite(negative, sizeof(negative), width, height,
+                                       stride, -3);
+  ui::build_battery_charging_composite(empty, sizeof(empty), width, height,
+                                       stride, 0);
+  for (int i = 0; i < stride * height; ++i) {
+    EXPECT_EQ(past_the_end[i], full[i]);
+    EXPECT_EQ(negative[i], empty[i]);
+  }
+}
+
 // The stride regression: a version of this function once computed its own
 // row pitch as a bare (width + 7) / 8 - the tightest possible pack - and
 // the panel showed progressive diagonal smearing, because LVGL pads each
@@ -300,8 +388,7 @@ HOST_TEST(battery_charging_composite_knocks_the_bolt_out_of_a_solid_field) {
 // keep passing while that bug shipped - which is exactly what happened -
 // so this deliberately asks for one byte more per row than the tight pack
 // needs and checks that every pixel still lands where it should, not one
-// row short of where the tight-pack test above would have placed it. Still
-// valuable after `filled` was dropped - orthogonal concern, same buffer.
+// row short of where the tight-pack test above would have placed it.
 HOST_TEST(battery_charging_composite_honours_a_stride_wider_than_the_tight_pack) {
   const int width = ui::kChargingBoltWidth;
   const int height = ui::kChargingBoltHeight;
@@ -309,7 +396,7 @@ HOST_TEST(battery_charging_composite_honours_a_stride_wider_than_the_tight_pack)
   const int padded_stride = tight_stride + 1;
   uint8_t buf[64] = {};
   ui::build_battery_charging_composite(buf, sizeof(buf), width, height,
-                                       padded_stride);
+                                       padded_stride, width);
 
   for (int y = 0; y < height; ++y) {
     for (int x = 0; x < width; ++x) {

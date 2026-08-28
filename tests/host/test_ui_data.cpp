@@ -370,42 +370,13 @@ HOST_TEST(settings_layout_fits_and_rows_do_not_overlap) {
   EXPECT_TRUE(layout.status.bottom() <= content.bottom());
 }
 
-HOST_TEST(battery_percent_is_trustworthy_only_when_valid_and_not_charging) {
-  app_core::BatteryData battery;
-  battery.valid = true;
-  battery.charging = false;
-  EXPECT_TRUE(ui::battery_percent_trustworthy(battery,
-                                              app_core::PowerTrend::Steady));
-  EXPECT_TRUE(ui::battery_percent_trustworthy(
-      battery, app_core::PowerTrend::Discharging));
-
-  // Invalid reading: no percentage was ever computed to trust.
-  battery.valid = false;
-  EXPECT_TRUE(!ui::battery_percent_trustworthy(battery,
-                                               app_core::PowerTrend::Steady));
-
-  // The fast, voltage-based signal (BatteryData::charging) withholds trust
-  // on its own, regardless of what the slower PowerTrend says.
-  battery.valid = true;
-  battery.charging = true;
-  EXPECT_TRUE(!ui::battery_percent_trustworthy(battery,
-                                               app_core::PowerTrend::Steady));
-
-  // The slow, slope-based signal (PowerTrend::Charging) also withholds
-  // trust on its own, even when the fast signal has not (yet) caught up -
-  // this is exactly the early-charge case (a depleted cell charging well
-  // below the ~4.15 V fast threshold) the fast signal alone would miss.
-  battery.charging = false;
-  EXPECT_TRUE(!ui::battery_percent_trustworthy(
-      battery, app_core::PowerTrend::Charging));
-}
-
-// battery_percent_trustworthy() above is defined as
-// "valid && !battery_is_charging(...)" - this is the direct test of the
-// half that changed meaning: battery_is_charging() itself, which the tray
-// icon now also calls on its own (it needs to know "charging" independent
-// of "valid", unlike the settings row and Home tile, which only ever need
-// the combined trustworthy answer).
+// battery_percent_trustworthy() used to live here, gating whether any of
+// the three battery displays printed a number at all. It is gone - the
+// charger's contribution is measured and subtracted upstream now, so there
+// is a level to show throughout a charge (see ui_data.hpp where it was, and
+// app_core::battery_open_circuit_millivolts() for the correction itself).
+// What remains is battery_is_charging(), which every renderer still asks
+// because "there is a charger attached" is its own fact worth drawing.
 HOST_TEST(a_measured_direction_outranks_a_two_hour_old_trend) {
   // The regression test for a bolt that stayed on the tray for up to two
   // hours after the cable came out. The voltage signal had already said no
@@ -417,10 +388,6 @@ HOST_TEST(a_measured_direction_outranks_a_two_hour_old_trend) {
   battery.direction_known = true;
   EXPECT_TRUE(
       !ui::battery_is_charging(battery, app_core::PowerTrend::Charging));
-  // ...and the percentage is trustworthy again the moment it is not
-  // charging, rather than being withheld for the same two hours.
-  EXPECT_TRUE(ui::battery_percent_trustworthy(
-      battery, app_core::PowerTrend::Charging));
 
   // The trend still answers while nothing else can: the first eleven minutes
   // of a boot, before the slope window has spanned enough to be fitted.
@@ -455,9 +422,10 @@ HOST_TEST(the_trend_is_the_fallback_while_no_direction_has_been_measured) {
 
   // Deliberately independent of BatteryData::valid: an invalid reading is a
   // separate concern (nothing was measured) from charging (something was
-  // measured, and it looks like a charger). battery_percent_trustworthy()
-  // is where the two get combined into one "should this row show a
-  // number" answer; this function alone must not require valid.
+  // measured, and it looks like a charger). Each renderer combines the two
+  // for itself - the tray draws an empty body for invalid and a bolt for
+  // charging, and needs to tell them apart; this function alone must not
+  // require valid.
   battery.valid = false;
   battery.charging = true;
   EXPECT_TRUE(ui::battery_is_charging(battery, app_core::PowerTrend::Steady));
