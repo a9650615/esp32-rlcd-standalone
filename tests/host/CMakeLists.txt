@@ -3,6 +3,45 @@ project(layout_carousel_host_tests LANGUAGES C CXX)
 
 option(HOST_DEMO_MISSING_PAGE "Hide the deterministic weather page" OFF)
 
+# The ESP-IDF lives once per workspace, in a versioned directory, and is
+# resolved here exactly the way scripts/idf.sh resolves it - through the Git
+# common directory, so a linked worktree finds the same toolchain its parent
+# checkout does. Only cJSON is needed: the host tests parse the same JSON the
+# firmware does, against the same copy of the parser.
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/../../.idf-version" IDF_VERSION)
+list(LENGTH IDF_VERSION IDF_VERSION_LINE_COUNT)
+if(NOT IDF_VERSION_LINE_COUNT EQUAL 1 OR
+   NOT IDF_VERSION MATCHES "^v[0-9]+\\.[0-9]+\\.[0-9]+$")
+    message(FATAL_ERROR ".idf-version must contain one vMAJOR.MINOR.PATCH line")
+endif()
+
+get_filename_component(_project_dir "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
+execute_process(
+    COMMAND git -C "${_project_dir}" rev-parse --git-common-dir
+    RESULT_VARIABLE _common_dir_result
+    OUTPUT_VARIABLE _common_dir
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_VARIABLE _common_dir_error)
+if(NOT _common_dir_result EQUAL 0)
+    message(FATAL_ERROR
+        "cannot resolve Git common directory for ${_project_dir}: ${_common_dir_error}")
+endif()
+if(NOT IS_ABSOLUTE "${_common_dir}")
+    set(_common_dir "${_project_dir}/${_common_dir}")
+endif()
+get_filename_component(_main_checkout_dir "${_common_dir}/.." ABSOLUTE)
+get_filename_component(_workspace_dir "${_main_checkout_dir}/.." ABSOLUTE)
+set(_candidate
+    "${_workspace_dir}/.tools/esp-idf-${IDF_VERSION}/components/json/cJSON")
+if(EXISTS "${_candidate}/cJSON.c")
+    set(CJSON_DIR "${_candidate}")
+else()
+    message(FATAL_ERROR
+        "cJSON for ${IDF_VERSION} not found at ${_candidate}; "
+        "run ./scripts/bootstrap-idf.sh")
+endif()
+
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -51,7 +90,7 @@ add_executable(host_tests
     ../../components/ui/settings_menu.cpp
     ../../modules/airplay/artwork.cpp
     ../../modules/airplay/tjpgd/tjpgd.c
-    ../../.tools/esp-idf/components/json/cJSON/cJSON.c
+    ${CJSON_DIR}/cJSON.c
 )
 target_include_directories(host_tests PRIVATE
     ../../components/app_core/include
@@ -69,7 +108,7 @@ target_include_directories(host_tests PRIVATE
     # ESP-IDF headers artwork.cpp includes unconditionally, stubbed for host.
     # See tests/host/esp_stubs/esp_heap_caps.h for why a shim and not an #ifdef.
     esp_stubs
-    ../../.tools/esp-idf/components/json/cJSON
+    ${CJSON_DIR}
 )
 if(HOST_DEMO_MISSING_PAGE)
     target_compile_definitions(host_tests PRIVATE APP_CORE_DEMO_MISSING_PAGE=1)
