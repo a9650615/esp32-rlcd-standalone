@@ -536,6 +536,10 @@ lv_obj_t* render_page(UiContext& context,
       render_ota(replacement, snapshot, content, page_index, page_count,
                  &context);
       break;
+    case app_core::PageId::AssistantCard:
+      render_card(replacement, snapshot, content, page_index, page_count,
+                  &context, page.slot);
+      break;
     case app_core::PageId::Home:
     default:
       render_home(replacement, snapshot, content, page_index, page_count,

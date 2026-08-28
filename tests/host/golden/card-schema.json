@@ -1,0 +1,37 @@
+{
+  "_generated_by": "tests/host/test_card_contract.cpp - do not edit by hand",
+  "schema_hash": "048559a5c186f271",
+  "_comment": "Every number here is emitted from the C++ this device enforces (components/ui/include/card_contract.hpp), so a host keeps no second copy that can drift. The device sends schema_hash with its request; a host holding cards drawn for a different hash should redraw them rather than serve a card this device will silently refuse.",
+  "device": "rlcd-4.2",
+  "body_mask": {
+    "width_px": 388,
+    "height_px": 240,
+    "stride_bytes": 49,
+    "max_bytes": 11760,
+    "format": "1bpp rows padded to stride_bytes, MSB first, set bit = ink",
+    "encoding": "base64",
+    "_comment": "A smaller mask is legal and is centred in the body area; a larger one is rejected. The body is the whole content area - the device draws only the system tray and the page dots, so the card's own title belongs in here."
+  },
+  "cards": {
+    "max_items": 6,
+    "_comment": "Extra cards are dropped, not rotated in. The bound is attention, not memory."
+  },
+  "label": {
+    "max_bytes": 15,
+    "charset": "ASCII 32-126",
+    "_comment": "Never drawn. It names the card in the device log and nowhere else; anything a reader should see belongs in body_mask."
+  },
+  "dwell_seconds": {
+    "min": 5,
+    "max": 60,
+    "default": 12
+  },
+  "priority": {
+    "values": ["background", "normal", "elevated", "urgent"],
+    "_comment": "Carried end to end and currently consulted by nothing: the device orders its carousel by registration order alone. Send the honest value now so the policy that reads it later is written against real cards."
+  },
+  "document": {
+    "max_bytes": 95104,
+    "_comment": "The serialised response, whole. A longer body is discarded before the parser sees a byte of it, so the panel keeps what it had while the host logs its own 200."
+  }
+}

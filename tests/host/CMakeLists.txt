@@ -49,6 +49,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 add_executable(host_tests
     test_main.cpp
     test_page_registry.cpp
+    test_card_contract.cpp
     test_media_registry.cpp
     test_now_playing.cpp
     test_carousel.cpp
@@ -92,6 +93,9 @@ add_executable(host_tests
     ../../modules/airplay/tjpgd/tjpgd.c
     ${CJSON_DIR}/cJSON.c
 )
+target_compile_definitions(host_tests PRIVATE
+    GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/golden")
+
 target_include_directories(host_tests PRIVATE
     ../../components/app_core/include
     ../../components/board_rlcd/include

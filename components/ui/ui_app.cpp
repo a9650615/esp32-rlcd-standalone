@@ -180,6 +180,8 @@ const char* page_name(app_core::PageId page) {
       return "Ota";
     case app_core::PageId::NowPlaying:
       return "NowPlaying";
+    case app_core::PageId::AssistantCard:
+      return "AssistantCard";
   }
   return "Unknown";
 }

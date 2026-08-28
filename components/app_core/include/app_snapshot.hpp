@@ -13,7 +13,9 @@ namespace app_core {
 // the ui::publish_snapshot() seam while snapshot.setup.active is true.
 // Setup and Ota are addressable pages that never enter the carousel: each is
 // shown because its own state says so, not because rotation reached it.
-enum class PageId { Home, TaiwanMarket, UsMarket, Weather, Indoor, Setup, Settings, Ota, NowPlaying };
+// AssistantCard is the one entry here with several pages behind it: the
+// remote cards share this id and are told apart by PageKey::slot.
+enum class PageId { Home, TaiwanMarket, UsMarket, Weather, Indoor, Setup, Settings, Ota, NowPlaying, AssistantCard };
 enum class DemoScenario { MorningAlert, TaiwanSession, NightSession };
 
 struct ClockData {

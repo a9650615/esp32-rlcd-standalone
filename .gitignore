@@ -41,3 +41,7 @@ build-host/
 # a checked-in Live.png is a picture of whatever firmware happened to be
 # running when someone last looked.
 screenshots/
+
+# Written by tests/host/test_card_contract.cpp when the schema drifts, so the
+# emitted version can be diffed against the golden. Never the golden itself.
+tests/host/golden/*.actual

@@ -172,6 +172,14 @@ void render_now_playing(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
                         Rect bounds, std::size_t page_index,
                         std::size_t page_count, UiContext* context = nullptr);
 
+// One of the assistant's remote cards, identified by `slot`. Unlike every
+// renderer above there are several of these pages, so this is the one that
+// takes the slot: what it draws comes from the card the host sent for that
+// position, not from AppSnapshot. See card_contract.hpp.
+void render_card(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
+                 Rect bounds, std::size_t page_index, std::size_t page_count,
+                 UiContext* context, uint8_t slot);
+
 // The caller owns the LVGL lock. A detached replacement is built completely
 // before the previous context-owned page root is deleted and the replacement
 // is made visible. Context state is caller-owned; host deletion invalidates it.
