@@ -38,7 +38,7 @@ struct Runtime {
   uint64_t started_ms = 0;
   uint64_t last_clock_minute = std::numeric_limits<uint64_t>::max();
   app_core::PageRegistry registry;
-  std::vector<app_core::PageId> active_pages;
+  std::vector<app_core::PageKey> active_pages;
   app_core::CarouselState carousel;
   // Now-playing seize and volume-overlay state machines (Task 4). Ticked
   // every timer_callback regardless of which page is showing - see the call
@@ -73,6 +73,8 @@ struct Runtime {
   // atomic page replacement instead of one every 100 ms tick.
   bool showing_setup = false;
 };
+
+constexpr app_core::PageKey kHomeKey{app_core::PageId::Home, 0};
 
 Runtime g_runtime;
 
@@ -182,17 +184,17 @@ const char* page_name(app_core::PageId page) {
   return "Unknown";
 }
 
-uint8_t dwell_for(const Runtime& runtime, app_core::PageId page) {
+uint8_t dwell_for(const Runtime& runtime, app_core::PageKey page) {
   for (const auto& descriptor : runtime.registry.descriptors()) {
-    if (descriptor.id == page) return descriptor.dwell_seconds;
+    if (descriptor.key == page) return descriptor.dwell_seconds;
   }
-  return page == app_core::PageId::Home ? 30 : 12;
+  return page.id == app_core::PageId::Home ? 30 : 12;
 }
 
 void rebuild_active_pages(Runtime& runtime) {
-  runtime.active_pages = runtime.registry.page_ids();
+  runtime.active_pages = runtime.registry.page_keys();
   if (runtime.active_pages.empty()) {
-    runtime.active_pages.push_back(app_core::PageId::Home);
+    runtime.active_pages.push_back(kHomeKey);
   }
 }
 
@@ -244,7 +246,7 @@ void update_clock(Runtime& runtime, uint64_t now_ms) {
   runtime.snapshot.clock.source = runtime.rtc_fallback ? "RTC fallback" : "PCF85063";
 }
 
-bool remove_failed_page(Runtime& runtime, app_core::PageId page) {
+bool remove_failed_page(Runtime& runtime, app_core::PageKey page) {
   const auto found = std::find(runtime.active_pages.begin(),
                                runtime.active_pages.end(), page);
   if (found == runtime.active_pages.end()) return false;
@@ -262,15 +264,17 @@ bool remove_failed_page(Runtime& runtime, app_core::PageId page) {
 }
 
 void log_transition(const Runtime& runtime, const char* reason) {
-  const app_core::PageId page =
+  const app_core::PageKey page =
       runtime.active_pages.empty()
-          ? app_core::PageId::Home
+          ? kHomeKey
           : runtime.active_pages[std::min(runtime.carousel.index,
                                           runtime.active_pages.size() - 1)];
+  // The slot is logged beside the name because a multi-slot page - the
+  // assistant's cards - is otherwise six identical lines in the log.
   ESP_LOGI(kTag,
-           "transition cycle=%" PRIu32 " page=%s reason=%s dwell_s=%u "
+           "transition cycle=%" PRIu32 " page=%s/%u reason=%s dwell_s=%u "
            "manual_until_ms=%" PRIu64,
-           runtime.cycle, page_name(page), reason,
+           runtime.cycle, page_name(page.id), page.slot, reason,
            dwell_for(runtime, page), runtime.carousel.manual_until_ms);
 }
 
@@ -280,7 +284,7 @@ bool render_current(Runtime& runtime, const char* reason, bool show_overlay) {
     if (runtime.active_pages.empty()) return false;
     runtime.carousel.index =
         std::min(runtime.carousel.index, runtime.active_pages.size() - 1);
-    const app_core::PageId page = runtime.active_pages[runtime.carousel.index];
+    const app_core::PageKey page = runtime.active_pages[runtime.carousel.index];
     const lv_obj_t* rendered = render_page(
         runtime.context, runtime.snapshot, page, safe_canvas(),
         runtime.carousel.index, runtime.active_pages.size());
@@ -292,11 +296,11 @@ bool render_current(Runtime& runtime, const char* reason, bool show_overlay) {
       return true;
     }
 
-    ESP_LOGE(kTag, "renderer failure page=%s; skipping for current cycle",
-             page_name(page));
+    ESP_LOGE(kTag, "renderer failure page=%s/%u; skipping for current cycle",
+             page_name(page.id), page.slot);
     if (!remove_failed_page(runtime, page)) {
       runtime.active_pages.clear();
-      runtime.active_pages.push_back(app_core::PageId::Home);
+      runtime.active_pages.push_back(kHomeKey);
       runtime.carousel.index = 0;
       runtime.carousel.manual_mode = false;
       runtime.carousel.manual_until_ms = 0;
@@ -600,7 +604,7 @@ void timer_callback(lv_timer_t* timer) {
       !takeover_page_owns_screen &&
       (runtime->now_playing_seize.owns_screen ||
        (!runtime->active_pages.empty() &&
-        runtime->active_pages[runtime->carousel.index] ==
+        runtime->active_pages[runtime->carousel.index].id ==
             app_core::PageId::NowPlaying));
 
   const bool overlay_was_visible = runtime->volume_overlay.visible;
@@ -640,7 +644,7 @@ void timer_callback(lv_timer_t* timer) {
       runtime->last_now_playing_second = now_playing_second;
       const lv_obj_t* rendered =
           render_page(runtime->context, runtime->snapshot,
-                      app_core::PageId::NowPlaying, safe_canvas(), 0, 0);
+                      app_core::PageKey{app_core::PageId::NowPlaying, 0}, safe_canvas(), 0, 0);
       if (rendered == nullptr) ESP_LOGE(kTag, "renderer failure page=NowPlaying");
       page_rebuilt = true;
     }
@@ -683,7 +687,7 @@ void timer_callback(lv_timer_t* timer) {
   // setup.active, showing_settings or the two ota_* predicates can be true,
   // because takeover_page_owns_screen is what let the seize run at all.
   if (!takeover_page_owns_screen && !now_playing_owns_screen) {
-    const app_core::PageId current_page =
+    const app_core::PageKey current_page =
         runtime->active_pages[runtime->carousel.index];
     const auto transition = app_core::carousel::tick(
         runtime->carousel, now_ms, dwell_for(*runtime, current_page),
@@ -697,7 +701,7 @@ void timer_callback(lv_timer_t* timer) {
         transition.state.index == 0;
     runtime->carousel = transition.state;
     if (transition.page_changed ||
-        (current_page == app_core::PageId::NowPlaying &&
+        (current_page.id == app_core::PageId::NowPlaying &&
          overlay_was_visible != runtime->volume_overlay.visible)) {
       if (wrapped) begin_cycle(*runtime, now_ms);
       // Automatic dwell only: KEY/BOOT navigation above goes through
@@ -732,7 +736,7 @@ void timer_callback(lv_timer_t* timer) {
     if (!runtime->showing_ota || ota_changed) {
       const lv_obj_t* rendered =
           render_page(runtime->context, runtime->snapshot,
-                      app_core::PageId::Ota, safe_canvas(), 0, 0);
+                      app_core::PageKey{app_core::PageId::Ota, 0}, safe_canvas(), 0, 0);
       if (rendered == nullptr) ESP_LOGE(kTag, "renderer failure page=Ota");
 #ifndef NDEBUG
       // This page takes the screen and returns early, so it never reached the
@@ -784,7 +788,7 @@ void timer_callback(lv_timer_t* timer) {
     if (settings_dirty) {
       const lv_obj_t* rendered =
           render_page(runtime->context, runtime->snapshot,
-                      app_core::PageId::Settings, safe_canvas(), 0, 0);
+                      app_core::PageKey{app_core::PageId::Settings, 0}, safe_canvas(), 0, 0);
       if (rendered == nullptr) ESP_LOGE(kTag, "renderer failure page=Settings");
     }
     // Returns before the tray and label paths: this page carries neither.
@@ -795,8 +799,8 @@ void timer_callback(lv_timer_t* timer) {
   if (runtime->snapshot.setup.active) {
     if (!runtime->showing_setup) {
       const lv_obj_t* rendered = render_page(
-          runtime->context, runtime->snapshot, app_core::PageId::Setup,
-          safe_canvas(), 0, 0);
+          runtime->context, runtime->snapshot,
+          app_core::PageKey{app_core::PageId::Setup, 0}, safe_canvas(), 0, 0);
       if (rendered == nullptr) {
         ESP_LOGE(kTag, "renderer failure page=Setup");
       }
@@ -845,6 +849,7 @@ bool start(const app_core::AppSnapshot& snapshot,
   // Before anything renders: until this runs the interface fonts carry no
   // Chinese fallback, so a first frame drawn ahead of it would show boxes.
   fonts_init();
+  app_core::register_builtin_pages();
   ESP_LOGI(kTag, "main task stack free before UI init=%u bytes",
            static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
   g_runtime.snapshot = snapshot;

@@ -458,7 +458,7 @@ void render_tray(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
 
 lv_obj_t* render_page(UiContext& context,
                       const app_core::AppSnapshot& snapshot,
-                      app_core::PageId page, Rect bounds,
+                      app_core::PageKey page, Rect bounds,
                       std::size_t page_index, std::size_t page_count) {
   if (!context_ready(context) || !within_safe_canvas(bounds)) return nullptr;
 
@@ -496,14 +496,14 @@ lv_obj_t* render_page(UiContext& context,
   // Single site that decides whether a page carries the tray and, if so,
   // reserves its height - every renderer below just gets `content` and
   // never hand-tunes its own top offset.
-  if (page_shows_tray(page)) {
+  if (page_shows_tray(page.id)) {
     render_tray(replacement, snapshot,
                {0, 0, local_bounds.width, kSystemTrayHeight}, page_index,
-               page_count, &context, page);
+               page_count, &context, page.id);
   }
-  const Rect content = content_bounds(local_bounds, page);
+  const Rect content = content_bounds(local_bounds, page.id);
 
-  switch (page) {
+  switch (page.id) {
     case app_core::PageId::TaiwanMarket:
       render_market(replacement, snapshot, snapshot.taiwan_market, content,
                     page_index, page_count, false, &context);
@@ -553,10 +553,10 @@ lv_obj_t* render_page(UiContext& context,
   // absolute rect here put the dots at 6 + 289 = 295, five pixels below the
   // safe canvas - which is what the geometry walk caught on the first boot
   // after this was written.
-  if (page_shows_dots(page)) {
+  if (page_shows_dots(page.id)) {
     page_dots(replacement, page_index, page_count,
               page_dots_band(local_bounds));
-  } else if (page == app_core::PageId::Settings) {
+  } else if (page.id == app_core::PageId::Settings) {
     // The hint band is not decoration here. It is the only thing telling
     // anyone that KEY has stopped turning pages and started moving a cursor.
     button_hints(replacement, page_dots_band(local_bounds),
@@ -596,7 +596,7 @@ lv_obj_t* render_page(UiContext& context,
   // unit's anonymous namespace and is not worth widening a public header for
   // one diagnostic. Order is Home, TaiwanMarket, UsMarket, Weather, Indoor,
   // Setup.
-  assert_tree_in_safe_canvas(replacement, static_cast<int>(page));
+  assert_tree_in_safe_canvas(replacement, static_cast<int>(page.id));
 #endif
   return replacement;
 }

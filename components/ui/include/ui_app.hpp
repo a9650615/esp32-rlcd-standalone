@@ -177,7 +177,7 @@ void render_now_playing(lv_obj_t* parent, const app_core::AppSnapshot& snapshot,
 // is made visible. Context state is caller-owned; host deletion invalidates it.
 lv_obj_t* render_page(UiContext& context,
                       const app_core::AppSnapshot& snapshot,
-                      app_core::PageId page, Rect bounds,
+                      app_core::PageKey page, Rect bounds,
                       std::size_t page_index, std::size_t page_count);
 
 // Caller owns the LVGL lock. Only the currently visible clock label is

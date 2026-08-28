@@ -8,95 +8,176 @@
 
 using app_core::AppSnapshot;
 using app_core::DemoScenario;
+using app_core::PageDescriptor;
 using app_core::PageId;
+using app_core::PageKey;
+using app_core::PagePriority;
 using app_core::PageRegistry;
 using app_core::make_mock_snapshot;
 
+namespace {
+
+// The registration table is global and this binary runs every case in one
+// process, so each case that touches it starts from a known table rather
+// than inheriting whatever ran before it.
+void with_builtin_pages() {
+  app_core::reset_page_registrations();
+  app_core::register_builtin_pages();
+}
+
+std::vector<PageKey> keys_of(std::initializer_list<PageId> ids) {
+  std::vector<PageKey> keys;
+  for (PageId id : ids) keys.push_back(PageKey{id, 0});
+  return keys;
+}
+
+}  // namespace
+
 HOST_TEST(registry_has_all_five_pages_when_data_is_available) {
+  with_builtin_pages();
   const AppSnapshot snapshot = make_mock_snapshot(DemoScenario::TaiwanSession);
   PageRegistry registry;
   registry.begin_cycle(snapshot);
 #ifdef APP_CORE_DEMO_MISSING_PAGE
-  EXPECT_EQ(registry.page_ids(),
-            (std::vector<PageId>{PageId::Home, PageId::TaiwanMarket,
-                                 PageId::UsMarket, PageId::Indoor}));
+  EXPECT_EQ(registry.page_keys(),
+            keys_of({PageId::Home, PageId::TaiwanMarket, PageId::UsMarket,
+                     PageId::Indoor}));
 #else
-  EXPECT_EQ(registry.page_ids(),
-            (std::vector<PageId>{PageId::Home, PageId::TaiwanMarket,
-                                 PageId::UsMarket, PageId::Weather,
-                                 PageId::Indoor}));
+  EXPECT_EQ(registry.page_keys(),
+            keys_of({PageId::Home, PageId::TaiwanMarket, PageId::UsMarket,
+                     PageId::Weather, PageId::Indoor}));
 #endif
 }
 
 HOST_TEST(registry_omits_unavailable_pages) {
+  with_builtin_pages();
   AppSnapshot snapshot = make_mock_snapshot(DemoScenario::TaiwanSession);
   snapshot.availability.weather = false;
   PageRegistry registry;
   registry.begin_cycle(snapshot);
-  EXPECT_EQ(registry.page_ids(),
-            (std::vector<PageId>{PageId::Home, PageId::TaiwanMarket,
-                                 PageId::UsMarket, PageId::Indoor}));
+  EXPECT_EQ(registry.page_keys(),
+            keys_of({PageId::Home, PageId::TaiwanMarket, PageId::UsMarket,
+                     PageId::Indoor}));
 }
 
-HOST_TEST(morning_alert_orders_weather_before_other_data_pages) {
-  const AppSnapshot snapshot = make_mock_snapshot(DemoScenario::MorningAlert);
-  PageRegistry registry;
-  registry.begin_cycle(snapshot);
-#ifdef APP_CORE_DEMO_MISSING_PAGE
-  EXPECT_EQ(registry.page_ids(),
-            (std::vector<PageId>{PageId::Home, PageId::TaiwanMarket,
-                                 PageId::UsMarket, PageId::Indoor}));
-#else
-  EXPECT_EQ(registry.page_ids(),
-            (std::vector<PageId>{PageId::Home, PageId::Weather,
-                                 PageId::TaiwanMarket, PageId::UsMarket,
-                                 PageId::Indoor}));
-#endif
-}
-
-HOST_TEST(taiwan_session_orders_taiwan_market_first) {
-  const AppSnapshot snapshot = make_mock_snapshot(DemoScenario::TaiwanSession);
-  PageRegistry registry;
-  registry.begin_cycle(snapshot);
-#ifdef APP_CORE_DEMO_MISSING_PAGE
-  EXPECT_EQ(registry.page_ids(),
-            (std::vector<PageId>{PageId::Home, PageId::TaiwanMarket,
-                                 PageId::UsMarket, PageId::Indoor}));
-#else
-  EXPECT_EQ(registry.page_ids(),
-            (std::vector<PageId>{PageId::Home, PageId::TaiwanMarket,
-                                 PageId::UsMarket, PageId::Weather,
-                                 PageId::Indoor}));
-#endif
-}
-
-HOST_TEST(night_session_orders_us_market_first) {
+HOST_TEST(registry_orders_pages_by_their_registered_order) {
+  with_builtin_pages();
   const AppSnapshot snapshot = make_mock_snapshot(DemoScenario::NightSession);
   PageRegistry registry;
   registry.begin_cycle(snapshot);
+  // The order is the one each page registered with, and no longer varies by
+  // DemoScenario - that reordering only ever fired for the mock fixture.
 #ifdef APP_CORE_DEMO_MISSING_PAGE
-  EXPECT_EQ(registry.page_ids(),
-            (std::vector<PageId>{PageId::Home, PageId::UsMarket,
-                                 PageId::TaiwanMarket, PageId::Indoor}));
+  EXPECT_EQ(registry.page_keys(),
+            keys_of({PageId::Home, PageId::TaiwanMarket, PageId::UsMarket,
+                     PageId::Indoor}));
 #else
-  EXPECT_EQ(registry.page_ids(),
-            (std::vector<PageId>{PageId::Home, PageId::UsMarket,
-                                 PageId::Weather, PageId::TaiwanMarket,
-                                 PageId::Indoor}));
+  EXPECT_EQ(registry.page_keys(),
+            keys_of({PageId::Home, PageId::TaiwanMarket, PageId::UsMarket,
+                     PageId::Weather, PageId::Indoor}));
 #endif
 }
 
-HOST_TEST(registry_does_not_reorder_in_the_middle_of_a_cycle) {
+HOST_TEST(a_registered_page_joins_the_cycle_in_its_own_order_slot) {
+  with_builtin_pages();
+  // Order -500 puts it after Home (kOrderHome) and before every data page.
+  EXPECT_TRUE(app_core::register_page(
+      {{PageId::Settings, 0}, 12, -500, PagePriority::Normal, nullptr, nullptr}));
+  const AppSnapshot snapshot = make_mock_snapshot(DemoScenario::TaiwanSession);
+  PageRegistry registry;
+  registry.begin_cycle(snapshot);
+  EXPECT_EQ(registry.page_keys()[0], (PageKey{PageId::Home, 0}));
+  EXPECT_EQ(registry.page_keys()[1], (PageKey{PageId::Settings, 0}));
+}
+
+HOST_TEST(slots_of_one_page_id_are_separate_pages_in_rotation) {
+  app_core::reset_page_registrations();
+  // Three pages sharing one id, told apart only by slot - the shape the
+  // assistant's cards will register in.
+  for (uint8_t slot = 0; slot < 3; ++slot) {
+    EXPECT_TRUE(app_core::register_page({{PageId::Indoor, slot},
+                                         12,
+                                         static_cast<int16_t>(slot),
+                                         PagePriority::Normal,
+                                         nullptr,
+                                         nullptr}));
+  }
+  const AppSnapshot snapshot = make_mock_snapshot(DemoScenario::TaiwanSession);
+  PageRegistry registry;
+  registry.begin_cycle(snapshot);
+  EXPECT_EQ(registry.size(), static_cast<size_t>(3));
+  EXPECT_EQ(registry.page_keys()[0], (PageKey{PageId::Indoor, 0}));
+  EXPECT_EQ(registry.page_keys()[2], (PageKey{PageId::Indoor, 2}));
+}
+
+HOST_TEST(registering_the_same_key_twice_is_refused) {
+  app_core::reset_page_registrations();
+  const PageDescriptor descriptor{
+      {PageId::Weather, 0}, 12, 0, PagePriority::Normal, nullptr, nullptr};
+  EXPECT_TRUE(app_core::register_page(descriptor));
+  EXPECT_TRUE(!app_core::register_page(descriptor));
+  EXPECT_EQ(app_core::registered_pages().size(), static_cast<size_t>(1));
+}
+
+HOST_TEST(registration_stops_at_the_table_capacity) {
+  app_core::reset_page_registrations();
+  for (int i = 0; i < app_core::kMaxRegisteredPages; ++i) {
+    EXPECT_TRUE(app_core::register_page({{PageId::Indoor,
+                                          static_cast<uint8_t>(i)},
+                                         12,
+                                         0,
+                                         PagePriority::Normal,
+                                         nullptr,
+                                         nullptr}));
+  }
+  EXPECT_TRUE(!app_core::register_page(
+      {{PageId::Indoor, static_cast<uint8_t>(app_core::kMaxRegisteredPages)},
+       12,
+       0,
+       PagePriority::Normal,
+       nullptr,
+       nullptr}));
+  EXPECT_EQ(app_core::registered_pages().size(),
+            static_cast<size_t>(app_core::kMaxRegisteredPages));
+}
+
+HOST_TEST(priority_is_carried_through_the_cycle_and_moves_nothing_yet) {
+  app_core::reset_page_registrations();
+  // Registered in ascending order with descending priority: if priority were
+  // consulted anywhere, Urgent would not still be last.
+  app_core::register_page({{PageId::Indoor, 0}, 12, 0, PagePriority::Background,
+                           nullptr, nullptr});
+  app_core::register_page({{PageId::Weather, 0}, 12, 1, PagePriority::Urgent,
+                           nullptr, nullptr});
+  const AppSnapshot snapshot = make_mock_snapshot(DemoScenario::TaiwanSession);
+  PageRegistry registry;
+  registry.begin_cycle(snapshot);
+
+  EXPECT_EQ(registry.descriptors()[0].priority, PagePriority::Background);
+  EXPECT_EQ(registry.descriptors()[1].priority, PagePriority::Urgent);
+  EXPECT_EQ(registry.page_keys()[0], (PageKey{PageId::Indoor, 0}));
+
+  // And automatic rotation still ignores it: nothing jumps the Urgent page
+  // to the front.
+  EXPECT_EQ(app_core::next_relevant_auto_index(registry.page_keys(), 0, snapshot),
+            static_cast<size_t>(0));
+}
+
+HOST_TEST(registry_does_not_rebuild_in_the_middle_of_a_cycle) {
+  with_builtin_pages();
   AppSnapshot snapshot = make_mock_snapshot(DemoScenario::TaiwanSession);
   PageRegistry registry;
   registry.begin_cycle(snapshot);
-  const auto started_order = registry.page_ids();
+  const auto started = registry.page_keys();
 
-  snapshot.scenario = DemoScenario::NightSession;
-  EXPECT_EQ(registry.page_ids(), started_order);
+  // A page becoming unavailable mid-cycle does not shorten the list the
+  // carousel is already walking; only the next begin_cycle sees it. Indoor
+  // rather than weather, which the DEMO_MISSING_PAGE build has already hidden.
+  snapshot.availability.indoor = false;
+  EXPECT_EQ(registry.page_keys(), started);
 
   registry.begin_cycle(snapshot);
-  EXPECT_EQ(registry.page_ids()[1], PageId::UsMarket);
+  EXPECT_TRUE(registry.page_keys().size() < started.size());
 }
 
 HOST_TEST(mock_fixture_contains_required_deterministic_content) {
@@ -195,61 +276,66 @@ HOST_TEST(pcf85063_decode_rejects_invalid_bcd_and_ranges) {
 }
 
 HOST_TEST(auto_rotation_skips_a_weekday_market_page_only_when_data_invalid) {
+  with_builtin_pages();
   AppSnapshot snapshot = make_mock_snapshot(DemoScenario::TaiwanSession);
   snapshot.clock.source = "SNTP";
   snapshot.clock.date = "Wed, 12 Aug 2026";
   snapshot.taiwan_market.valid = true;
-  EXPECT_TRUE(app_core::page_relevant_for_auto_rotation(PageId::TaiwanMarket,
+  EXPECT_TRUE(app_core::page_relevant_for_auto_rotation(PageKey{PageId::TaiwanMarket, 0},
                                                         snapshot));
   snapshot.taiwan_market.valid = false;
-  EXPECT_TRUE(!app_core::page_relevant_for_auto_rotation(PageId::TaiwanMarket,
+  EXPECT_TRUE(!app_core::page_relevant_for_auto_rotation(PageKey{PageId::TaiwanMarket, 0},
                                                          snapshot));
 }
 
 HOST_TEST(auto_rotation_skips_market_pages_on_a_taipei_weekend) {
+  with_builtin_pages();
   AppSnapshot snapshot = make_mock_snapshot(DemoScenario::TaiwanSession);
   snapshot.taiwan_market.valid = true;
   snapshot.us_market.valid = true;
   snapshot.clock.source = "SNTP";
 
   snapshot.clock.date = "Sat, 15 Aug 2026";
-  EXPECT_TRUE(!app_core::page_relevant_for_auto_rotation(PageId::TaiwanMarket,
+  EXPECT_TRUE(!app_core::page_relevant_for_auto_rotation(PageKey{PageId::TaiwanMarket, 0},
                                                          snapshot));
-  EXPECT_TRUE(!app_core::page_relevant_for_auto_rotation(PageId::UsMarket,
+  EXPECT_TRUE(!app_core::page_relevant_for_auto_rotation(PageKey{PageId::UsMarket, 0},
                                                          snapshot));
 
   snapshot.clock.date = "Sun, 16 Aug 2026";
-  EXPECT_TRUE(!app_core::page_relevant_for_auto_rotation(PageId::TaiwanMarket,
+  EXPECT_TRUE(!app_core::page_relevant_for_auto_rotation(PageKey{PageId::TaiwanMarket, 0},
                                                          snapshot));
 
   // A non-market page is unaffected by the weekend signal.
   snapshot.weather.valid = true;
   EXPECT_TRUE(
-      app_core::page_relevant_for_auto_rotation(PageId::Weather, snapshot));
+      app_core::page_relevant_for_auto_rotation(PageKey{PageId::Weather, 0}, snapshot));
 }
 
 HOST_TEST(auto_rotation_weekend_signal_requires_a_real_synced_clock) {
+  with_builtin_pages();
   AppSnapshot snapshot = make_mock_snapshot(DemoScenario::TaiwanSession);
   snapshot.taiwan_market.valid = true;
   snapshot.clock.date = "Sat, 15 Aug 2026";
   snapshot.clock.source = "RTC fallback";
   EXPECT_TRUE(
-      app_core::page_relevant_for_auto_rotation(PageId::TaiwanMarket, snapshot));
+      app_core::page_relevant_for_auto_rotation(PageKey{PageId::TaiwanMarket, 0}, snapshot));
 }
 
 HOST_TEST(auto_rotation_invalid_data_is_skipped_on_any_page_kind) {
+  with_builtin_pages();
   AppSnapshot snapshot = make_mock_snapshot(DemoScenario::TaiwanSession);
   snapshot.weather.valid = false;
   snapshot.indoor.valid = false;
   EXPECT_TRUE(
-      !app_core::page_relevant_for_auto_rotation(PageId::Weather, snapshot));
+      !app_core::page_relevant_for_auto_rotation(PageKey{PageId::Weather, 0}, snapshot));
   EXPECT_TRUE(
-      !app_core::page_relevant_for_auto_rotation(PageId::Indoor, snapshot));
+      !app_core::page_relevant_for_auto_rotation(PageKey{PageId::Indoor, 0}, snapshot));
   EXPECT_TRUE(
-      app_core::page_relevant_for_auto_rotation(PageId::Home, snapshot));
+      app_core::page_relevant_for_auto_rotation(PageKey{PageId::Home, 0}, snapshot));
 }
 
 HOST_TEST(next_relevant_auto_index_skips_forward_past_irrelevant_pages) {
+  with_builtin_pages();
   AppSnapshot snapshot = make_mock_snapshot(DemoScenario::TaiwanSession);
   snapshot.clock.source = "SNTP";
   snapshot.clock.date = "Sat, 15 Aug 2026";
@@ -257,9 +343,11 @@ HOST_TEST(next_relevant_auto_index_skips_forward_past_irrelevant_pages) {
   snapshot.us_market.valid = true;
   snapshot.weather.valid = false;
   snapshot.indoor.valid = true;
-  const std::vector<PageId> pages{PageId::Home, PageId::TaiwanMarket,
-                                  PageId::UsMarket, PageId::Weather,
-                                  PageId::Indoor};
+  const std::vector<PageKey> pages = keys_of({PageId::Home,
+                                              PageId::TaiwanMarket,
+                                              PageId::UsMarket,
+                                              PageId::Weather,
+                                              PageId::Indoor});
   // Landing on TaiwanMarket (closed weekend) should skip to Indoor, past the
   // also-closed UsMarket and the invalid Weather page.
   EXPECT_TRUE(app_core::next_relevant_auto_index(pages, 1, snapshot) ==
@@ -270,6 +358,7 @@ HOST_TEST(next_relevant_auto_index_skips_forward_past_irrelevant_pages) {
 }
 
 HOST_TEST(next_relevant_auto_index_never_ends_up_with_nothing_to_show) {
+  with_builtin_pages();
   AppSnapshot snapshot = make_mock_snapshot(DemoScenario::TaiwanSession);
   snapshot.clock.source = "SNTP";
   snapshot.clock.date = "Sat, 15 Aug 2026";
@@ -278,7 +367,8 @@ HOST_TEST(next_relevant_auto_index_never_ends_up_with_nothing_to_show) {
   // Every page in this rotation is either a closed-weekend market or
   // invalid data - nothing qualifies, so the fallback must return the
   // landed-on index unchanged rather than searching forever.
-  const std::vector<PageId> pages{PageId::TaiwanMarket, PageId::UsMarket};
+  const std::vector<PageKey> pages =
+      keys_of({PageId::TaiwanMarket, PageId::UsMarket});
   EXPECT_TRUE(app_core::next_relevant_auto_index(pages, 0, snapshot) ==
               static_cast<std::size_t>(0));
   EXPECT_TRUE(app_core::next_relevant_auto_index(pages, 1, snapshot) ==
@@ -286,8 +376,9 @@ HOST_TEST(next_relevant_auto_index_never_ends_up_with_nothing_to_show) {
 }
 
 HOST_TEST(next_relevant_auto_index_empty_pages_is_a_safe_noop) {
+  with_builtin_pages();
   AppSnapshot snapshot = make_mock_snapshot(DemoScenario::TaiwanSession);
-  const std::vector<PageId> pages{};
+  const std::vector<PageKey> pages{};
   EXPECT_TRUE(app_core::next_relevant_auto_index(pages, 0, snapshot) ==
               static_cast<std::size_t>(0));
 }

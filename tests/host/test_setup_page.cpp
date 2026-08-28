@@ -29,11 +29,13 @@ HOST_TEST(setup_page_is_excluded_from_registry_and_page_count_stays_five) {
   app_core::AppSnapshot snapshot =
       app_core::make_mock_snapshot(app_core::DemoScenario::TaiwanSession);
   snapshot.setup.active = true;
+  app_core::reset_page_registrations();
+  app_core::register_builtin_pages();
   app_core::PageRegistry registry;
   registry.begin_cycle(snapshot);
   EXPECT_EQ(registry.size(), static_cast<std::size_t>(5));
-  for (const app_core::PageId page : registry.page_ids()) {
-    EXPECT_TRUE(page != app_core::PageId::Setup);
+  for (const app_core::PageKey page : registry.page_keys()) {
+    EXPECT_TRUE(page.id != app_core::PageId::Setup);
   }
 }
 

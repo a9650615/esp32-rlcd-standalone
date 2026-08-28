@@ -28,27 +28,32 @@ app_core::MediaSourceHandle open_test_session() {
   return handle;
 }
 
-bool cycle_contains(const std::vector<app_core::PageId>& pages,
+bool cycle_contains(const std::vector<app_core::PageKey>& pages,
                     app_core::PageId page) {
-  return std::find(pages.begin(), pages.end(), page) != pages.end();
+  return std::find(pages.begin(), pages.end(),
+                   app_core::PageKey{page, 0}) != pages.end();
 }
 
 }  // namespace
 
 HOST_TEST(now_playing_page_is_absent_with_no_session) {
   app_core::reset_media_registry_for_test();
+  app_core::reset_page_registrations();
+  app_core::register_builtin_pages();
   app_core::PageRegistry registry;
   registry.begin_cycle(app_core::make_mock_snapshot(
       app_core::DemoScenario::TaiwanSession));
-  EXPECT_TRUE(!cycle_contains(registry.page_ids(), app_core::PageId::NowPlaying));
+  EXPECT_TRUE(!cycle_contains(registry.page_keys(), app_core::PageId::NowPlaying));
 }
 
 HOST_TEST(now_playing_page_joins_the_cycle_while_a_session_is_open) {
   open_test_session();
+  app_core::reset_page_registrations();
+  app_core::register_builtin_pages();
   app_core::PageRegistry registry;
   registry.begin_cycle(app_core::make_mock_snapshot(
       app_core::DemoScenario::TaiwanSession));
-  EXPECT_TRUE(cycle_contains(registry.page_ids(), app_core::PageId::NowPlaying));
+  EXPECT_TRUE(cycle_contains(registry.page_keys(), app_core::PageId::NowPlaying));
   app_core::reset_media_registry_for_test();
 }
 
